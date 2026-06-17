@@ -253,6 +253,46 @@
   <div class="error-box hidden" id="error-step1"></div>
 </div>
 
+<!-- ── STEP 2 ──────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="step-badge">STEP 2</span>
+    <span class="section-title">Exchange refresh tokens → LWA access tokens</span>
+  </div>
+  <p class="section-desc">
+    For every stuck seller, calls <code>POST https://api.amazon.com/auth/o2/token</code>
+    with their <code>refresh_token</code> to get a fresh access token.
+  </p>
+
+  <button class="run-btn" id="btn-step2" onclick="runStep2()">Exchange All Tokens</button>
+
+  <div class="status-line">
+    <div class="dot" id="dot-step2"></div>
+    <span id="status-step2">Idle</span>
+  </div>
+
+  <div class="result-area hidden" id="result-step2">
+    <div class="summary-bar" id="summary-step2"></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Seller Name</th>
+            <th>SP ID</th>
+            <th>Status</th>
+            <th>Access Token</th>
+            <th>Expires In</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-step2"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="error-box hidden" id="error-step2"></div>
+</div>
+
 
 <script>
   let step1State = { page: 1, totalPages: 1 };
@@ -346,6 +386,73 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  async function runStep2() {
+    const btn  = document.getElementById("btn-step2");
+    const dot  = document.getElementById("dot-step2");
+    const stat = document.getElementById("status-step2");
+    const res  = document.getElementById("result-step2");
+    const err  = document.getElementById("error-step2");
+
+    btn.disabled = true;
+    dot.className = "dot spin";
+    stat.textContent = "Exchanging tokens…";
+    res.classList.add("hidden");
+    err.classList.add("hidden");
+
+    try {
+      const resp = await fetch("/api/step2/exchange-tokens");
+      const data = await resp.json();
+
+      if (!data.ok) throw new Error(data.error || "Unknown error");
+
+      const summary = document.getElementById("summary-step2");
+      summary.innerHTML = `
+        Processed <strong>${data.total}</strong> seller(s) —
+        <span style="color:#22c55e"><strong>${data.success}</strong> OK</span>,
+        <span style="color:#ef4444"><strong>${data.failed}</strong> failed</span>.
+      `;
+
+      const tbody = document.getElementById("tbody-step2");
+      tbody.innerHTML = "";
+
+      data.results.forEach((row, i) => {
+        const statusBadge = row.ok
+          ? `<span style="color:#22c55e;font-weight:700">✓ OK</span>`
+          : `<span style="color:#ef4444;font-weight:700" title="${esc(row.error || '')}">✗ Failed</span>`;
+
+        const tokenCell = row.ok
+          ? `<span class="token-preview">${esc(row.access_token_preview || "")}</span>`
+          : `<span style="color:#4a5568;font-size:0.75rem">${esc(row.error || "")}</span>`;
+
+        const expires = row.expires_in ? `${row.expires_in}s` : "—";
+
+        tbody.innerHTML += `
+          <tr>
+            <td style="color:#4a5568">${i + 1}</td>
+            <td>${esc(row.seller_name)}</td>
+            <td style="font-family:monospace;font-size:0.75rem">${esc(String(row.amazon_selling_partner_id))}</td>
+            <td>${statusBadge}</td>
+            <td>${tokenCell}</td>
+            <td style="color:#64748b;font-size:0.78rem">${expires}</td>
+          </tr>`;
+      });
+
+      res.classList.remove("hidden");
+      dot.className = data.failed > 0 ? "dot err" : "dot ok";
+      stat.textContent = data.failed > 0
+        ? `${data.success}/${data.total} succeeded, ${data.failed} failed`
+        : `All ${data.total} tokens exchanged successfully`;
+
+    } catch (e) {
+      dot.className = "dot err";
+      stat.textContent = "Token exchange failed";
+      err.textContent = "Error: " + e.message;
+      err.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+    }
   }
 </script>
 </body>
