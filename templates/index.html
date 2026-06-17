@@ -9,451 +9,555 @@
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f1117;
+      background: #0d0f1a;
       color: #e2e8f0;
       min-height: 100vh;
-      padding: 2rem;
+      padding: 1.5rem 2rem;
     }
 
-    h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      color: #f8fafc;
-      margin-bottom: 0.25rem;
-    }
+    h1 { font-size: 1.4rem; font-weight: 700; color: #f8fafc; }
+    .subtitle { font-size: 0.82rem; color: #475569; margin-bottom: 1.5rem; }
 
-    .subtitle {
-      font-size: 0.85rem;
-      color: #64748b;
-      margin-bottom: 2rem;
-    }
-
-    .section {
-      background: #1e2130;
-      border: 1px solid #2d3348;
-      border-radius: 12px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .section-header {
+    /* ── Query bar ── */
+    .query-bar {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 1rem;
+      background: #161827;
+      border: 1px solid #252a3a;
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
       margin-bottom: 1rem;
     }
 
     .step-badge {
       background: #3b4fd8;
       color: #fff;
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       font-weight: 700;
       padding: 2px 8px;
       border-radius: 999px;
       letter-spacing: 0.05em;
+      white-space: nowrap;
     }
 
-    .section-title {
-      font-size: 1rem;
-      font-weight: 600;
-      color: #cbd5e1;
-    }
+    .query-desc { font-size: 0.82rem; color: #64748b; flex: 1; }
 
-    .section-desc {
-      font-size: 0.82rem;
-      color: #64748b;
-      margin-bottom: 1rem;
-    }
-
-    button.run-btn {
-      background: #3b4fd8;
-      color: #fff;
+    button.btn {
       border: none;
-      border-radius: 8px;
-      padding: 0.5rem 1.25rem;
-      font-size: 0.875rem;
+      border-radius: 7px;
+      padding: 0.45rem 1.1rem;
+      font-size: 0.82rem;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+    button.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    button.btn:hover:not(:disabled) { opacity: 0.85; }
+
+    .btn-primary   { background: #3b4fd8; color: #fff; }
+    .btn-teal      { background: #0d9488; color: #fff; }
+    .btn-purple    { background: #7c3aed; color: #fff; }
+    .btn-sm        { padding: 2px 9px; font-size: 0.72rem; font-weight: 600; border-radius: 5px; }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: #64748b;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; flex-shrink: 0; }
+    .dot.ok   { background: #22c55e; }
+    .dot.err  { background: #ef4444; }
+    .dot.spin { background: #f59e0b; animation: pulse 0.7s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+    /* ── Filter + action bar ── */
+    .controls-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      background: #161827;
+      border: 1px solid #252a3a;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.6rem;
     }
 
-    button.run-btn:hover { background: #2f40c0; }
-    button.run-btn:disabled { background: #2d3348; color: #4a5568; cursor: not-allowed; }
+    .controls-bar input[type="text"],
+    .controls-bar input[type="number"] {
+      background: #0d0f1a;
+      border: 1px solid #2d3348;
+      border-radius: 6px;
+      color: #cbd5e1;
+      padding: 4px 9px;
+      font-size: 0.78rem;
+      outline: none;
+    }
+    .controls-bar input[type="text"] { width: 180px; }
+    .controls-bar input[type="number"] { width: 90px; }
+    .controls-bar input:focus { border-color: #3b4fd8; }
 
-    .status-line {
+    .region-group {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      margin-top: 0.75rem;
-      font-size: 0.8rem;
-    }
-
-    .dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: #4a5568;
-      flex-shrink: 0;
-    }
-    .dot.ok   { background: #22c55e; }
-    .dot.err  { background: #ef4444; }
-    .dot.spin { background: #f59e0b; animation: pulse 0.8s ease-in-out infinite; }
-
-    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
-
-    .result-area { margin-top: 1.25rem; }
-
-    .summary-bar {
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       color: #94a3b8;
-      margin-bottom: 0.75rem;
     }
+    .region-group label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
 
-    .summary-bar strong { color: #f8fafc; }
+    .sep { width: 1px; height: 18px; background: #252a3a; margin: 0 0.2rem; }
+
+    .sel-count {
+      font-size: 0.78rem;
+      color: #94a3b8;
+      margin-left: auto;
+    }
+    .sel-count strong { color: #f8fafc; }
+
+    /* ── Table ── */
+    .table-wrap { overflow-x: auto; }
 
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.8rem;
+      font-size: 0.79rem;
+      min-width: 900px;
     }
 
     thead th {
-      text-align: left;
-      padding: 0.5rem 0.75rem;
-      background: #141622;
-      color: #64748b;
-      font-weight: 600;
-      font-size: 0.72rem;
+      background: #0d0f1a;
+      color: #475569;
+      font-size: 0.7rem;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      border-bottom: 1px solid #2d3348;
+      letter-spacing: .05em;
+      padding: 0.5rem 0.65rem;
+      border-bottom: 1px solid #1e2130;
+      white-space: nowrap;
+      user-select: none;
     }
 
-    tbody tr { border-bottom: 1px solid #1a1f2e; }
-    tbody tr:hover { background: #252a3a; }
+    thead th.sortable { cursor: pointer; }
+    thead th.sortable:hover { color: #94a3b8; }
+    thead th.sort-asc::after  { content: " ↑"; color: #3b4fd8; }
+    thead th.sort-desc::after { content: " ↓"; color: #3b4fd8; }
+
+    tbody tr { border-bottom: 1px solid #161827; }
+    tbody tr:hover { background: #1a1f30; }
+    tbody tr.selected-row { background: #1a2044; }
 
     tbody td {
-      padding: 0.55rem 0.75rem;
+      padding: 0.5rem 0.65rem;
       color: #cbd5e1;
       vertical-align: middle;
     }
 
-    .badge-count {
+    td.center { text-align: center; }
+
+    .badge {
       display: inline-block;
-      background: #7c3aed22;
-      color: #a78bfa;
-      border: 1px solid #7c3aed55;
-      border-radius: 6px;
-      padding: 1px 8px;
-      font-weight: 700;
-      font-size: 0.8rem;
-    }
-
-    .badge-count.high {
-      background: #dc262622;
-      color: #f87171;
-      border-color: #dc262655;
-    }
-
-    .region-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-
-    .chip {
-      font-size: 0.7rem;
-      padding: 1px 7px;
       border-radius: 5px;
-      border: 1px solid #2d3348;
-      color: #94a3b8;
+      padding: 1px 7px;
+      font-weight: 700;
+      font-size: 0.78rem;
     }
+    .badge-stuck      { background: #7c3aed22; color: #a78bfa; border: 1px solid #7c3aed44; }
+    .badge-stuck.high { background: #dc262622; color: #f87171; border: 1px solid #dc262644; }
+    .badge-region     { background: #0f2a2a;   color: #5eead4; border: 1px solid #0d948844; font-size: 0.7rem; }
 
-    .chip span { font-weight: 700; color: #cbd5e1; }
+    .mono { font-family: monospace; font-size: 0.73rem; color: #64748b; }
 
-    .token-preview {
-      font-family: monospace;
-      font-size: 0.75rem;
-      color: #64748b;
+    /* ── Inline step status ── */
+    .step-cell { min-width: 120px; }
+
+    .token-ok   { color: #22c55e; font-size: 0.75rem; font-weight: 600; }
+    .token-err  { color: #f87171; font-size: 0.72rem; }
+    .token-idle { color: #334155; font-size: 0.72rem; }
+
+    .queue-chips { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+    .qchip {
+      font-size: 0.68rem;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
     }
+    .qchip.ok  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .qchip.err { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
+    .qchip.spin { background: #1e2a1a44; color: #a3e635; border: 1px solid #365314; animation: pulse 0.7s ease-in-out infinite; }
 
+    /* ── Pagination ── */
     .pagination {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      margin-top: 1rem;
-      font-size: 0.82rem;
-      color: #64748b;
-    }
-
-    .pagination button {
-      background: #1a1f2e;
-      border: 1px solid #2d3348;
-      color: #94a3b8;
-      border-radius: 6px;
-      padding: 3px 12px;
-      cursor: pointer;
-      font-size: 0.8rem;
-    }
-
-    .pagination button:disabled { opacity: 0.35; cursor: not-allowed; }
-    .pagination button:hover:not(:disabled) { background: #252a3a; }
-
-    .error-box {
-      background: #2d1515;
-      border: 1px solid #7f1d1d;
-      border-radius: 8px;
-      padding: 0.75rem 1rem;
-      color: #fca5a5;
-      font-size: 0.82rem;
       margin-top: 0.75rem;
+      font-size: 0.78rem;
+      color: #475569;
     }
+    .pagination button {
+      background: #161827;
+      border: 1px solid #252a3a;
+      color: #94a3b8;
+      border-radius: 5px;
+      padding: 2px 10px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .pagination button:disabled { opacity: 0.3; cursor: not-allowed; }
+    .pagination button:hover:not(:disabled) { background: #1e2130; }
 
-    .hidden { display: none; }
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
 
 <h1>SQP Bot Dashboard</h1>
-<p class="subtitle">Manual controls for SQP report pipeline operations</p>
+<p class="subtitle">SQP report pipeline — manual operations</p>
 
-<!-- ── STEP 1 ──────────────────────────────────────────────────── -->
-<div class="section">
-  <div class="section-header">
-    <span class="step-badge">STEP 1</span>
-    <span class="section-title">Accounts with SQP reports stuck in queue</span>
+<!-- ── Query bar ────────────────────────────────────────────── -->
+<div class="query-bar">
+  <span class="step-badge">STEP 1</span>
+  <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
+  <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Run Query</button>
+  <div class="status-pill">
+    <div class="dot" id="dot-query"></div>
+    <span id="lbl-query">Idle</span>
   </div>
-  <p class="section-desc">
-    Queries the database for sellers that have <code>SQP_BY_ASIN</code> reports
-    with an Amazon request ID but not yet in a terminal status.
-  </p>
-
-  <button class="run-btn" id="btn-step1" onclick="runStep1(1)">Run Query</button>
-
-  <div class="status-line">
-    <div class="dot" id="dot-step1"></div>
-    <span id="status-step1">Idle</span>
-  </div>
-
-  <div class="result-area hidden" id="result-step1">
-    <div class="summary-bar" id="summary-step1"></div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Seller Name</th>
-            <th>SP ID</th>
-            <th>Stuck Total</th>
-            <th>Regions (1 / 2 / 3)</th>
-            <th>Refresh Token</th>
-          </tr>
-        </thead>
-        <tbody id="tbody-step1"></tbody>
-      </table>
-    </div>
-    <div class="pagination" id="pagination-step1"></div>
-  </div>
-
-  <div class="error-box hidden" id="error-step1"></div>
 </div>
 
-<!-- ── STEP 2 ──────────────────────────────────────────────────── -->
-<div class="section">
-  <div class="section-header">
-    <span class="step-badge">STEP 2</span>
-    <span class="section-title">Exchange refresh tokens → LWA access tokens</span>
-  </div>
-  <p class="section-desc">
-    For every stuck seller, calls <code>POST https://api.amazon.com/auth/o2/token</code>
-    with their <code>refresh_token</code> to get a fresh access token.
-  </p>
+<!-- ── Results (shown after query) ──────────────────────────── -->
+<div id="results-section" class="hidden">
 
-  <button class="run-btn" id="btn-step2" onclick="runStep2()">Exchange All Tokens</button>
-
-  <div class="status-line">
-    <div class="dot" id="dot-step2"></div>
-    <span id="status-step2">Idle</span>
-  </div>
-
-  <div class="result-area hidden" id="result-step2">
-    <div class="summary-bar" id="summary-step2"></div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Seller Name</th>
-            <th>SP ID</th>
-            <th>Status</th>
-            <th>Access Token</th>
-            <th>Expires In</th>
-          </tr>
-        </thead>
-        <tbody id="tbody-step2"></tbody>
-      </table>
+  <!-- Filter + action bar -->
+  <div class="controls-bar">
+    <input type="text"   id="f-name"   placeholder="Filter seller name…"  oninput="applyFilters()" />
+    <input type="number" id="f-stuck"  placeholder="Min stuck"   min="0"  oninput="applyFilters()" />
+    <div class="region-group">
+      <span style="color:#475569">Regions:</span>
+      <label><input type="checkbox" id="f-r1" checked onchange="applyFilters()"> R1</label>
+      <label><input type="checkbox" id="f-r2" checked onchange="applyFilters()"> R2</label>
+      <label><input type="checkbox" id="f-r3" checked onchange="applyFilters()"> R3</label>
     </div>
+    <div class="sep"></div>
+    <button class="btn btn-teal"   id="btn-step2" onclick="runStep2()" disabled>
+      Step 2 — Exchange Tokens
+    </button>
+    <button class="btn btn-purple" id="btn-step3" onclick="runStep3()" disabled>
+      Step 3 — Check Queue
+    </button>
+    <span class="sel-count" id="sel-count"><strong>0</strong> selected</span>
   </div>
 
-  <div class="error-box hidden" id="error-step2"></div>
-</div>
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:32px"><input type="checkbox" id="chk-all" onchange="toggleAll(this)"></th>
+          <th style="width:28px">#</th>
+          <th class="sortable" onclick="sortBy('seller_name')">Seller Name</th>
+          <th>SP ID</th>
+          <th class="sortable" onclick="sortBy('stuck_reports_total')">Stuck</th>
+          <th class="sortable" onclick="sortBy('region_1_count')">R1</th>
+          <th class="sortable" onclick="sortBy('region_2_count')">R2</th>
+          <th class="sortable" onclick="sortBy('region_3_count')">R3</th>
+          <th>Refresh Token</th>
+          <th class="step-cell">Step 2 — LWA Token</th>
+          <th class="step-cell">Step 3 — Queue</th>
+        </tr>
+      </thead>
+      <tbody id="sellers-tbody"></tbody>
+    </table>
+  </div>
 
+  <div class="pagination" id="pagination"></div>
+</div>
 
 <script>
-  let step1State = { page: 1, totalPages: 1 };
+// ── State ────────────────────────────────────────────────────────────────────
+let allRows      = [];        // raw rows from server
+let filteredRows = [];        // after filters
+let sortKey      = 'stuck_reports_total';
+let sortDir      = -1;        // -1 = desc, 1 = asc
+let selectedIds  = new Set(); // sp_id strings
+let currentPage  = 1;
+const PAGE       = 20;
 
-  async function runStep1(page) {
-    const btn  = document.getElementById("btn-step1");
-    const dot  = document.getElementById("dot-step1");
-    const stat = document.getElementById("status-step1");
-    const res  = document.getElementById("result-step1");
-    const err  = document.getElementById("error-step1");
+// per-seller step results
+const sellerState = {};
+// sellerState[spId] = { tokenOk: bool, token: str, queue: { 1: count, 2: count, 3: count } }
 
-    btn.disabled = true;
-    dot.className = "dot spin";
-    stat.textContent = "Running query…";
-    res.classList.add("hidden");
-    err.classList.add("hidden");
+// ── Step 1: query ────────────────────────────────────────────────────────────
+async function runQuery() {
+  setQueryStatus('spin', 'Running query…');
+  document.getElementById('btn-query').disabled = true;
+  document.getElementById('results-section').classList.add('hidden');
+
+  try {
+    const resp = await fetch('/api/step1/sqp-stuck?all=true');
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+
+    allRows = data.rows;
+    // init state for new sellers
+    allRows.forEach(r => {
+      const id = String(r.amazon_selling_partner_id);
+      if (!sellerState[id]) sellerState[id] = { tokenOk: null, token: null, queue: {} };
+    });
+
+    selectedIds.clear();
+    currentPage = 1;
+    applyFilters();
+
+    document.getElementById('results-section').classList.remove('hidden');
+    setQueryStatus(data.total > 0 ? 'err' : 'ok',
+      data.total > 0 ? `${data.total} seller(s) with stuck reports` : 'Queue is clean');
+  } catch (e) {
+    setQueryStatus('err', 'Query failed: ' + e.message);
+  } finally {
+    document.getElementById('btn-query').disabled = false;
+  }
+}
+
+// ── Filters + sort ───────────────────────────────────────────────────────────
+function applyFilters() {
+  const name   = document.getElementById('f-name').value.trim().toLowerCase();
+  const minStk = parseInt(document.getElementById('f-stuck').value) || 0;
+  const r1     = document.getElementById('f-r1').checked;
+  const r2     = document.getElementById('f-r2').checked;
+  const r3     = document.getElementById('f-r3').checked;
+
+  filteredRows = allRows.filter(row => {
+    if (name && !row.seller_name.toLowerCase().includes(name)) return false;
+    if (row.stuck_reports_total < minStk) return false;
+    if (!r1 && row.region_1_count > 0 && row.region_2_count === 0 && row.region_3_count === 0) return false;
+    if (!r2 && row.region_2_count > 0 && row.region_1_count === 0 && row.region_3_count === 0) return false;
+    if (!r3 && row.region_3_count > 0 && row.region_1_count === 0 && row.region_2_count === 0) return false;
+    return true;
+  });
+
+  sortRows();
+  currentPage = 1;
+  renderTable();
+}
+
+function sortBy(key) {
+  if (sortKey === key) { sortDir *= -1; }
+  else { sortKey = key; sortDir = -1; }
+  // update header classes
+  document.querySelectorAll('thead th.sortable').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+  });
+  // find clicked th by data or text (simple match on onclick attr)
+  document.querySelectorAll('thead th.sortable').forEach(th => {
+    if (th.getAttribute('onclick') === `sortBy('${key}')`) {
+      th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+    }
+  });
+  sortRows();
+  renderTable();
+}
+
+function sortRows() {
+  filteredRows.sort((a, b) => {
+    const av = a[sortKey] ?? '';
+    const bv = b[sortKey] ?? '';
+    if (typeof av === 'number') return (av - bv) * sortDir;
+    return String(av).localeCompare(String(bv)) * sortDir;
+  });
+}
+
+// ── Render table ─────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('sellers-tbody');
+  const start = (currentPage - 1) * PAGE;
+  const pageRows = filteredRows.slice(start, start + PAGE);
+
+  tbody.innerHTML = '';
+  pageRows.forEach((row, i) => {
+    const spId = String(row.amazon_selling_partner_id);
+    const sel  = selectedIds.has(spId);
+    const st   = sellerState[spId] || {};
+    const isHigh = row.stuck_reports_total >= 10;
+
+    tbody.innerHTML += `
+      <tr class="${sel ? 'selected-row' : ''}" data-spid="${esc(spId)}">
+        <td class="center">
+          <input type="checkbox" ${sel ? 'checked' : ''} onchange="toggleRow('${esc(spId)}', this)">
+        </td>
+        <td class="mono">${start + i + 1}</td>
+        <td>${esc(row.seller_name)}</td>
+        <td class="mono">${esc(spId)}</td>
+        <td><span class="badge badge-stuck ${isHigh ? 'high' : ''}">${row.stuck_reports_total}</span></td>
+        <td><span class="badge badge-region">${row.region_1_count}</span></td>
+        <td><span class="badge badge-region">${row.region_2_count}</span></td>
+        <td><span class="badge badge-region">${row.region_3_count}</span></td>
+        <td class="mono">${esc(row.refresh_token_preview)}</td>
+        <td class="step-cell" id="s2-${esc(spId)}">${renderTokenStatus(st)}</td>
+        <td class="step-cell" id="s3-${esc(spId)}">${renderQueueStatus(st, row)}</td>
+      </tr>`;
+  });
+
+  renderPagination();
+  updateSelCount();
+}
+
+function renderTokenStatus(st) {
+  if (st.tokenOk === null || st.tokenOk === undefined)
+    return `<span class="token-idle">—</span>`;
+  if (st.tokenOk)
+    return `<span class="token-ok">✓ OK</span> <span class="mono">${esc((st.token || '').slice(0, 16))}…</span>`;
+  return `<span class="token-err">✗ ${esc(st.tokenError || 'Failed')}</span>`;
+}
+
+function renderQueueStatus(st, row) {
+  const regions = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+  if (regions.length === 0) return '<span class="token-idle">—</span>';
+  if (!st.token && st.tokenOk !== true) return '<span class="token-idle">Need token first</span>';
+
+  const chips = regions.map(r => {
+    const q = st.queue[r];
+    if (q === undefined) return `<span class="qchip" style="background:#1e2130;color:#475569;border:1px solid #252a3a">R${r}: ?</span>`;
+    if (q === 'loading') return `<span class="qchip spin">R${r}: …</span>`;
+    if (q === 'err') return `<span class="qchip err">R${r}: ✗</span>`;
+    return `<span class="qchip ok">R${r}: ${q}</span>`;
+  });
+  return `<div class="queue-chips">${chips.join('')}</div>`;
+}
+
+function renderPagination() {
+  const total = filteredRows.length;
+  const pages = Math.ceil(total / PAGE) || 1;
+  const el = document.getElementById('pagination');
+  if (pages <= 1) { el.innerHTML = `<span style="color:#334155;font-size:.75rem">${total} result(s)</span>`; return; }
+  el.innerHTML = `
+    <button onclick="goPage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>&larr;</button>
+    <span>Page ${currentPage} / ${pages} &nbsp;·&nbsp; ${total} results</span>
+    <button onclick="goPage(${currentPage + 1})" ${currentPage >= pages ? 'disabled' : ''}>&rarr;</button>`;
+}
+
+function goPage(p) { currentPage = p; renderTable(); window.scrollTo(0, 0); }
+
+// ── Selection ────────────────────────────────────────────────────────────────
+function toggleRow(spId, chk) {
+  if (chk.checked) selectedIds.add(spId);
+  else selectedIds.delete(spId);
+  const tr = chk.closest('tr');
+  tr.classList.toggle('selected-row', chk.checked);
+  updateSelCount();
+}
+
+function toggleAll(chk) {
+  const start = (currentPage - 1) * PAGE;
+  filteredRows.slice(start, start + PAGE).forEach(row => {
+    const id = String(row.amazon_selling_partner_id);
+    if (chk.checked) selectedIds.add(id); else selectedIds.delete(id);
+  });
+  renderTable();
+  document.getElementById('chk-all').checked = chk.checked;
+}
+
+function updateSelCount() {
+  const n = selectedIds.size;
+  document.getElementById('sel-count').innerHTML = `<strong>${n}</strong> selected`;
+  document.getElementById('btn-step2').disabled = n === 0;
+  document.getElementById('btn-step3').disabled = n === 0;
+}
+
+// ── Step 2: exchange tokens ───────────────────────────────────────────────────
+async function runStep2() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+
+  document.getElementById('btn-step2').disabled = true;
+
+  for (const spId of ids) {
+    const cell = document.getElementById(`s2-${spId}`);
+    if (cell) cell.innerHTML = `<span class="token-idle">Exchanging…</span>`;
 
     try {
-      const resp = await fetch(`/api/step1/sqp-stuck?page=${page}`);
+      const resp = await fetch(`/api/step2/exchange-token?sp_id=${encodeURIComponent(spId)}`);
       const data = await resp.json();
-
-      if (!data.ok) throw new Error(data.error || "Unknown error");
-
-      step1State = { page: data.page, totalPages: data.total_pages };
-
-      const summary = document.getElementById("summary-step1");
-      summary.innerHTML = data.total === 0
-        ? "No stuck accounts found — queue is clean."
-        : `Found <strong>${data.total}</strong> account${data.total !== 1 ? "s" : ""} with stuck reports. Page <strong>${data.page}</strong> of <strong>${data.total_pages}</strong>.`;
-
-      const tbody = document.getElementById("tbody-step1");
-      tbody.innerHTML = "";
-
-      if (data.rows.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="color:#4a5568;padding:1rem 0.75rem">No rows on this page.</td></tr>`;
+      const st = sellerState[spId] || (sellerState[spId] = { queue: {} });
+      if (data.ok) {
+        st.tokenOk    = true;
+        st.token      = data.access_token;
+        st.tokenError = null;
       } else {
-        const offset = (data.page - 1) * data.page_size;
-        data.rows.forEach((row, i) => {
-          const isHigh = row.stuck_reports_total >= 10;
-          tbody.innerHTML += `
-            <tr>
-              <td style="color:#4a5568">${offset + i + 1}</td>
-              <td>${esc(row.seller_name)}</td>
-              <td style="font-family:monospace;font-size:0.75rem">${esc(String(row.amazon_selling_partner_id))}</td>
-              <td><span class="badge-count ${isHigh ? 'high' : ''}">${row.stuck_reports_total}</span></td>
-              <td>
-                <div class="region-chips">
-                  <span class="chip">R1 <span>${row.region_1_count}</span></span>
-                  <span class="chip">R2 <span>${row.region_2_count}</span></span>
-                  <span class="chip">R3 <span>${row.region_3_count}</span></span>
-                </div>
-              </td>
-              <td><span class="token-preview">${esc(row.refresh_token_preview)}</span></td>
-            </tr>`;
-        });
+        st.tokenOk    = false;
+        st.token      = null;
+        st.tokenError = data.error;
       }
-
-      renderPagination();
-
-      res.classList.remove("hidden");
-      dot.className = data.total > 0 ? "dot err" : "dot ok";
-      stat.textContent = data.total > 0
-        ? `${data.total} account(s) found with stuck reports`
-        : "No stuck reports found";
-
     } catch (e) {
-      dot.className = "dot err";
-      stat.textContent = "Query failed";
-      err.textContent = "Error: " + e.message;
-      err.classList.remove("hidden");
-    } finally {
-      btn.disabled = false;
+      const st = sellerState[spId] || (sellerState[spId] = { queue: {} });
+      st.tokenOk = false; st.tokenError = e.message;
     }
+
+    // re-render just this row's step cells
+    refreshRowCells(spId);
   }
 
-  function renderPagination() {
-    const { page, totalPages } = step1State;
-    const el = document.getElementById("pagination-step1");
-    if (totalPages <= 1) { el.innerHTML = ""; return; }
+  document.getElementById('btn-step2').disabled = selectedIds.size === 0;
+}
 
-    el.innerHTML = `
-      <button onclick="runStep1(${page - 1})" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
-      <span>Page ${page} / ${totalPages}</span>
-      <button onclick="runStep1(${page + 1})" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
-    `;
+// ── Step 3: check queue ───────────────────────────────────────────────────────
+async function runStep3() {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+
+  document.getElementById('btn-step3').disabled = true;
+
+  for (const spId of ids) {
+    const st  = sellerState[spId] || {};
+    const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+    if (!st.token || !row) continue;
+
+    const regions = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+    regions.forEach(r => { st.queue[r] = 'loading'; });
+    refreshRowCells(spId);
+
+    await Promise.all(regions.map(async (regionId) => {
+      try {
+        const resp = await fetch(
+          `/api/step3/check-queue?region_id=${regionId}&access_token=${encodeURIComponent(st.token)}`
+        );
+        const data = await resp.json();
+        st.queue[regionId] = data.ok ? data.count : 'err';
+      } catch {
+        st.queue[regionId] = 'err';
+      }
+      refreshRowCells(spId);
+    }));
   }
 
-  function esc(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  document.getElementById('btn-step3').disabled = selectedIds.size === 0;
+}
 
-  async function runStep2() {
-    const btn  = document.getElementById("btn-step2");
-    const dot  = document.getElementById("dot-step2");
-    const stat = document.getElementById("status-step2");
-    const res  = document.getElementById("result-step2");
-    const err  = document.getElementById("error-step2");
+function refreshRowCells(spId) {
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  const st  = sellerState[spId] || {};
+  const c2  = document.getElementById(`s2-${spId}`);
+  const c3  = document.getElementById(`s3-${spId}`);
+  if (c2) c2.innerHTML = renderTokenStatus(st);
+  if (c3 && row) c3.innerHTML = renderQueueStatus(st, row);
+}
 
-    btn.disabled = true;
-    dot.className = "dot spin";
-    stat.textContent = "Exchanging tokens…";
-    res.classList.add("hidden");
-    err.classList.add("hidden");
+// ── Util ─────────────────────────────────────────────────────────────────────
+function setQueryStatus(state, text) {
+  document.getElementById('dot-query').className = 'dot ' + state;
+  document.getElementById('lbl-query').textContent = text;
+}
 
-    try {
-      const resp = await fetch("/api/step2/exchange-tokens");
-      const data = await resp.json();
-
-      if (!data.ok) throw new Error(data.error || "Unknown error");
-
-      const summary = document.getElementById("summary-step2");
-      summary.innerHTML = `
-        Processed <strong>${data.total}</strong> seller(s) —
-        <span style="color:#22c55e"><strong>${data.success}</strong> OK</span>,
-        <span style="color:#ef4444"><strong>${data.failed}</strong> failed</span>.
-      `;
-
-      const tbody = document.getElementById("tbody-step2");
-      tbody.innerHTML = "";
-
-      data.results.forEach((row, i) => {
-        const statusBadge = row.ok
-          ? `<span style="color:#22c55e;font-weight:700">✓ OK</span>`
-          : `<span style="color:#ef4444;font-weight:700" title="${esc(row.error || '')}">✗ Failed</span>`;
-
-        const tokenCell = row.ok
-          ? `<span class="token-preview">${esc(row.access_token_preview || "")}</span>`
-          : `<span style="color:#4a5568;font-size:0.75rem">${esc(row.error || "")}</span>`;
-
-        const expires = row.expires_in ? `${row.expires_in}s` : "—";
-
-        tbody.innerHTML += `
-          <tr>
-            <td style="color:#4a5568">${i + 1}</td>
-            <td>${esc(row.seller_name)}</td>
-            <td style="font-family:monospace;font-size:0.75rem">${esc(String(row.amazon_selling_partner_id))}</td>
-            <td>${statusBadge}</td>
-            <td>${tokenCell}</td>
-            <td style="color:#64748b;font-size:0.78rem">${expires}</td>
-          </tr>`;
-      });
-
-      res.classList.remove("hidden");
-      dot.className = data.failed > 0 ? "dot err" : "dot ok";
-      stat.textContent = data.failed > 0
-        ? `${data.success}/${data.total} succeeded, ${data.failed} failed`
-        : `All ${data.total} tokens exchanged successfully`;
-
-    } catch (e) {
-      dot.className = "dot err";
-      stat.textContent = "Token exchange failed";
-      err.textContent = "Error: " + e.message;
-      err.classList.remove("hidden");
-    } finally {
-      btn.disabled = false;
-    }
-  }
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 </script>
 </body>
 </html>
