@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQP Bot Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 0.25rem;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: #64748b;
+      margin-bottom: 2rem;
+    }
+
+    .section {
+      background: #1e2130;
+      border: 1px solid #2d3348;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .step-badge {
+      background: #3b4fd8;
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      letter-spacing: 0.05em;
+    }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+
+    .section-desc {
+      font-size: 0.82rem;
+      color: #64748b;
+      margin-bottom: 1rem;
+    }
+
+    button.run-btn {
+      background: #3b4fd8;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button.run-btn:hover { background: #2f40c0; }
+    button.run-btn:disabled { background: #2d3348; color: #4a5568; cursor: not-allowed; }
+
+    .status-line {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #4a5568;
+      flex-shrink: 0;
+    }
+    .dot.ok   { background: #22c55e; }
+    .dot.err  { background: #ef4444; }
+    .dot.spin { background: #f59e0b; animation: pulse 0.8s ease-in-out infinite; }
+
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+
+    .result-area { margin-top: 1.25rem; }
+
+    .summary-bar {
+      font-size: 0.82rem;
+      color: #94a3b8;
+      margin-bottom: 0.75rem;
+    }
+
+    .summary-bar strong { color: #f8fafc; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      background: #141622;
+      color: #64748b;
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #2d3348;
+    }
+
+    tbody tr { border-bottom: 1px solid #1a1f2e; }
+    tbody tr:hover { background: #252a3a; }
+
+    tbody td {
+      padding: 0.55rem 0.75rem;
+      color: #cbd5e1;
+      vertical-align: middle;
+    }
+
+    .badge-count {
+      display: inline-block;
+      background: #7c3aed22;
+      color: #a78bfa;
+      border: 1px solid #7c3aed55;
+      border-radius: 6px;
+      padding: 1px 8px;
+      font-weight: 700;
+      font-size: 0.8rem;
+    }
+
+    .badge-count.high {
+      background: #dc262622;
+      color: #f87171;
+      border-color: #dc262655;
+    }
+
+    .region-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+
+    .chip {
+      font-size: 0.7rem;
+      padding: 1px 7px;
+      border-radius: 5px;
+      border: 1px solid #2d3348;
+      color: #94a3b8;
+    }
+
+    .chip span { font-weight: 700; color: #cbd5e1; }
+
+    .token-preview {
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      font-size: 0.82rem;
+      color: #64748b;
+    }
+
+    .pagination button {
+      background: #1a1f2e;
+      border: 1px solid #2d3348;
+      color: #94a3b8;
+      border-radius: 6px;
+      padding: 3px 12px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+
+    .pagination button:disabled { opacity: 0.35; cursor: not-allowed; }
+    .pagination button:hover:not(:disabled) { background: #252a3a; }
+
+    .error-box {
+      background: #2d1515;
+      border: 1px solid #7f1d1d;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      color: #fca5a5;
+      font-size: 0.82rem;
+      margin-top: 0.75rem;
+    }
+
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<h1>SQP Bot Dashboard</h1>
+<p class="subtitle">Manual controls for SQP report pipeline operations</p>
+
+<!-- ── STEP 1 ──────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-header">
+    <span class="step-badge">STEP 1</span>
+    <span class="section-title">Accounts with SQP reports stuck in queue</span>
+  </div>
+  <p class="section-desc">
+    Queries the database for sellers that have <code>SQP_BY_ASIN</code> reports
+    with an Amazon request ID but not yet in a terminal status.
+  </p>
+
+  <button class="run-btn" id="btn-step1" onclick="runStep1(1)">Run Query</button>
+
+  <div class="status-line">
+    <div class="dot" id="dot-step1"></div>
+    <span id="status-step1">Idle</span>
+  </div>
+
+  <div class="result-area hidden" id="result-step1">
+    <div class="summary-bar" id="summary-step1"></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Seller Name</th>
+            <th>SP ID</th>
+            <th>Stuck Total</th>
+            <th>Regions (1 / 2 / 3)</th>
+            <th>Refresh Token</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-step1"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination-step1"></div>
+  </div>
+
+  <div class="error-box hidden" id="error-step1"></div>
+</div>
+
+
+<script>
+  let step1State = { page: 1, totalPages: 1 };
+
+  async function runStep1(page) {
+    const btn  = document.getElementById("btn-step1");
+    const dot  = document.getElementById("dot-step1");
+    const stat = document.getElementById("status-step1");
+    const res  = document.getElementById("result-step1");
+    const err  = document.getElementById("error-step1");
+
+    btn.disabled = true;
+    dot.className = "dot spin";
+    stat.textContent = "Running query…";
+    res.classList.add("hidden");
+    err.classList.add("hidden");
+
+    try {
+      const resp = await fetch(`/api/step1/sqp-stuck?page=${page}`);
+      const data = await resp.json();
+
+      if (!data.ok) throw new Error(data.error || "Unknown error");
+
+      step1State = { page: data.page, totalPages: data.total_pages };
+
+      const summary = document.getElementById("summary-step1");
+      summary.innerHTML = data.total === 0
+        ? "No stuck accounts found — queue is clean."
+        : `Found <strong>${data.total}</strong> account${data.total !== 1 ? "s" : ""} with stuck reports. Page <strong>${data.page}</strong> of <strong>${data.total_pages}</strong>.`;
+
+      const tbody = document.getElementById("tbody-step1");
+      tbody.innerHTML = "";
+
+      if (data.rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="color:#4a5568;padding:1rem 0.75rem">No rows on this page.</td></tr>`;
+      } else {
+        const offset = (data.page - 1) * data.page_size;
+        data.rows.forEach((row, i) => {
+          const isHigh = row.stuck_reports_total >= 10;
+          tbody.innerHTML += `
+            <tr>
+              <td style="color:#4a5568">${offset + i + 1}</td>
+              <td>${esc(row.seller_name)}</td>
+              <td style="font-family:monospace;font-size:0.75rem">${esc(String(row.amazon_selling_partner_id))}</td>
+              <td><span class="badge-count ${isHigh ? 'high' : ''}">${row.stuck_reports_total}</span></td>
+              <td>
+                <div class="region-chips">
+                  <span class="chip">R1 <span>${row.region_1_count}</span></span>
+                  <span class="chip">R2 <span>${row.region_2_count}</span></span>
+                  <span class="chip">R3 <span>${row.region_3_count}</span></span>
+                </div>
+              </td>
+              <td><span class="token-preview">${esc(row.refresh_token_preview)}</span></td>
+            </tr>`;
+        });
+      }
+
+      renderPagination();
+
+      res.classList.remove("hidden");
+      dot.className = data.total > 0 ? "dot err" : "dot ok";
+      stat.textContent = data.total > 0
+        ? `${data.total} account(s) found with stuck reports`
+        : "No stuck reports found";
+
+    } catch (e) {
+      dot.className = "dot err";
+      stat.textContent = "Query failed";
+      err.textContent = "Error: " + e.message;
+      err.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderPagination() {
+    const { page, totalPages } = step1State;
+    const el = document.getElementById("pagination-step1");
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+
+    el.innerHTML = `
+      <button onclick="runStep1(${page - 1})" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
+      <span>Page ${page} / ${totalPages}</span>
+      <button onclick="runStep1(${page + 1})" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
+    `;
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+</script>
+</body>
+</html>
