@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DB Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; }
+    header { background: #1a1a2e; padding: 16px 24px; border-bottom: 1px solid #2a2a4a; }
+    header h1 { font-size: 18px; font-weight: 600; color: #a78bfa; }
+    header span { font-size: 12px; color: #666; margin-left: 12px; }
+    .layout { display: flex; height: calc(100vh - 57px); }
+    .sidebar { width: 280px; background: #111; border-right: 1px solid #222; padding: 16px; overflow-y: auto; flex-shrink: 0; }
+    .sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 12px; }
+    .step-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.2s; }
+    .step-card:hover, .step-card.active { border-color: #7c3aed; background: #1e1b2e; }
+    .step-card .step-label { font-size: 13px; font-weight: 500; color: #c4b5fd; }
+    .step-card .step-desc { font-size: 11px; color: #666; margin-top: 4px; line-height: 1.4; }
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .toolbar { padding: 12px 20px; background: #111; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 10px; }
+    .btn { padding: 7px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity 0.2s; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: #7c3aed; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #6d28d9; }
+    .btn-secondary { background: #222; color: #ccc; border: 1px solid #333; }
+    .btn-secondary:hover:not(:disabled) { background: #2a2a2a; }
+    .status-pill { font-size: 11px; padding: 3px 8px; border-radius: 12px; }
+    .status-idle { background: #1a1a1a; color: #555; border: 1px solid #333; }
+    .status-running { background: #1e2a1e; color: #4ade80; border: 1px solid #166534; }
+    .status-done { background: #1e1b2e; color: #a78bfa; border: 1px solid #5b21b6; }
+    .status-error { background: #2a1515; color: #f87171; border: 1px solid #7f1d1d; }
+    .content { flex: 1; overflow: auto; padding: 20px; }
+    .query-preview { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+    .query-preview h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 8px; }
+    .query-preview pre { font-family: 'Courier New', monospace; font-size: 12px; color: #a78bfa; white-space: pre-wrap; line-height: 1.5; }
+    .results-section { }
+    .results-meta { font-size: 12px; color: #555; margin-bottom: 10px; }
+    .results-meta strong { color: #888; }
+    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #222; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead { background: #1a1a2e; }
+    th { padding: 10px 14px; text-align: left; color: #a78bfa; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #2a2a4a; white-space: nowrap; }
+    td { padding: 9px 14px; border-bottom: 1px solid #1a1a1a; color: #ccc; font-family: 'Courier New', monospace; }
+    tr:hover td { background: #161616; }
+    .token-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .token-cell:hover { color: #a78bfa; }
+    .error-box { background: #2a1515; border: 1px solid #7f1d1d; border-radius: 8px; padding: 14px; color: #f87171; font-size: 13px; }
+    .empty-state { text-align: center; padding: 60px 20px; color: #444; }
+    .empty-state p { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DB Dashboard</h1>
+    <span>postgres @ 136.112.125.16</span>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>Steps</h2>
+      <div id="stepList"></div>
+    </aside>
+    <div class="main">
+      <div class="toolbar">
+        <button class="btn btn-primary" id="runBtn" disabled onclick="runQuery()">Run Query</button>
+        <span class="status-pill status-idle" id="statusPill">idle</span>
+        <div style="flex:1"></div>
+        <span id="activeLabel" style="font-size:13px;color:#666">Select a step</span>
+      </div>
+      <div class="content" id="content">
+        <div class="empty-state"><p>Select a step from the sidebar to run a query.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeKey = null;
+    let queries = [];
+
+    async function loadQueries() {
+      const res = await fetch('/api/queries');
+      queries = await res.json();
+      renderSidebar();
+    }
+
+    function renderSidebar() {
+      const el = document.getElementById('stepList');
+      el.innerHTML = queries.map(q => `
+        <div class="step-card" id="card-${q.key}" onclick="selectStep('${q.key}')">
+          <div class="step-label">${q.label}</div>
+          <div class="step-desc">${q.description}</div>
+        </div>
+      `).join('');
+    }
+
+    function selectStep(key) {
+      activeKey = key;
+      document.querySelectorAll('.step-card').forEach(c => c.classList.remove('active'));
+      document.getElementById('card-' + key)?.classList.add('active');
+      document.getElementById('runBtn').disabled = false;
+      document.getElementById('activeLabel').textContent = queries.find(q => q.key === key)?.label || key;
+      document.getElementById('content').innerHTML = `
+        <div class="empty-state"><p>Press <strong>Run Query</strong> to execute.</p></div>
+      `;
+      setPill('idle', 'idle');
+    }
+
+    function setPill(state, text) {
+      const el = document.getElementById('statusPill');
+      el.className = 'status-pill status-' + state;
+      el.textContent = text;
+    }
+
+    async function runQuery() {
+      if (!activeKey) return;
+      setPill('running', 'running…');
+      document.getElementById('runBtn').disabled = true;
+      try {
+        const res = await fetch('/api/query/' + activeKey, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          setPill('error', 'error');
+          document.getElementById('content').innerHTML = `<div class="error-box">${data.error}</div>`;
+        } else {
+          setPill('done', `${data.rowCount} rows · ${data.duration_ms}ms`);
+          renderResults(data);
+        }
+      } catch (e) {
+        setPill('error', 'error');
+        document.getElementById('content').innerHTML = `<div class="error-box">${e.message}</div>`;
+      } finally {
+        document.getElementById('runBtn').disabled = false;
+      }
+    }
+
+    function renderResults(data) {
+      if (!data.rows || data.rows.length === 0) {
+        document.getElementById('content').innerHTML = `<div class="empty-state"><p>Query returned 0 rows.</p></div>`;
+        return;
+      }
+      const cols = Object.keys(data.rows[0]);
+      const rows = data.rows;
+      const thead = `<thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>`;
+      const tbody = `<tbody>${rows.map(row =>
+        `<tr>${cols.map(c => {
+          const val = row[c] ?? '';
+          const str = String(val);
+          if (c === 'refresh_token') {
+            return `<td><span class="token-cell" title="${str}" onclick="copyText('${str.replace(/'/g,"\\'")}')">📋 ${str.substring(0,30)}…</span></td>`;
+          }
+          return `<td>${str}</td>`;
+        }).join('')}</tr>`
+      ).join('')}</tbody>`;
+      document.getElementById('content').innerHTML = `
+        <div class="results-meta"><strong>${data.rowCount}</strong> rows returned in <strong>${data.duration_ms}ms</strong></div>
+        <div class="table-wrap"><table>${thead}${tbody}</table></div>
+      `;
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text).then(() => alert('Copied to clipboard!'));
+    }
+
+    loadQueries();
+  </script>
+</body>
+</html>
