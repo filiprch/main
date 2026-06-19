@@ -639,6 +639,7 @@ async function runStep23() {
 }
 
 // ── Auto-retry coordinator ────────────────────────────────────────────────────
+// Loop: cancel all stuck → re-run Step 2+3 → if more stuck, repeat → until clean → turn off.
 async function runAutoRetryLoop(spId, row) {
   const st      = initSt(spId);
   const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
@@ -647,84 +648,90 @@ async function runAutoRetryLoop(spId, row) {
   st.shouldStop = false;
   refreshDetail(spId, row);
 
-  // Cancel all stuck regions (with 30s retry on failures)
-  for (const regionId of regions) {
-    if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop) {
-      await cancelAllWithRetry(spId, regionId);
+  const MAX_ROUNDS = 10;
+  let round = 0;
+
+  while (st.autoRetry && !st.shouldStop && round++ < MAX_ROUNDS) {
+    // Cancel all stuck reports in every region
+    for (const regionId of regions) {
+      if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop) {
+        await cancelAllWithRetry(spId, regionId);
+      }
     }
-  }
 
-  if (st.shouldStop || !st.autoRetry) {
-    st.cancelling = false;
-    refreshDetail(spId, row);
-    updateCell(spId);
-    return;
-  }
+    if (st.shouldStop || !st.autoRetry) break;
 
-  // Re-run step 2+3 to see if more stuck appeared
-  st.waitMsg = 'Re-checking queue after cancellations…';
-  refreshDetail(spId, row);
-  await step23ForSeller(spId, row);
-  st.waitMsg = null;
+    // Re-run Step 2+3 to detect new stuck reports
+    st.waitMsg = 'Re-checking queue…';
+    regions.forEach(r => updateRetryBar(spId, r));
+    await step23ForSeller(spId, row);
+    st.waitMsg = null;
 
-  const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
-  if (!anyStuck) {
-    // All done — turn off auto-retry
-    st.autoRetry  = false;
-    st.cancelling = false;
-    refreshDetail(spId, row);
-    updateCell(spId);
-    return;
-  }
-
-  // Still stuck — one more cancel round, then turn off
-  for (const regionId of regions) {
-    if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop && st.autoRetry) {
-      await cancelAllWithRetry(spId, regionId);
+    const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+    if (!anyStuck) {
+      // Queue is clean — done
+      st.autoRetry = false;
+      break;
     }
+    // New stuck reports found — loop will cancel them next round
   }
 
-  st.autoRetry  = false;
   st.cancelling = false;
+  st.autoRetry  = false;
   st.waitMsg    = null;
   refreshDetail(spId, row);
   updateCell(spId);
 }
 
-// Cancel one region with 30s retry loops on failures
+// Cancel region: pause 30s after every 2nd failure, then restart from beginning.
+// With auto-retry OFF: single pass, no waits.
 async function cancelAllWithRetry(spId, regionId) {
-  const st = initSt(spId);
-  await doCancelPass(spId, regionId);
+  const st    = initSt(spId);
+  const stuck = st.queue[regionId]?.stuck || [];
+  let failCount  = 0;
+  let restarts   = 0;
+  const MAX_RESTARTS = 8; // hard stop after N × 30s pauses
 
-  let noProgress = 0;
-  while (st.autoRetry && !st.shouldStop && noProgress < 3) {
-    const failed = (st.queue[regionId]?.stuck || []).filter(id => st.cancelStatus[id] === 'failed');
-    if (!failed.length) break;
+  for (let i = 0; i < stuck.length; i++) {
+    if (st.shouldStop) break;
 
-    // 30-second countdown
-    for (let i = 30; i > 0; i--) {
-      if (st.shouldStop || !st.autoRetry) break;
-      st.waitMsg = `R${regionId}: retry in ${i}s…`;
-      updateRetryBar(spId, regionId);
-      await sleep(1000);
+    const id = stuck[i];
+    if ((st.cancelStatus[id] || 'idle') === 'cancelled') continue;
+
+    await cancelOne(spId, regionId, id);
+    await sleep(300);
+
+    if (st.cancelStatus[id] === 'failed') {
+      failCount++;
+      if (failCount >= 2 && st.autoRetry && restarts < MAX_RESTARTS) {
+        restarts++;
+        failCount = 0;
+
+        // 30-second countdown before retry
+        for (let sec = 30; sec > 0; sec--) {
+          if (st.shouldStop || !st.autoRetry) break;
+          st.waitMsg = `2 failures — retrying in ${sec}s…`;
+          updateRetryBar(spId, regionId);
+          await sleep(1000);
+        }
+        st.waitMsg = null;
+        if (st.shouldStop || !st.autoRetry) break;
+
+        // Reset all failed → idle and restart list from top
+        stuck.forEach(pid => {
+          if (st.cancelStatus[pid] === 'failed') st.cancelStatus[pid] = 'idle';
+        });
+        i = -1; // will be incremented to 0
+      }
     }
-    st.waitMsg = null;
-    if (st.shouldStop || !st.autoRetry) break;
-
-    // Reset failed → idle and retry
-    const beforeFailed = failed.filter(id => st.cancelStatus[id] === 'failed');
-    beforeFailed.forEach(id => { st.cancelStatus[id] = 'idle'; });
-    await doCancelPass(spId, regionId);
-
-    const stillFailed = beforeFailed.filter(id => st.cancelStatus[id] === 'failed').length;
-    noProgress = stillFailed < beforeFailed.length ? 0 : noProgress + 1;
   }
+
   st.waitMsg = null;
 }
 
-// One cancel pass (no retry)
+// Single pass with no retry logic (used when auto-retry is OFF)
 async function doCancelPass(spId, regionId) {
-  const st      = initSt(spId);
+  const st = initSt(spId);
   const pending = (st.queue[regionId]?.stuck || [])
     .filter(id => (st.cancelStatus[id] || 'idle') !== 'cancelled');
   for (const id of pending) {
@@ -740,40 +747,20 @@ async function cancelAll(spId, regionId) {
   if (st.cancelling) return;
   const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
 
-  st.cancelling = true;
-  st.shouldStop = false;
-  refreshDetail(spId, row);
-
   if (st.autoRetry) {
-    // Full loop: cancel → 30s retry → re-check → cancel again → done
-    await cancelAllWithRetry(spId, regionId);
-
-    if (!st.shouldStop && st.autoRetry) {
-      const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
-      st.waitMsg = 'Re-checking queue…';
-      updateRetryBar(spId, regionId);
-      await step23ForSeller(spId, row);
-      st.waitMsg = null;
-
-      const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
-      if (anyStuck) {
-        for (const r of regions) {
-          if ((st.queue[r]?.stuck||[]).length > 0 && !st.shouldStop && st.autoRetry) {
-            await cancelAllWithRetry(spId, r);
-          }
-        }
-      }
-      st.autoRetry = false;
-    }
+    // Auto-retry ON: full loop (cancel → re-check → repeat until clean → turn off)
+    await runAutoRetryLoop(spId, row);
   } else {
-    // Simple single pass
+    // Auto-retry OFF: single pass, no waits
+    st.cancelling = true;
+    st.shouldStop = false;
+    refreshDetail(spId, row);
     await doCancelPass(spId, regionId);
+    st.cancelling = false;
+    st.waitMsg    = null;
+    refreshDetail(spId, row);
+    updateCell(spId);
   }
-
-  st.cancelling = false;
-  st.waitMsg    = null;
-  refreshDetail(spId, row);
-  updateCell(spId);
 }
 
 // ── Step 4 — cancel one report ────────────────────────────────────────────────
