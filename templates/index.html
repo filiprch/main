@@ -180,6 +180,34 @@
     .pagination button:disabled { opacity: .3; cursor: not-allowed; }
     .pagination button:hover:not(:disabled) { background: #1e2130; }
 
+    /* ── Global SQP Status card ── */
+    .week-tabs { display: flex; gap: .4rem; margin-bottom: 1.1rem; flex-wrap: wrap; }
+    .week-tabs .btn.active { background: #3b4fd8; color: #fff; }
+
+    .sqp-status-wrap { overflow-x: auto; }
+    .sqp-stat-table { width: 100%; border-collapse: collapse; font-size: .79rem; min-width: 560px; }
+    .sqp-stat-table thead th {
+      background: #0d0f1a; color: #475569; font-size: .68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; padding: .5rem .75rem;
+      border-bottom: 1px solid #1e2130; text-align: left; white-space: nowrap;
+    }
+    .sqp-stat-table tbody tr { border-bottom: 1px solid #161827; }
+    .sqp-stat-table tbody tr:hover { background: #1a1f30; }
+    .sqp-stat-table td { padding: .5rem .75rem; vertical-align: middle; }
+    .sqp-stat-table .week-label { color: #94a3b8; font-size: .75rem; white-space: nowrap; }
+    .sqp-done    { color: #4ade80; font-weight: 700; font-size: .82rem; }
+    .sqp-notdone { color: #f87171; font-weight: 700; font-size: .82rem; }
+    .sqp-total   { color: #64748b; font-size: .78rem; }
+
+    .pbar-wrap {
+      display: flex; align-items: center; gap: .55rem; min-width: 200px;
+    }
+    .pbar-track {
+      flex: 1; height: 8px; background: #1e2130; border-radius: 99px; overflow: hidden;
+    }
+    .pbar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
+    .pbar-pct  { font-size: .72rem; font-weight: 700; min-width: 36px; text-align: right; }
+
     .hidden { display: none !important; }
   </style>
 </head>
@@ -261,6 +289,31 @@
 
   </div><!-- /card-body: stuck-queue -->
 </div><!-- /card: stuck-queue -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Global SQP Status
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-sqp-status">
+  <div class="card-hdr" onclick="toggleCard('sqp-status')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">GLOBAL STATUS</span>
+      <div>
+        <div class="card-title">Global SQP Status</div>
+        <div class="card-desc">Weekly completion of <code>SQP_BY_ASIN_CONVERT</code> reports (start_date = Sunday)</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-sqp-status">▼</button>
+  </div>
+  <div class="card-body" id="body-sqp-status">
+    <div class="week-tabs">
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-1"  onclick="loadSqpStatus(1)">This week</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-4"  onclick="loadSqpStatus(4)">Last 4 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-8"  onclick="loadSqpStatus(8)">Last 8 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-12" onclick="loadSqpStatus(12)">Last 12 weeks</button>
+    </div>
+    <div id="sqp-status-content"><span class="token-idle">Select a period above to load.</span></div>
+  </div>
+</div>
 
 </div><!-- /cards -->
 
@@ -867,6 +920,68 @@ function updateCell(spId) {
   const c3  = document.getElementById(`s3-${spId}`);
   if (c2) c2.innerHTML = renderToken(st);
   if (c3 && row) c3.innerHTML = renderQueue(st, row);
+}
+
+// ── Global SQP Status card ────────────────────────────────────────────────────
+let sqpStatusActiveWeeks = null;
+
+async function loadSqpStatus(weeks) {
+  sqpStatusActiveWeeks = weeks;
+
+  // Highlight active tab
+  [1, 4, 8, 12].forEach(w => {
+    const btn = document.getElementById(`sqp-ws-${w}`);
+    if (btn) btn.classList.toggle('active', w === weeks);
+  });
+
+  const content = document.getElementById('sqp-status-content');
+  content.innerHTML = `<span class="token-idle">Loading…</span>`;
+
+  try {
+    const resp = await fetch(`/api/sqp-global-status?weeks=${weeks}`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    content.innerHTML = renderSqpStatusTable(data.rows);
+  } catch(e) {
+    content.innerHTML = `<span class="token-err">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderSqpStatusTable(rows) {
+  if (!rows.length) return `<span class="token-idle">No data found for this period.</span>`;
+
+  let html = `<div class="sqp-status-wrap"><table class="sqp-stat-table">
+    <thead><tr>
+      <th>Week of (Sunday)</th>
+      <th>Done</th>
+      <th>Not Done</th>
+      <th>Total</th>
+      <th style="min-width:220px">Completion</th>
+    </tr></thead><tbody>`;
+
+  rows.forEach(row => {
+    const pct   = row.total_count > 0 ? Math.round((row.done_count / row.total_count) * 100) : 0;
+    const color = pct >= 95 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
+    const d     = new Date(row.start_date + 'T12:00:00Z');
+    const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    html += `<tr>
+      <td class="week-label mono">${esc(label)}</td>
+      <td class="sqp-done">${row.done_count.toLocaleString()}</td>
+      <td class="sqp-notdone">${row.not_done_count.toLocaleString()}</td>
+      <td class="sqp-total">${row.total_count.toLocaleString()}</td>
+      <td>
+        <div class="pbar-wrap">
+          <div class="pbar-track">
+            <div class="pbar-fill" style="width:${pct}%;background:${color}"></div>
+          </div>
+          <span class="pbar-pct" style="color:${color}">${pct}%</span>
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  return html + `</tbody></table></div>`;
 }
 
 // ── Card fold/expand ──────────────────────────────────────────────────────────

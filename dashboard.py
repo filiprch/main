@@ -9,6 +9,7 @@ import os
 import psycopg2
 import psycopg2.extras
 import requests as http_requests
+from datetime import date, timedelta
 from flask import Flask, jsonify, render_template, request
 from dotenv import load_dotenv
 
@@ -302,6 +303,56 @@ def step4_cancel_report():
             "ok":          ok,
             "status_code": resp.status_code,
             "error":       None if ok else str(resp.json().get("errors", resp.text)),
+        })
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ── Global SQP status ─────────────────────────────────────────────────────────
+
+_SQP_GLOBAL_STATUS_QUERY = """
+    SELECT
+        start_date,
+        COUNT(*) FILTER (WHERE status = 'DONE')  AS done_count,
+        COUNT(*) FILTER (WHERE status != 'DONE') AS not_done_count,
+        COUNT(*)                                  AS total_count
+    FROM amazon_report_info
+    WHERE report_type = 'SQP_BY_ASIN_CONVERT'
+      AND start_date >= %(cutoff)s
+    GROUP BY start_date
+    ORDER BY start_date DESC
+"""
+
+
+@app.route("/api/sqp-global-status")
+def sqp_global_status():
+    weeks = max(1, min(int(request.args.get("weeks", 4)), 52))
+
+    # start_date is always Sunday; find the most recent Sunday <= today
+    today = date.today()
+    days_since_sunday = (today.weekday() + 1) % 7   # Mon=0…Sun=6 → offset 1…0
+    most_recent_sunday = today - timedelta(days=days_since_sunday)
+    cutoff = most_recent_sunday - timedelta(weeks=weeks - 1)
+
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(_SQP_GLOBAL_STATUS_QUERY, {"cutoff": cutoff})
+                rows = cur.fetchall()
+
+        return jsonify({
+            "ok": True,
+            "weeks": weeks,
+            "rows": [
+                {
+                    "start_date":     str(r["start_date"]),
+                    "done_count":     r["done_count"],
+                    "not_done_count": r["not_done_count"],
+                    "total_count":    r["total_count"],
+                }
+                for r in rows
+            ],
         })
 
     except Exception as exc:
