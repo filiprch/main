@@ -197,6 +197,7 @@
     .sqp-stat-table .week-label { color: #94a3b8; font-size: .75rem; white-space: nowrap; }
     .sqp-done    { color: #4ade80; font-weight: 700; font-size: .82rem; }
     .sqp-notdone { color: #f87171; font-weight: 700; font-size: .82rem; }
+    .sqp-unable  { color: #64748b; font-size: .82rem; }
     .sqp-total   { color: #64748b; font-size: .78rem; }
 
     .pbar-wrap {
@@ -306,7 +307,7 @@
   </div>
   <div class="card-body" id="body-sqp-status">
     <div class="week-tabs">
-      <button class="btn btn-sm btn-ghost" id="sqp-ws-1"  onclick="loadSqpStatus(1)">This week</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-1"  onclick="loadSqpStatus(1)">Last week</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-4"  onclick="loadSqpStatus(4)">Last 4 weeks</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-8"  onclick="loadSqpStatus(8)">Last 8 weeks</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-12" onclick="loadSqpStatus(12)">Last 12 weeks</button>
@@ -955,21 +956,25 @@ function renderSqpStatusTable(rows) {
       <th>Week of (Sunday)</th>
       <th>Done</th>
       <th>Not Done</th>
+      <th>Unable</th>
       <th>Total</th>
       <th style="min-width:220px">Completion</th>
     </tr></thead><tbody>`;
 
   rows.forEach(row => {
-    const pct   = row.total_count > 0 ? Math.round((row.done_count / row.total_count) * 100) : 0;
+    const doneN    = row.done_count     || 0;
+    const notDoneN = row.not_done_count || 0;
+    const unableN  = row.unable_count   || 0;
+    const denominator = doneN + notDoneN;
+    const pct   = denominator > 0 ? Math.round((doneN / denominator) * 100) : 0;
     const color = pct >= 95 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
-    const d     = new Date(row.start_date + 'T12:00:00Z');
-    const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
     html += `<tr>
-      <td class="week-label mono">${esc(label)}</td>
-      <td class="sqp-done">${row.done_count.toLocaleString()}</td>
-      <td class="sqp-notdone">${row.not_done_count.toLocaleString()}</td>
-      <td class="sqp-total">${row.total_count.toLocaleString()}</td>
+      <td class="week-label mono">${esc(row.start_date)}</td>
+      <td class="sqp-done">${doneN.toLocaleString()}</td>
+      <td class="sqp-notdone">${notDoneN.toLocaleString()}</td>
+      <td class="sqp-unable">${unableN.toLocaleString()}</td>
+      <td class="sqp-total">${(row.total_count || 0).toLocaleString()}</td>
       <td>
         <div class="pbar-wrap">
           <div class="pbar-track">

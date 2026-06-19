@@ -314,9 +314,10 @@ def step4_cancel_report():
 _SQP_GLOBAL_STATUS_QUERY = """
     SELECT
         start_date,
-        COUNT(*) FILTER (WHERE status = 'DONE')  AS done_count,
-        COUNT(*) FILTER (WHERE status != 'DONE') AS not_done_count,
-        COUNT(*)                                  AS total_count
+        COUNT(*) FILTER (WHERE status = 'DONE')                                  AS done_count,
+        COUNT(*) FILTER (WHERE status NOT IN ('DONE','UNABLE_TO_GENERATE'))       AS not_done_count,
+        COUNT(*) FILTER (WHERE status = 'UNABLE_TO_GENERATE')                    AS unable_count,
+        COUNT(*)                                                                  AS total_count
     FROM amazon_report_info
     WHERE report_type = 'SQP_BY_ASIN_CONVERT'
       AND start_date >= %(cutoff)s
@@ -329,11 +330,13 @@ _SQP_GLOBAL_STATUS_QUERY = """
 def sqp_global_status():
     weeks = max(1, min(int(request.args.get("weeks", 4)), 52))
 
-    # start_date is always Sunday; find the most recent Sunday <= today
+    # start_date is always Sunday; SQP for a given week is only triggered on Tuesday.
+    # So the most recent week with data is the Sunday BEFORE the current one.
     today = date.today()
     days_since_sunday = (today.weekday() + 1) % 7   # Mon=0…Sun=6 → offset 1…0
     most_recent_sunday = today - timedelta(days=days_since_sunday)
-    cutoff = most_recent_sunday - timedelta(weeks=weeks - 1)
+    last_week_sunday = most_recent_sunday - timedelta(weeks=1)  # last completed week
+    cutoff = last_week_sunday - timedelta(weeks=weeks - 1)
 
     try:
         with get_db() as conn:
@@ -349,6 +352,7 @@ def sqp_global_status():
                     "start_date":     str(r["start_date"]),
                     "done_count":     r["done_count"],
                     "not_done_count": r["not_done_count"],
+                    "unable_count":   r["unable_count"],
                     "total_count":    r["total_count"],
                 }
                 for r in rows
