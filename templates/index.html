@@ -10,8 +10,35 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #0d0f1a; color: #e2e8f0; min-height: 100vh; padding: 1.5rem 2rem 6rem;
     }
-    h1 { font-size: 1.4rem; font-weight: 700; color: #f8fafc; }
-    .subtitle { font-size: .82rem; color: #475569; margin-bottom: 1.5rem; }
+    /* ── Dashboard layout ── */
+    .dash-header { display: flex; align-items: flex-end; gap: 1rem; margin-bottom: 2rem; }
+    h1 { font-size: 1.6rem; font-weight: 800; color: #f8fafc; letter-spacing: -.02em; }
+    .dash-sub { font-size: .8rem; color: #334155; margin-top: .25rem; }
+    .cards { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Card ── */
+    .card { background: #111320; border: 1px solid #1e2130; border-radius: 14px; overflow: hidden; }
+    .card-hdr {
+      display: flex; align-items: center; gap: 1rem;
+      padding: .9rem 1.25rem; cursor: pointer; user-select: none;
+      background: #161827; border-bottom: 1px solid #1e2130;
+      transition: background .12s;
+    }
+    .card-hdr:hover { background: #1a1f30; }
+    .card-hdr-left { display: flex; align-items: center; gap: .85rem; flex: 1; min-width: 0; }
+    .card-badge {
+      background: #3b4fd822; color: #818cf8; border: 1px solid #3b4fd844;
+      font-size: .62rem; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+      letter-spacing: .07em; white-space: nowrap; flex-shrink: 0;
+    }
+    .card-title { font-size: .9rem; font-weight: 700; color: #f1f5f9; }
+    .card-desc  { font-size: .75rem; color: #475569; margin-top: 2px; }
+    .card-fold  {
+      background: none; border: none; color: #475569; font-size: .85rem;
+      cursor: pointer; padding: 2px 7px; border-radius: 4px; flex-shrink: 0; line-height: 1;
+    }
+    .card-fold:hover { color: #94a3b8; background: #1e2130; }
+    .card-body { padding: 1.25rem 1.25rem 1.5rem; }
 
     .query-bar {
       display: flex; align-items: center; gap: 1rem;
@@ -158,8 +185,30 @@
 </head>
 <body>
 
-<h1>SQP Bot Dashboard</h1>
-<p class="subtitle">SQP report pipeline — manual operations</p>
+<div class="dash-header">
+  <div>
+    <h1>SQP Dashboard</h1>
+    <p class="dash-sub">Search Query Performance — operations hub</p>
+  </div>
+</div>
+
+<div class="cards">
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Stuck Queue — Cancel Reports
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-stuck-queue">
+  <div class="card-hdr" onclick="toggleCard('stuck-queue')">
+    <div class="card-hdr-left">
+      <span class="card-badge">STUCK QUEUE</span>
+      <div>
+        <div class="card-title">Cancel Stuck Reports</div>
+        <div class="card-desc">Find and cancel <code>SQP_BY_ASIN</code> reports stuck in Amazon's processing queue</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-stuck-queue">▼</button>
+  </div>
+  <div class="card-body" id="body-stuck-queue">
 
 <div class="query-bar">
   <span class="step-badge">STEP 1</span>
@@ -209,6 +258,11 @@
   </div>
   <div class="pagination" id="pagination"></div>
 </div>
+
+  </div><!-- /card-body: stuck-queue -->
+</div><!-- /card: stuck-queue -->
+
+</div><!-- /cards -->
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -809,6 +863,15 @@ function updateCell(spId) {
   const c3  = document.getElementById(`s3-${spId}`);
   if (c2) c2.innerHTML = renderToken(st);
   if (c3 && row) c3.innerHTML = renderQueue(st, row);
+}
+
+// ── Card fold/expand ──────────────────────────────────────────────────────────
+function toggleCard(id) {
+  const body = document.getElementById(`body-${id}`);
+  const btn  = document.getElementById(`fold-${id}`);
+  const open = !body.classList.contains('hidden');
+  body.classList.toggle('hidden', open);
+  if (btn) btn.textContent = open ? '▶' : '▼';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
