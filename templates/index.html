@@ -30,12 +30,13 @@
     }
     button.btn:disabled { opacity: .35; cursor: not-allowed; }
     button.btn:hover:not(:disabled) { opacity: .85; }
-    .btn-primary  { background: #3b4fd8; color: #fff; }
-    .btn-teal     { background: #0d9488; color: #fff; }
-    .btn-red      { background: #dc2626; color: #fff; }
-    .btn-ghost    { background: #1e2130; color: #94a3b8; border: 1px solid #2d3348; }
-    .btn-green    { background: #059669; color: #fff; }
-    .btn-sm       { padding: 2px 9px; font-size: .72rem; border-radius: 5px; }
+    .btn-primary { background: #3b4fd8; color: #fff; }
+    .btn-teal    { background: #0d9488; color: #fff; }
+    .btn-red     { background: #dc2626; color: #fff; }
+    .btn-ghost   { background: #1e2130; color: #94a3b8; border: 1px solid #2d3348; }
+    .btn-green   { background: #059669; color: #fff; }
+    .btn-orange  { background: #d97706; color: #fff; }
+    .btn-sm      { padding: 2px 9px; font-size: .72rem; border-radius: 5px; }
 
     .status-pill { display: flex; align-items: center; gap: .4rem; font-size: .78rem; color: #64748b; }
     .dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; flex-shrink: 0; }
@@ -54,7 +55,7 @@
       background: #0d0f1a; border: 1px solid #2d3348; border-radius: 6px;
       color: #cbd5e1; padding: 4px 9px; font-size: .78rem; outline: none;
     }
-    .controls-bar input[type="text"] { width: 180px; }
+    .controls-bar input[type="text"]   { width: 180px; }
     .controls-bar input[type="number"] { width: 90px; }
     .controls-bar input:focus { border-color: #3b4fd8; }
     .region-group { display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: #94a3b8; }
@@ -78,6 +79,7 @@
     tbody tr.data-row { border-bottom: 1px solid #161827; }
     tbody tr.data-row:hover { background: #1a1f30; }
     tbody tr.data-row.selected-row { background: #1a2044; }
+    tbody tr.data-row.warn-row { border-left: 3px solid #f59e0b; }
     tbody td { padding: .5rem .65rem; color: #cbd5e1; vertical-align: middle; }
     td.center { text-align: center; }
 
@@ -91,21 +93,25 @@
     .token-err  { color: #f87171; font-size: .72rem; }
     .token-idle { color: #334155; font-size: .72rem; }
 
-    .queue-chips { display: flex; gap: .3rem; flex-wrap: wrap; }
-    .qchip { font-size: .68rem; padding: 2px 7px; border-radius: 4px; font-weight: 600; cursor: pointer; }
-    .qchip.stuck   { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
-    .qchip.clear   { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .queue-chips { display: flex; gap: .3rem; flex-wrap: wrap; align-items: center; }
+    .qchip { font-size: .68rem; padding: 2px 7px; border-radius: 4px; font-weight: 600; }
+    .qchip.stuck   { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; cursor: pointer; }
+    .qchip.clear   { background: #14532d44; color: #4ade80; border: 1px solid #14532d; cursor: pointer; }
+    .qchip.warn    { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; cursor: pointer; }
     .qchip.pending { background: #1e2a1a44; color: #a3e635; border: 1px solid #365314; animation: pulse .7s ease-in-out infinite; }
-    .qchip.idle    { background: #1e2130; color: #475569; border: 1px solid #252a3a; cursor: default; }
+    .qchip.idle    { background: #1e2130; color: #475569; border: 1px solid #252a3a; }
+    .ar-badge {
+      display: inline-flex; align-items: center;
+      background: #05966922; color: #34d399; border: 1px solid #05966966;
+      border-radius: 4px; font-size: .64rem; font-weight: 700; padding: 1px 5px;
+    }
 
-    /* fold button on row */
     .fold-btn {
       background: none; border: none; color: #475569; font-size: .85rem;
       cursor: pointer; padding: 2px 6px; border-radius: 4px; line-height: 1;
     }
     .fold-btn:hover { color: #94a3b8; background: #1e2130; }
 
-    /* ── Detail panel ── */
     .detail-row td { padding: 0 !important; }
     .detail-inner { background: #111320; border-top: 1px solid #1e2130; padding: 1rem 1.25rem 1.25rem; }
     .detail-title { font-size: .7rem; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .75rem; }
@@ -120,9 +126,8 @@
     }
     .sec-label { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; flex: 1; }
     .sec-label.stuck { color: #f87171; }
-    .sec-label.clear { color: #4ade80; }
+    .sec-label.warn  { color: #fbbf24; }
     .toggle-ico { font-size: .75rem; color: #64748b; padding: 1px 5px; border-radius: 4px; flex-shrink: 0; }
-    .toggle-ico:hover { background: #1e2130; color: #94a3b8; }
 
     .report-list { max-height: 400px; overflow-y: auto; }
     .report-row {
@@ -135,6 +140,7 @@
     .retry-bar { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
     .retry-info { font-size: .7rem; color: #94a3b8; }
     .retry-info strong { color: #f8fafc; }
+    .countdown { color: #fbbf24 !important; font-weight: 600; }
 
     .pagination {
       display: flex; align-items: center; gap: .5rem;
@@ -176,8 +182,7 @@
       <label><input type="checkbox" id="f-r3" checked onchange="applyFilters()"> R3</label>
     </div>
     <div class="sep"></div>
-    <button class="btn btn-teal"  id="btn-s23"   onclick="runStep23()" disabled>Steps 2+3 — Exchange &amp; Check</button>
-    <button class="btn btn-ghost" id="btn-retry" onclick="toggleAutoRetry()">⟳ Auto-Retry: OFF</button>
+    <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Step 2 — Exchange &amp; Compare</button>
     <span class="sel-count" id="sel-count"><strong>0</strong> selected</span>
   </div>
 
@@ -206,30 +211,35 @@
 </div>
 
 <script>
-// ── Global state ──────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 let allRows      = [];
 let filteredRows = [];
 let sortKey      = 'stuck_reports_total';
 let sortDir      = -1;
 let selectedIds  = new Set();
 let currentPage  = 1;
-let autoRetry    = false;
 const PAGE       = 20;
 
 // sellerState[spId] = {
 //   tokenOk, token, tokenError,
-//   queue: { 1: { status, count, stuck:[], cleared:[] } },
+//   queue: { regionId: { status, count, stuck:[], cleared:[] } },
 //   cancelStatus: { reportId: 'idle'|'cancelling'|'cancelled'|'failed' },
-//   detailOpen, stuckOpen:{}, clearedOpen:{}
+//   detailOpen, stuckOpen:{}, clearedOpen:{},
+//   autoRetry: bool,   ← per seller
+//   cancelling: bool,  ← cancel-all loop running
+//   shouldStop: bool,  ← stop signal
+//   waitMsg: string|null
 // }
 const sellerState = {};
 
-// ── Auto-retry toggle ─────────────────────────────────────────────────────────
-function toggleAutoRetry() {
-  autoRetry = !autoRetry;
-  const btn = document.getElementById('btn-retry');
-  btn.textContent = `⟳ Auto-Retry: ${autoRetry ? 'ON' : 'OFF'}`;
-  btn.className = autoRetry ? 'btn btn-green' : 'btn btn-ghost';
+function initSt(spId) {
+  if (!sellerState[spId]) sellerState[spId] = {
+    tokenOk: null, token: null, tokenError: null,
+    queue: {}, cancelStatus: {},
+    detailOpen: false, stuckOpen: {}, clearedOpen: {},
+    autoRetry: false, cancelling: false, shouldStop: false, waitMsg: null,
+  };
+  return sellerState[spId];
 }
 
 // ── Step 1 ────────────────────────────────────────────────────────────────────
@@ -242,13 +252,7 @@ async function runQuery() {
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error);
     allRows = data.rows;
-    allRows.forEach(r => {
-      const id = String(r.amazon_selling_partner_id);
-      if (!sellerState[id]) sellerState[id] = {
-        tokenOk: null, token: null, queue: {}, cancelStatus: {},
-        detailOpen: false, stuckOpen: {}, clearedOpen: {}
-      };
-    });
+    allRows.forEach(r => initSt(String(r.amazon_selling_partner_id)));
     selectedIds.clear();
     currentPage = 1;
     applyFilters();
@@ -299,7 +303,6 @@ function sortRows() {
 
 // ── Render table ──────────────────────────────────────────────────────────────
 function renderTable() {
-  const tbody = document.getElementById('sellers-tbody');
   const start = (currentPage - 1) * PAGE;
   const rows  = filteredRows.slice(start, start + PAGE);
   let html = '';
@@ -308,11 +311,12 @@ function renderTable() {
     const sel    = selectedIds.has(spId);
     const st     = sellerState[spId] || {};
     const isHigh = row.stuck_reports_total >= 10;
+    const anyCleared = [1,2,3].some(r => (st.queue[r]?.cleared||[]).length > 0);
     html += `
-      <tr class="data-row ${sel ? 'selected-row' : ''}">
+      <tr class="data-row ${sel ? 'selected-row' : ''} ${anyCleared ? 'warn-row' : ''}">
         <td class="center"><input type="checkbox" ${sel?'checked':''} onchange="toggleRow('${esc(spId)}',this)"></td>
         <td class="mono">${start + i + 1}</td>
-        <td>${esc(row.seller_name)}</td>
+        <td>${anyCleared ? '<span style="color:#fbbf24;margin-right:4px" title="Some reports in DB are not in Amazon queue — re-request needed">⚠</span>' : ''}${esc(row.seller_name)}</td>
         <td class="mono">${esc(spId)}</td>
         <td><span class="badge badge-stuck ${isHigh?'high':''}">${row.stuck_reports_total}</span></td>
         <td><span class="badge badge-region">${row.region_1_count}</span></td>
@@ -341,54 +345,64 @@ function renderToken(st) {
 }
 
 function renderQueue(st, row) {
+  const spId    = String(row.amazon_selling_partner_id);
   const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
   if (!regions.length) return '<span class="token-idle">—</span>';
   if (!st.token && !st.tokenOk) return '<span class="token-idle">Need token first</span>';
-  const spId = String(row.amazon_selling_partner_id);
+
   const chips = regions.map(r => {
     const q = st.queue[r];
     if (!q) return `<span class="qchip idle">R${r}: ?</span>`;
     if (q.status === 'loading') return `<span class="qchip pending">R${r}: …</span>`;
     if (q.status === 'err') return `<span class="qchip idle" style="color:#f87171">R${r}: ✗</span>`;
     const n = (q.stuck||[]).length;
-    return `<span class="qchip ${n>0?'stuck':'clear'}" onclick="openDetail('${esc(spId)}')" title="Click to see details">R${r}: ${n} stuck</span>`;
+    return `<span class="qchip ${n>0?'stuck':'clear'}" onclick="openDetail('${esc(spId)}')" title="Click for details">R${r}: ${n} stuck</span>`;
   });
+
+  // Yellow warning — reports in DB not found in Amazon queue
+  const totalCleared = regions.reduce((s, r) => s + (st.queue[r]?.cleared||[]).length, 0);
+  if (totalCleared > 0) {
+    chips.push(`<span class="qchip warn" onclick="openDetail('${esc(spId)}')" title="Reports in DB not in Amazon queue — need re-request">⚠ ${totalCleared}</span>`);
+  }
+
+  // Per-seller auto-retry indicator
+  if (st.autoRetry) chips.push(`<span class="ar-badge">AR ON</span>`);
+
   return `<div class="queue-chips">${chips.join('')}</div>`;
 }
 
-// ── Detail inner ──────────────────────────────────────────────────────────────
+// ── Detail panel ──────────────────────────────────────────────────────────────
 function renderDetailInner(spId, row) {
-  const st = sellerState[spId] || {};
+  const st      = sellerState[spId] || {};
   const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
   const hasData = regions.some(r => st.queue[r]?.status === 'done');
-  if (!hasData) return `<span class="token-idle">Run Steps 2+3 to see comparison results.</span>`;
+  if (!hasData) return `<span class="token-idle">Run Step 2 — Exchange &amp; Compare to see results.</span>`;
 
   let html = `<div class="detail-title">Step 3 &amp; 4 — Queue Comparison &amp; Cancellation</div><div class="detail-regions">`;
   regions.forEach(regionId => {
     const q = st.queue[regionId];
     html += `<div class="region-block"><div class="region-title">Region ${regionId}</div>`;
     if (!q || q.status !== 'done') {
-      html += `<span class="token-idle">${!q ? 'Not checked' : q.status === 'loading' ? 'Loading…' : 'Error: ' + esc(q.error||'')}</span>`;
+      const msg = !q ? 'Not checked' : q.status === 'loading' ? 'Loading…' : 'Error: ' + esc(q.error||'');
+      html += `<span class="token-idle">${msg}</span>`;
     } else {
       const stuck   = q.stuck   || [];
       const cleared = q.cleared || [];
-      const stuckOpen   = st.stuckOpen[regionId]   !== false; // default open
-      const clearedOpen = st.clearedOpen[regionId] === true;  // default closed
+      const stuckOpen   = st.stuckOpen[regionId]   !== false;
+      const clearedOpen = st.clearedOpen[regionId] === true;
 
-      // — Stuck section —
       if (stuck.length > 0) {
         const cancelledN = stuck.filter(id => (st.cancelStatus||{})[id] === 'cancelled').length;
         const failedN    = stuck.filter(id => (st.cancelStatus||{})[id] === 'failed').length;
         const remainN    = stuck.length - cancelledN;
         html += `<div class="sec">
           <div class="sec-header" onclick="toggleStuck('${esc(spId)}',${regionId})">
-            <span class="sec-label stuck">🔴 Stuck in Amazon queue (${remainN}) — cancel to unblock</span>
+            <span class="sec-label stuck">🔴 Stuck in Amazon queue (${remainN})</span>
             <span class="toggle-ico">${stuckOpen ? '▼' : '▶'}</span>
           </div>
           <div id="stuck-list-${esc(spId)}-${regionId}" class="${stuckOpen?'':'hidden'}">
-            <div class="retry-bar">
-              <button class="btn btn-red btn-sm" onclick="cancelAll('${esc(spId)}',${regionId})">Cancel All (${remainN})</button>
-              ${failedN > 0 ? `<span class="retry-info"><strong>${failedN}</strong> failed — ${autoRetry ? 'auto-retry ON' : 'enable Auto-Retry or retry manually'}</span>` : ''}
+            <div class="retry-bar" id="retry-bar-${esc(spId)}-${regionId}">
+              ${retryBarHTML(spId, regionId, remainN, failedN, st)}
             </div>
             <div class="report-list">
               ${stuck.map(id => renderReportRow(id, spId, regionId)).join('')}
@@ -397,11 +411,10 @@ function renderDetailInner(spId, row) {
         </div>`;
       }
 
-      // — Cleared section —
       if (cleared.length > 0) {
         html += `<div class="sec">
           <div class="sec-header" onclick="toggleCleared('${esc(spId)}',${regionId})">
-            <span class="sec-label clear">✅ Not in Amazon queue anymore (${cleared.length})</span>
+            <span class="sec-label warn">⚠ Not in Amazon queue — re-request needed (${cleared.length})</span>
             <span class="toggle-ico">${clearedOpen ? '▼' : '▶'}</span>
           </div>
           <div id="cleared-list-${esc(spId)}-${regionId}" class="${clearedOpen?'':'hidden'}">
@@ -416,26 +429,48 @@ function renderDetailInner(spId, row) {
     }
     html += `</div>`;
   });
-  html += `</div>`;
-  return html;
+  return html + `</div>`;
+}
+
+function retryBarHTML(spId, regionId, remainN, failedN, st) {
+  const arBtn = `<button class="btn btn-sm ${st.autoRetry ? 'btn-green' : 'btn-ghost'}"
+    onclick="toggleSellerAutoRetry('${esc(spId)}')" title="${st.autoRetry ? 'Auto-retry ON — click to disable' : 'Enable auto-retry for this seller'}">
+    ⟳ Auto: ${st.autoRetry ? 'ON' : 'OFF'}</button>`;
+
+  const stopBtn = st.cancelling
+    ? `<button class="btn btn-sm btn-orange" onclick="stopCancelling('${esc(spId)}')">■ Stop</button>`
+    : '';
+
+  const cancelBtn = `<button class="btn btn-red btn-sm"
+    onclick="cancelAll('${esc(spId)}',${regionId})"
+    ${st.cancelling ? 'disabled' : ''}
+    >Cancel All (${remainN})</button>`;
+
+  let info = '';
+  if (st.waitMsg) {
+    info = `<span class="retry-info countdown">${esc(st.waitMsg)}</span>`;
+  } else if (failedN > 0 && !st.cancelling) {
+    info = `<span class="retry-info"><strong>${failedN}</strong> failed</span>`;
+  }
+
+  return cancelBtn + arBtn + stopBtn + info;
 }
 
 function renderReportRow(id, spId, regionId) {
-  const st = sellerState[spId] || {};
+  const st     = sellerState[spId] || {};
   const status = (st.cancelStatus||{})[id] || 'idle';
-  const statusMap = {
+  const statusHTML = {
     idle:       '',
     cancelling: `<span style="color:#f59e0b">cancelling…</span>`,
     cancelled:  `<span style="color:#4ade80">✓ Cancelled</span>`,
     failed:     `<span style="color:#f87171">✗ Failed</span>`,
-  };
+  }[status] || '';
+  const busy = status === 'cancelling' || st.cancelling;
   return `<div class="report-row" id="rr-${esc(id)}">
     <span class="mono">${esc(id)}</span>
-    <span class="r-status" id="rs-${esc(id)}">${statusMap[status]}</span>
+    <span class="r-status">${statusHTML}</span>
     ${status !== 'cancelled'
-      ? `<button class="btn btn-red btn-sm" id="rb-${esc(id)}"
-           onclick="cancelOne('${esc(spId)}',${regionId},'${esc(id)}')"
-           ${status==='cancelling'?'disabled':''}>Cancel</button>`
+      ? `<button class="btn btn-red btn-sm" onclick="cancelOne('${esc(spId)}',${regionId},'${esc(id)}')" ${busy?'disabled':''}>Cancel</button>`
       : ''}
   </div>`;
 }
@@ -450,7 +485,6 @@ function renderPagination() {
     <span>Page ${currentPage} / ${pages} &nbsp;·&nbsp; ${total} results</span>
     <button onclick="goPage(${currentPage+1})" ${currentPage>=pages?'disabled':''}>Next &rarr;</button>`;
 }
-
 function goPage(p) { currentPage = p; renderTable(); window.scrollTo(0,0); }
 
 // ── Selection ─────────────────────────────────────────────────────────────────
@@ -474,34 +508,34 @@ function updateSelCount() {
   document.getElementById('btn-s23').disabled = n === 0;
 }
 
-// ── Detail fold ───────────────────────────────────────────────────────────────
+// ── Fold / expand ─────────────────────────────────────────────────────────────
 function toggleDetail(spId) {
   const st = sellerState[spId] || {};
   st.detailOpen = !st.detailOpen;
   const row = document.getElementById(`detail-${spId}`);
   if (row) row.classList.toggle('hidden', !st.detailOpen);
-  // update fold button icon
   const btn = [...document.querySelectorAll('.fold-btn')].find(b => b.getAttribute('onclick') === `toggleDetail('${spId}')`);
   if (btn) btn.textContent = st.detailOpen ? '▼' : '▶';
 }
 function openDetail(spId) {
   const st = sellerState[spId] || {};
+  if (st.detailOpen) return;
   st.detailOpen = true;
   const row = document.getElementById(`detail-${spId}`);
   if (row) row.classList.remove('hidden');
+  const btn = [...document.querySelectorAll('.fold-btn')].find(b => b.getAttribute('onclick') === `toggleDetail('${spId}')`);
+  if (btn) btn.textContent = '▼';
 }
-
 function toggleStuck(spId, regionId) {
   const st = sellerState[spId] || {};
   if (!st.stuckOpen) st.stuckOpen = {};
-  st.stuckOpen[regionId] = st.stuckOpen[regionId] === false ? true : false; // toggle (default true)
+  const cur = st.stuckOpen[regionId] !== false;
+  st.stuckOpen[regionId] = !cur;
   const el = document.getElementById(`stuck-list-${spId}-${regionId}`);
-  if (el) el.classList.toggle('hidden', !st.stuckOpen[regionId]);
-  // update toggle icon
+  if (el) el.classList.toggle('hidden', cur);
   const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
-  if (row) refreshDetailDOM(spId, row);
+  if (row) refreshDetail(spId, row);
 }
-
 function toggleCleared(spId, regionId) {
   const st = sellerState[spId] || {};
   if (!st.clearedOpen) st.clearedOpen = {};
@@ -509,85 +543,249 @@ function toggleCleared(spId, regionId) {
   const el = document.getElementById(`cleared-list-${spId}-${regionId}`);
   if (el) el.classList.toggle('hidden', !st.clearedOpen[regionId]);
   const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
-  if (row) refreshDetailDOM(spId, row);
+  if (row) refreshDetail(spId, row);
 }
-
-function refreshDetailDOM(spId, row) {
+function refreshDetail(spId, row) {
   const el = document.getElementById(`di-${spId}`);
   if (el) el.innerHTML = renderDetailInner(spId, row);
 }
 
-// ── Combined Steps 2+3 ────────────────────────────────────────────────────────
+// ── Per-seller auto-retry toggle ──────────────────────────────────────────────
+function toggleSellerAutoRetry(spId) {
+  const st = sellerState[spId] || {};
+  st.autoRetry = !st.autoRetry;
+  if (!st.autoRetry) st.shouldStop = true; // signal running loop to stop
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) { refreshDetail(spId, row); updateCell(spId); }
+}
+
+function stopCancelling(spId) {
+  const st = sellerState[spId] || {};
+  st.shouldStop = true;
+  st.autoRetry  = false;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) { refreshDetail(spId, row); updateCell(spId); }
+}
+
+// ── Step 2+3 per seller ───────────────────────────────────────────────────────
+async function step23ForSeller(spId, row) {
+  const st = initSt(spId);
+
+  // Step 2 — exchange token
+  const c2 = document.getElementById(`s2-${spId}`);
+  if (c2) c2.innerHTML = `<span class="token-idle">Exchanging…</span>`;
+  try {
+    const resp = await fetch(`/api/step2/exchange-token?sp_id=${encodeURIComponent(spId)}`);
+    const data = await resp.json();
+    st.tokenOk    = data.ok;
+    st.token      = data.ok ? data.access_token : null;
+    st.tokenError = data.ok ? null : data.error;
+  } catch(e) {
+    st.tokenOk = false; st.tokenError = e.message;
+  }
+  updateCell(spId);
+  if (!st.tokenOk) return false;
+
+  // Step 3 — check queue + compare per region
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+  regions.forEach(r => { st.queue[r] = { status: 'loading' }; });
+  updateCell(spId);
+
+  await Promise.all(regions.map(async regionId => {
+    try {
+      const url = `/api/step3/check-queue?sp_id=${encodeURIComponent(spId)}&region_id=${regionId}&access_token=${encodeURIComponent(st.token)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.ok) {
+        const newStuck = data.stuck_in_amazon || [];
+        // Preserve 'cancelled' status; reset 'failed' to 'idle' for re-runs
+        newStuck.forEach(id => {
+          if (!st.cancelStatus[id] || st.cancelStatus[id] === 'failed') {
+            st.cancelStatus[id] = 'idle';
+          }
+        });
+        st.queue[regionId] = { status: 'done', count: data.amazon_count, stuck: newStuck, cleared: data.cleared_from_amazon || [] };
+      } else {
+        st.queue[regionId] = { status: 'err', error: data.error };
+      }
+    } catch(e) {
+      st.queue[regionId] = { status: 'err', error: e.message };
+    }
+    updateCell(spId);
+    if (st.detailOpen) refreshDetail(spId, row);
+  }));
+
+  const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+  if (anyStuck) { openDetail(spId); refreshDetail(spId, row); }
+  return true;
+}
+
 async function runStep23() {
   document.getElementById('btn-s23').disabled = true;
   for (const spId of [...selectedIds]) {
     const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
     if (!row) continue;
-    const st = sellerState[spId] || (sellerState[spId] = { tokenOk:null, token:null, queue:{}, cancelStatus:{}, detailOpen:false, stuckOpen:{}, clearedOpen:{} });
+    const st  = initSt(spId);
+    const ok  = await step23ForSeller(spId, row);
 
-    // Step 2 — exchange token
-    updateCell(spId); // refresh display
-    const c2 = document.getElementById(`s2-${spId}`);
-    if (c2) c2.innerHTML = `<span class="token-idle">Exchanging…</span>`;
-    try {
-      const resp = await fetch(`/api/step2/exchange-token?sp_id=${encodeURIComponent(spId)}`);
-      const data = await resp.json();
-      st.tokenOk    = data.ok;
-      st.token      = data.ok ? data.access_token : null;
-      st.tokenError = data.ok ? null : data.error;
-    } catch(e) {
-      st.tokenOk = false; st.tokenError = e.message;
+    // If auto-retry ON and stuck found → auto-start cancellations
+    if (ok && st.autoRetry) {
+      const regions  = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+      const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+      if (anyStuck) await runAutoRetryLoop(spId, row);
     }
-    updateCell(spId);
-    if (!st.tokenOk) continue;
-
-    // Step 3 — check queue + compare per region
-    const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
-    regions.forEach(r => { st.queue[r] = { status:'loading' }; });
-    updateCell(spId);
-
-    await Promise.all(regions.map(async (regionId) => {
-      try {
-        const url = `/api/step3/check-queue?sp_id=${encodeURIComponent(spId)}&region_id=${regionId}&access_token=${encodeURIComponent(st.token)}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
-        st.queue[regionId] = data.ok
-          ? { status:'done', count:data.amazon_count, stuck:data.stuck_in_amazon||[], cleared:data.cleared_from_amazon||[] }
-          : { status:'err', error: data.error };
-      } catch(e) {
-        st.queue[regionId] = { status:'err', error: e.message };
-      }
-      updateCell(spId);
-      if (st.detailOpen) refreshDetailDOM(spId, row);
-    }));
-
-    // auto-open detail if stuck reports found
-    const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
-    if (anyStuck) { openDetail(spId); refreshDetailDOM(spId, row); }
   }
   document.getElementById('btn-s23').disabled = selectedIds.size === 0;
 }
 
-function updateCell(spId) {
-  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
-  const st  = sellerState[spId] || {};
-  const c2  = document.getElementById(`s2-${spId}`);
-  const c3  = document.getElementById(`s3-${spId}`);
-  if (c2) c2.innerHTML = renderToken(st);
-  if (c3 && row) c3.innerHTML = renderQueue(st, row);
+// ── Auto-retry coordinator ────────────────────────────────────────────────────
+async function runAutoRetryLoop(spId, row) {
+  const st      = initSt(spId);
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+
+  st.cancelling = true;
+  st.shouldStop = false;
+  refreshDetail(spId, row);
+
+  // Cancel all stuck regions (with 30s retry on failures)
+  for (const regionId of regions) {
+    if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop) {
+      await cancelAllWithRetry(spId, regionId);
+    }
+  }
+
+  if (st.shouldStop || !st.autoRetry) {
+    st.cancelling = false;
+    refreshDetail(spId, row);
+    updateCell(spId);
+    return;
+  }
+
+  // Re-run step 2+3 to see if more stuck appeared
+  st.waitMsg = 'Re-checking queue after cancellations…';
+  refreshDetail(spId, row);
+  await step23ForSeller(spId, row);
+  st.waitMsg = null;
+
+  const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+  if (!anyStuck) {
+    // All done — turn off auto-retry
+    st.autoRetry  = false;
+    st.cancelling = false;
+    refreshDetail(spId, row);
+    updateCell(spId);
+    return;
+  }
+
+  // Still stuck — one more cancel round, then turn off
+  for (const regionId of regions) {
+    if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop && st.autoRetry) {
+      await cancelAllWithRetry(spId, regionId);
+    }
+  }
+
+  st.autoRetry  = false;
+  st.cancelling = false;
+  st.waitMsg    = null;
+  refreshDetail(spId, row);
+  updateCell(spId);
 }
 
-// ── Step 4 — cancel ───────────────────────────────────────────────────────────
+// Cancel one region with 30s retry loops on failures
+async function cancelAllWithRetry(spId, regionId) {
+  const st = initSt(spId);
+  await doCancelPass(spId, regionId);
+
+  let noProgress = 0;
+  while (st.autoRetry && !st.shouldStop && noProgress < 3) {
+    const failed = (st.queue[regionId]?.stuck || []).filter(id => st.cancelStatus[id] === 'failed');
+    if (!failed.length) break;
+
+    // 30-second countdown
+    for (let i = 30; i > 0; i--) {
+      if (st.shouldStop || !st.autoRetry) break;
+      st.waitMsg = `R${regionId}: retry in ${i}s…`;
+      updateRetryBar(spId, regionId);
+      await sleep(1000);
+    }
+    st.waitMsg = null;
+    if (st.shouldStop || !st.autoRetry) break;
+
+    // Reset failed → idle and retry
+    const beforeFailed = failed.filter(id => st.cancelStatus[id] === 'failed');
+    beforeFailed.forEach(id => { st.cancelStatus[id] = 'idle'; });
+    await doCancelPass(spId, regionId);
+
+    const stillFailed = beforeFailed.filter(id => st.cancelStatus[id] === 'failed').length;
+    noProgress = stillFailed < beforeFailed.length ? 0 : noProgress + 1;
+  }
+  st.waitMsg = null;
+}
+
+// One cancel pass (no retry)
+async function doCancelPass(spId, regionId) {
+  const st      = initSt(spId);
+  const pending = (st.queue[regionId]?.stuck || [])
+    .filter(id => (st.cancelStatus[id] || 'idle') !== 'cancelled');
+  for (const id of pending) {
+    if (st.shouldStop) break;
+    await cancelOne(spId, regionId, id);
+    await sleep(300);
+  }
+}
+
+// ── Manual Cancel All ─────────────────────────────────────────────────────────
+async function cancelAll(spId, regionId) {
+  const st = initSt(spId);
+  if (st.cancelling) return;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+
+  st.cancelling = true;
+  st.shouldStop = false;
+  refreshDetail(spId, row);
+
+  if (st.autoRetry) {
+    // Full loop: cancel → 30s retry → re-check → cancel again → done
+    await cancelAllWithRetry(spId, regionId);
+
+    if (!st.shouldStop && st.autoRetry) {
+      const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+      st.waitMsg = 'Re-checking queue…';
+      updateRetryBar(spId, regionId);
+      await step23ForSeller(spId, row);
+      st.waitMsg = null;
+
+      const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+      if (anyStuck) {
+        for (const r of regions) {
+          if ((st.queue[r]?.stuck||[]).length > 0 && !st.shouldStop && st.autoRetry) {
+            await cancelAllWithRetry(spId, r);
+          }
+        }
+      }
+      st.autoRetry = false;
+    }
+  } else {
+    // Simple single pass
+    await doCancelPass(spId, regionId);
+  }
+
+  st.cancelling = false;
+  st.waitMsg    = null;
+  refreshDetail(spId, row);
+  updateCell(spId);
+}
+
+// ── Step 4 — cancel one report ────────────────────────────────────────────────
 async function cancelOne(spId, regionId, reportId) {
-  const st = sellerState[spId] || {};
-  if (!st.cancelStatus) st.cancelStatus = {};
+  const st = initSt(spId);
   st.cancelStatus[reportId] = 'cancelling';
   updateReportRow(reportId, spId, regionId);
 
   try {
     const resp = await fetch('/api/step4/cancel-report', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report_id: reportId, access_token: st.token, region_id: regionId }),
     });
     const data = await resp.json();
@@ -601,66 +799,35 @@ async function cancelOne(spId, regionId, reportId) {
 
   updateReportRow(reportId, spId, regionId);
   updateCell(spId);
-  updateCancelAllBtn(spId, regionId);
+  updateRetryBar(spId, regionId);
 }
 
 function updateReportRow(reportId, spId, regionId) {
   const el = document.getElementById(`rr-${reportId}`);
-  if (el) {
-    const st = sellerState[spId] || {};
-    el.outerHTML = renderReportRow(reportId, spId, regionId);
-  }
+  if (el) el.outerHTML = renderReportRow(reportId, spId, regionId);
 }
 
-function updateCancelAllBtn(spId, regionId) {
-  const st     = sellerState[spId] || {};
-  const q      = st.queue[regionId] || {};
-  const stuck  = q.stuck || [];
-  const remainN = stuck.filter(id => (st.cancelStatus||{})[id] !== 'cancelled').length;
-  // Update the Cancel All button text
-  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
-  const retryBar = document.querySelector(`#stuck-list-${spId}-${regionId} .retry-bar`);
-  if (retryBar && row) {
-    const failedN = stuck.filter(id => (st.cancelStatus||{})[id] === 'failed').length;
-    retryBar.innerHTML = `
-      <button class="btn btn-red btn-sm" onclick="cancelAll('${esc(spId)}',${regionId})">Cancel All (${remainN})</button>
-      ${failedN > 0 ? `<span class="retry-info"><strong>${failedN}</strong> failed</span>` : ''}`;
-  }
-}
-
-async function cancelAll(spId, regionId) {
-  const st = sellerState[spId] || {};
-  if (!st.cancelStatus) st.cancelStatus = {};
-
-  const getPending = () => (st.queue[regionId]?.stuck || [])
-    .filter(id => (st.cancelStatus[id] || 'idle') !== 'cancelled');
-
-  let pending = getPending();
-  // First pass
-  for (const id of pending) {
-    await cancelOne(spId, regionId, id);
-    await sleep(300);
-  }
-
-  // Auto-retry loop
-  if (autoRetry) {
-    let noProgressRounds = 0;
-    while (autoRetry && noProgressRounds < 3) {
-      const failed = (st.queue[regionId]?.stuck || []).filter(id => st.cancelStatus[id] === 'failed');
-      if (!failed.length) break;
-      await sleep(2000);
-      let progress = 0;
-      for (const id of failed) {
-        await cancelOne(spId, regionId, id);
-        await sleep(300);
-        if (st.cancelStatus[id] === 'cancelled') progress++;
-      }
-      noProgressRounds = progress > 0 ? 0 : noProgressRounds + 1;
-    }
-  }
+function updateRetryBar(spId, regionId) {
+  const el = document.getElementById(`retry-bar-${spId}-${regionId}`);
+  if (!el) return;
+  const st      = sellerState[spId] || {};
+  const stuck   = st.queue[regionId]?.stuck || [];
+  const cancelledN = stuck.filter(id => (st.cancelStatus||{})[id] === 'cancelled').length;
+  const failedN    = stuck.filter(id => (st.cancelStatus||{})[id] === 'failed').length;
+  const remainN    = stuck.length - cancelledN;
+  el.innerHTML = retryBarHTML(spId, regionId, remainN, failedN, st);
 }
 
 // ── Util ──────────────────────────────────────────────────────────────────────
+function updateCell(spId) {
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  const st  = sellerState[spId] || {};
+  const c2  = document.getElementById(`s2-${spId}`);
+  const c3  = document.getElementById(`s3-${spId}`);
+  if (c2) c2.innerHTML = renderToken(st);
+  if (c3 && row) c3.innerHTML = renderQueue(st, row);
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function setQS(state, text) {
   document.getElementById('dot-query').className = 'dot ' + state;
