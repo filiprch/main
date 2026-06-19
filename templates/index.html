@@ -737,41 +737,45 @@ async function runAutoRetryLoop(spId, row) {
   updateCell(spId);
 }
 
-// AFTER 2 FAILS - GO 3
-// On 2nd failure: 30s cooldown → continue from the NEXT report, not restart.
-// Failed reports are picked up in the next coordinator round after Step 2+3 re-check.
+// Cancel region: pause 30s after every 2nd failure, then restart from beginning.
+// With auto-retry OFF: single pass, no waits.
 async function cancelAllWithRetry(spId, regionId) {
   const st    = initSt(spId);
   const stuck = st.queue[regionId]?.stuck || [];
-  let failCount = 0;
-  let pauses    = 0;
-  const MAX_PAUSES = 8;
+  let failCount  = 0;
+  let restarts   = 0;
+  const MAX_RESTARTS = 8; // hard stop after N × 30s pauses
 
   for (let i = 0; i < stuck.length; i++) {
     if (st.shouldStop) break;
 
     const id = stuck[i];
-    if (st.cancelStatus[id] === 'cancelled') continue;
+    if ((st.cancelStatus[id] || 'idle') === 'cancelled') continue;
 
     await cancelOne(spId, regionId, id);
     await sleep(300);
 
     if (st.cancelStatus[id] === 'failed') {
       failCount++;
-      if (failCount >= 2 && st.autoRetry && pauses < MAX_PAUSES) {
-        pauses++;
+      if (failCount >= 2 && st.autoRetry && restarts < MAX_RESTARTS) {
+        restarts++;
         failCount = 0;
 
-        // 30s cooldown — then continue from i+1 (next report, not restart)
+        // 30-second countdown before retry
         for (let sec = 30; sec > 0; sec--) {
           if (st.shouldStop || !st.autoRetry) break;
-          st.waitMsg = `2 failures — continuing in ${sec}s…`;
+          st.waitMsg = `2 failures — retrying in ${sec}s…`;
           updateRetryBar(spId, regionId);
           await sleep(1000);
         }
         st.waitMsg = null;
         if (st.shouldStop || !st.autoRetry) break;
-        // i unchanged → loop will increment to i+1 (next report)
+
+        // Reset all failed → idle and restart list from top
+        stuck.forEach(pid => {
+          if (st.cancelStatus[pid] === 'failed') st.cancelStatus[pid] = 'idle';
+        });
+        i = -1; // will be incremented to 0
       }
     }
   }
