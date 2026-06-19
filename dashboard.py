@@ -36,6 +36,8 @@ SP_REGION_CONFIG = {
 
 PAGE_SIZE = 20
 
+# ── Queries ──────────────────────────────────────────────────────────────────
+
 _SQP_STUCK_QUERY = """
     SELECT
         ari.amazon_selling_partner_id,
@@ -73,6 +75,17 @@ _SQP_STUCK_COUNT = """
     ) sub
 """
 
+_DB_REPORT_IDS = """
+    SELECT amazon_requested_report_id
+    FROM amazon_report_info
+    WHERE report_type = 'SQP_BY_ASIN'
+      AND amazon_selling_partner_id = %(sp_id)s
+      AND amazon_region_id = %(region_id)s
+      AND status NOT IN ('DONE','UNABLE_TO_GENERATE','REPORT_GENERATED_BY_AMAZON','DOWNLOADING_REPORT')
+      AND amazon_requested_report_id IS NOT NULL
+"""
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def get_db():
     return psycopg2.connect(**DB_CONFIG)
@@ -93,17 +106,33 @@ def lwa_exchange(refresh_token: str) -> dict:
     return {"status_code": resp.status_code, "body": resp.json()}
 
 
+def sp_auth(aws_region: str):
+    from requests_aws4auth import AWS4Auth
+    return AWS4Auth(
+        os.environ.get("AWS_ACCESS_KEY_ID", ""),
+        os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+        aws_region,
+        "execute-api",
+        session_token=os.environ.get("AWS_SESSION_TOKEN") or None,
+    )
+
+
+def sp_headers(access_token: str) -> dict:
+    return {"Accept": "application/json", "x-amz-access-token": access_token}
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# ── Step 1: DB query ────────────────────────────────────────────────────────
-
+# Step 1 — DB query
 @app.route("/api/step1/sqp-stuck")
 def step1_sqp_stuck():
-    page = max(1, int(request.args.get("page", 1)))
     load_all = request.args.get("all") == "true"
+    page     = max(1, int(request.args.get("page", 1)))
 
     try:
         with get_db() as conn:
@@ -127,9 +156,7 @@ def step1_sqp_stuck():
             rows_list.append(r)
 
         return jsonify({
-            "ok": True,
-            "total": total,
-            "page": page,
+            "ok": True, "total": total, "page": page,
             "page_size": len(rows_list) if load_all else PAGE_SIZE,
             "total_pages": 1 if load_all else max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE),
             "rows": rows_list,
@@ -139,8 +166,7 @@ def step1_sqp_stuck():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-# ── Step 2: exchange refresh token → LWA access token ───────────────────────
-
+# Step 2 — exchange refresh token → LWA access token (per seller)
 @app.route("/api/step2/exchange-token")
 def step2_exchange_token():
     sp_id = request.args.get("sp_id")
@@ -166,27 +192,23 @@ def step2_exchange_token():
 
         result = lwa_exchange(refresh_token)
         if result["status_code"] == 200:
-            access_token = result["body"].get("access_token", "")
             return jsonify({
                 "ok": True,
-                "access_token": access_token,
-                "expires_in": result["body"].get("expires_in"),
+                "access_token": result["body"].get("access_token", ""),
+                "expires_in":   result["body"].get("expires_in"),
             })
-        return jsonify({
-            "ok": False,
-            "error": f"LWA {result['status_code']}: {result['body']}",
-        }), 400
+        return jsonify({"ok": False, "error": f"LWA {result['status_code']}: {result['body']}"}), 400
 
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-# ── Step 3: check Amazon SP-API reports queue ────────────────────────────────
-
+# Step 3 — check Amazon queue + compare with DB report IDs
 @app.route("/api/step3/check-queue")
 def step3_check_queue():
     access_token = request.args.get("access_token", "")
     region_id    = int(request.args.get("region_id", 1))
+    sp_id        = request.args.get("sp_id", "")
 
     if not access_token:
         return jsonify({"ok": False, "error": "access_token required"}), 400
@@ -196,41 +218,90 @@ def step3_check_queue():
         return jsonify({"ok": False, "error": f"Unknown region_id {region_id}"}), 400
 
     try:
-        from requests_aws4auth import AWS4Auth
-
-        aws_key    = os.environ.get("AWS_ACCESS_KEY_ID",     "")
-        aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        aws_token  = os.environ.get("AWS_SESSION_TOKEN")
         aws_region = os.environ.get("AWS_REGION", config["aws_region"])
+        auth = sp_auth(aws_region)
 
-        auth = AWS4Auth(aws_key, aws_secret, aws_region, "execute-api",
-                        session_token=aws_token or None)
-
-        url = f"https://{config['endpoint']}/reports/2021-06-30/reports"
+        # 1. Get Amazon IN_QUEUE reports
         resp = http_requests.get(
-            url,
+            f"https://{config['endpoint']}/reports/2021-06-30/reports",
             params={
                 "reportTypes":        "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT",
                 "processingStatuses": "IN_QUEUE",
                 "pageSize":           100,
             },
             auth=auth,
-            headers={
-                "Accept":             "application/json",
-                "x-amz-access-token": access_token,
-            },
+            headers=sp_headers(access_token),
             timeout=30,
         )
 
+        if resp.status_code != 200:
+            return jsonify({
+                "ok": False, "status_code": resp.status_code,
+                "error": str(resp.json().get("errors", resp.text)),
+            }), 400
+
         data = resp.json()
-        reports = data.get("reports", [])
+        amazon_reports  = data.get("reports", [])
+        amazon_id_set   = {r["reportId"] for r in amazon_reports}
+
+        # 2. Get DB report IDs for this seller+region
+        db_ids = []
+        if sp_id:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_DB_REPORT_IDS, {"sp_id": sp_id, "region_id": region_id})
+                    db_ids = [row[0] for row in cur.fetchall()]
+
+        db_id_set = set(db_ids)
+
+        # 3. Compare
+        stuck_in_amazon     = [i for i in db_ids if i in amazon_id_set]      # in DB + in Amazon → cancel
+        cleared_from_amazon = [i for i in db_ids if i not in amazon_id_set]  # in DB, gone from Amazon
 
         return jsonify({
-            "ok":         resp.status_code == 200,
+            "ok":                   True,
+            "amazon_count":         len(amazon_reports),
+            "db_count":             len(db_ids),
+            "stuck_in_amazon":      stuck_in_amazon,
+            "cleared_from_amazon":  cleared_from_amazon,
+            "next_token":           data.get("nextToken"),
+        })
+
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# Step 4 — cancel a report from Amazon queue
+@app.route("/api/step4/cancel-report", methods=["POST"])
+def step4_cancel_report():
+    body         = request.get_json() or {}
+    report_id    = body.get("report_id", "")
+    access_token = body.get("access_token", "")
+    region_id    = int(body.get("region_id", 1))
+
+    if not report_id or not access_token:
+        return jsonify({"ok": False, "error": "report_id and access_token required"}), 400
+
+    config = SP_REGION_CONFIG.get(region_id)
+    if not config:
+        return jsonify({"ok": False, "error": f"Unknown region_id {region_id}"}), 400
+
+    try:
+        aws_region = os.environ.get("AWS_REGION", config["aws_region"])
+        auth = sp_auth(aws_region)
+
+        resp = http_requests.delete(
+            f"https://{config['endpoint']}/reports/2021-06-30/reports/{report_id}",
+            auth=auth,
+            headers=sp_headers(access_token),
+            timeout=30,
+        )
+
+        ok = resp.status_code in (200, 204)
+        return jsonify({
+            "ok":          ok,
             "status_code": resp.status_code,
-            "count":      len(reports),
-            "next_token": data.get("nextToken"),
-            "error":      str(data.get("errors", "")) if resp.status_code != 200 else None,
+            "error":       None if ok else str(resp.json().get("errors", resp.text)),
         })
 
     except Exception as exc:
