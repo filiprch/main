@@ -811,14 +811,14 @@ async function cancelAllWithRetry(spId, regionId) {
 
     if (st.cancelStatus[id] === 'failed') {
       failCount++;
-      if (failCount >= 2 && st.autoRetry && restarts < MAX_RESTARTS) {
+      if (failCount >= 3 && st.autoRetry && restarts < MAX_RESTARTS) {
         restarts++;
         failCount = 0;
 
-        // 30-second countdown before retry
-        for (let sec = 30; sec > 0; sec--) {
+        // 60-second countdown before retry
+        for (let sec = 60; sec > 0; sec--) {
           if (st.shouldStop || !st.autoRetry) break;
-          st.waitMsg = `2 failures — retrying in ${sec}s…`;
+          st.waitMsg = `3 failures — retrying in ${sec}s…`;
           updateRetryBar(spId, regionId);
           await sleep(1000);
         }
