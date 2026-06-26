@@ -1,0 +1,6 @@
+# Copy to `.dev.vars` for local `wrangler dev`. NEVER commit `.dev.vars`.
+# In production these are set with `wrangler secret put <NAME>`.
+
+INTERCOM_CLIENT_SECRET = "your-intercom-app-client-secret"
+INTERCOM_TOKEN = "your-intercom-access-token"
+YOUTRACK_TOKEN = "perm:your-youtrack-permanent-token"

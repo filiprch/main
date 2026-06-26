@@ -1,0 +1,6 @@
+# Copy to `.dev.vars` for local `wrangler dev`. NEVER commit `.dev.vars`.
+# In production these are set with `wrangler secret put <NAME>`.
+
+SLACK_SIGNING_SECRET = "your-slack-signing-secret"
+SLACK_BOT_TOKEN = "xoxb-your-bot-token"
+YOUTRACK_TOKEN = "perm:your-youtrack-permanent-token"

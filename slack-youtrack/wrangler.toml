@@ -1,0 +1,19 @@
+name = "slack-youtrack"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Non-secret configuration. Tokens are NOT stored here — set them with
+# `wrangler secret put <NAME>` (see README).
+[vars]
+YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
+YOUTRACK_PROJECT_ID = "CS"
+# Comma-separated Slack channel IDs to monitor (customer channels only).
+# Find a channel ID via right-click channel → View channel details (bottom).
+CUSTOMER_CHANNEL_IDS = ""
+
+# Optional: a KV namespace for deduping Slack event retries across isolates.
+# Create with: wrangler kv namespace create DEDUPE
+# then uncomment and paste the returned id.
+# [[kv_namespaces]]
+# binding = "DEDUPE"
+# id = "<kv-namespace-id>"

@@ -1,0 +1,14 @@
+{
+  "name": "slack-youtrack",
+  "version": "1.0.0",
+  "description": "Slack Events API → YouTrack ticket creation (Cloudflare Worker)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
