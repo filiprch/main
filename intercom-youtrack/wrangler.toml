@@ -7,10 +7,11 @@ compatibility_date = "2024-09-23"
 YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
 YOUTRACK_PROJECT_ID = "CS"
 # Intercom workspace (app) id — used to build conversation deep-links.
-INTERCOM_APP_ID = ""
+INTERCOM_APP_ID = "agc8lkpy"
 # Admin IDs that are bots (e.g. Fin / Operator). Assignments to these do NOT
 # create a ticket — only assignment to a real human teammate does.
-INTERCOM_EXCLUDE_ADMIN_IDS = ""
+# 5286994 = Fin (operator+agc8lkpy@intercom.io, no inbox seat)
+INTERCOM_EXCLUDE_ADMIN_IDS = "5286994"
 
 # Optional KV namespace to dedupe by conversation id across isolates.
 # wrangler kv namespace create DEDUPE
