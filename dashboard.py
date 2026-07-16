@@ -328,5 +328,8 @@ poll();
 
 
 if __name__ == "__main__":
-    print(f"Dashboard on http://127.0.0.1:5000  (target: {PROD_HOST})")
-    app.run(host="127.0.0.1", port=5000, threaded=True)
+    import os as _os
+    host = _os.environ.get("HOST", "127.0.0.1")
+    port = int(_os.environ.get("PORT", "5000"))
+    print(f"Dashboard on http://{host}:{port}  (target: {PROD_HOST})")
+    app.run(host=host, port=port, threaded=True)
