@@ -5,7 +5,11 @@ Run: python dashboard.py
 Then open http://localhost:5000
 """
 
+import datetime
+import json
 import os
+import threading
+
 import psycopg2
 import psycopg2.extras
 import requests as http_requests
@@ -17,16 +21,20 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Env values are read lazily / non-fatally so the dashboard still boots when a
+# single tool's credentials are absent (e.g. run the Reports PUT card without
+# SQP's DB/LWA config, or vice-versa). Each route surfaces its own missing-cred
+# error as JSON instead of crashing the whole app at startup.
 DB_CONFIG = {
     "host": os.environ.get("DB_HOST", "136.112.125.16"),
     "dbname": os.environ.get("DB_NAME", "postgres"),
     "user": os.environ.get("DB_USER", "filip_read_only"),
-    "password": os.environ["DB_PASSWORD"],
+    "password": os.environ.get("DB_PASSWORD", ""),
     "connect_timeout": 10,
 }
 
-LWA_CLIENT_ID     = os.environ["LWA_CLIENT_ID"]
-LWA_CLIENT_SECRET = os.environ["LWA_CLIENT_SECRET"]
+LWA_CLIENT_ID     = os.environ.get("LWA_CLIENT_ID", "")
+LWA_CLIENT_SECRET = os.environ.get("LWA_CLIENT_SECRET", "")
 LWA_TOKEN_URL     = "https://api.amazon.com/auth/o2/token"
 
 SP_REGION_CONFIG = {
@@ -363,5 +371,143 @@ def sqp_global_status():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Reports PUT bot — batch PUT /reports/bi/<seller_id>/reports
+# ══════════════════════════════════════════════════════════════════════════════
+
+from reports_bot import (  # noqa: E402
+    ACCESS_TOKEN as REPORTS_ACCESS_TOKEN,
+    PROD_HOST as REPORTS_PROD_HOST,
+    _parse_seller_ids,
+    api_login as reports_api_login,
+    put_reports,
+)
+
+_rep_lock = threading.Lock()
+_rep_stop_event = threading.Event()
+_rep_state = {
+    "running": False,
+    "dry_run": False,
+    "logs": [],  # list of {"i", "t", "level", "msg"}
+    "counters": {"total": 0, "done": 0, "ok": 0, "failed": 0},
+}
+
+
+def _rep_log(level: str, msg: str) -> None:
+    with _rep_lock:
+        _rep_state["logs"].append({
+            "i": len(_rep_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "msg": msg,
+        })
+
+
+def _rep_worker(token: str, seller_ids: list, body: dict, dry_run: bool) -> None:
+    try:
+        mode = "DRY-RUN" if dry_run else "LIVE"
+        report_names = [r.get("reportName", "?") for r in body.get("reports", [])]
+        _rep_log("info", f"Start [{mode}] - {len(seller_ids)} seller(s), "
+                         f"{len(report_names)} report(s): {', '.join(report_names) or '(none)'}")
+        for idx, seller_id in enumerate(seller_ids, 1):
+            if _rep_stop_event.is_set():
+                _rep_log("warn", f"Stopped by user after {idx - 1}/{len(seller_ids)} seller(s).")
+                break
+            prefix = f"[{idx}/{len(seller_ids)}] seller {seller_id}"
+            if dry_run:
+                _rep_log("info", f"{prefix}: would PUT {REPORTS_PROD_HOST}/reports/bi/{seller_id}/reports")
+                with _rep_lock:
+                    _rep_state["counters"]["done"] += 1
+                    _rep_state["counters"]["ok"] += 1
+                continue
+            try:
+                resp = put_reports(token, seller_id, body)
+                if resp.ok:
+                    _rep_log("ok", f"{prefix}: OK ({resp.status_code})")
+                    field = "ok"
+                else:
+                    snippet = (resp.text or "").strip().replace("\n", " ")[:200]
+                    _rep_log("error", f"{prefix}: FAILED ({resp.status_code}) {snippet}")
+                    field = "failed"
+            except Exception as exc:
+                _rep_log("error", f"{prefix}: ERROR {exc}")
+                field = "failed"
+            with _rep_lock:
+                _rep_state["counters"]["done"] += 1
+                _rep_state["counters"][field] += 1
+        c = _rep_state["counters"]
+        _rep_log("info", f"Finished. {c['ok']} ok, {c['failed']} failed, {c['done']}/{c['total']} processed.")
+    finally:
+        with _rep_lock:
+            _rep_state["running"] = False
+
+
+@app.route("/api/reports/start", methods=["POST"])
+def reports_start():
+    with _rep_lock:
+        if _rep_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+
+    payload = request.get_json(silent=True) or {}
+    raw_body = (payload.get("body") or "").strip()
+    raw_sellers = payload.get("sellers") or ""
+    dry_run = bool(payload.get("dry_run"))
+
+    if not raw_body:
+        return jsonify({"ok": False, "error": "Body is empty."}), 400
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        return jsonify({"ok": False, "error": f"Invalid JSON body: {exc}"}), 400
+
+    seller_ids = _parse_seller_ids(raw_sellers)
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+
+    # Authenticate up front so credential errors surface immediately.
+    try:
+        token = REPORTS_ACCESS_TOKEN if REPORTS_ACCESS_TOKEN else reports_api_login()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    _rep_stop_event.clear()
+    with _rep_lock:
+        _rep_state["logs"] = []
+        _rep_state["counters"] = {"total": len(seller_ids), "done": 0, "ok": 0, "failed": 0}
+        _rep_state["dry_run"] = dry_run
+        _rep_state["running"] = True
+    threading.Thread(
+        target=_rep_worker, args=(token, seller_ids, body, dry_run), daemon=True
+    ).start()
+    return jsonify({"ok": True, "count": len(seller_ids), "sellers": seller_ids})
+
+
+@app.route("/api/reports/stop", methods=["POST"])
+def reports_stop():
+    _rep_stop_event.set()
+    _rep_log("warn", "Stop requested...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/reports/state")
+def reports_state():
+    since = request.args.get("since", default=0, type=int)
+    with _rep_lock:
+        logs = [e for e in _rep_state["logs"] if e["i"] >= since]
+        return jsonify({
+            "running": _rep_state["running"],
+            "dry_run": _rep_state["dry_run"],
+            "counters": _rep_state["counters"],
+            "logs": logs,
+            "next": len(_rep_state["logs"]),
+            "prod_host": REPORTS_PROD_HOST,
+        })
+
+
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(debug=True, host=host, port=port)
