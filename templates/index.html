@@ -168,6 +168,7 @@
     .retry-info { font-size: .7rem; color: #94a3b8; }
     .retry-info strong { color: #f8fafc; }
     .countdown { color: #fbbf24 !important; font-weight: 600; }
+    .seller-cancel-bar { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: 1rem; }
 
     .pagination {
       display: flex; align-items: center; gap: .5rem;
@@ -266,9 +267,9 @@
   <div class="card-body" id="body-stuck-queue">
 
 <div class="query-bar">
-  <span class="step-badge">STEP 1</span>
   <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
-  <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Run Query</button>
+  <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Check Queue</button>
+  <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Exchange &amp; Compare</button>
   <div class="status-pill">
     <div class="dot" id="dot-query"></div>
     <span id="lbl-query">Idle</span>
@@ -285,8 +286,6 @@
       <label><input type="checkbox" id="f-r2" checked onchange="applyFilters()"> R2</label>
       <label><input type="checkbox" id="f-r3" checked onchange="applyFilters()"> R3</label>
     </div>
-    <div class="sep"></div>
-    <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Step 2 — Exchange &amp; Compare</button>
     <span class="sel-count" id="sel-count"><strong>0</strong> selected</span>
   </div>
 
@@ -552,9 +551,29 @@ function renderDetailInner(spId, row) {
   const st      = sellerState[spId] || {};
   const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
   const hasData = regions.some(r => st.queue[r]?.status === 'done');
-  if (!hasData) return `<span class="token-idle">Run Step 2 — Exchange &amp; Compare to see results.</span>`;
+  if (!hasData) return `<span class="token-idle">Run Exchange &amp; Compare to see results.</span>`;
 
-  let html = `<div class="detail-title">Step 3 &amp; 4 — Queue Comparison &amp; Cancellation</div><div class="detail-regions">`;
+  // Total stuck (not yet cancelled) across every region for this seller.
+  let totalStuck = 0;
+  regions.forEach(r => {
+    const stuck = st.queue[r]?.stuck || [];
+    totalStuck += stuck.filter(id => (st.cancelStatus || {})[id] !== 'cancelled').length;
+  });
+
+  let html = `<div class="detail-title">Queue Comparison &amp; Cancellation</div>`;
+  if (totalStuck > 0) {
+    const stopBtn = st.cancelling
+      ? `<button class="btn btn-sm btn-orange" onclick="stopCancelling('${esc(spId)}')">■ Stop</button>`
+      : '';
+    html += `<div class="seller-cancel-bar">
+      <button class="btn btn-red" onclick="cancelAllSeller('${esc(spId)}')" ${st.cancelling ? 'disabled' : ''}>
+        Cancel ALL stuck — all regions (${totalStuck})
+      </button>
+      ${stopBtn}
+      ${st.waitMsg ? `<span class="retry-info countdown">${esc(st.waitMsg)}</span>` : ''}
+    </div>`;
+  }
+  html += `<div class="detail-regions">`;
   regions.forEach(regionId => {
     const q = st.queue[regionId];
     html += `<div class="region-block"><div class="region-title">Region ${regionId}</div>`;
@@ -670,18 +689,23 @@ function toggleRow(spId, chk) {
   updateSelCount();
 }
 function toggleAll(chk) {
-  const start = (currentPage - 1) * PAGE;
-  filteredRows.slice(start, start + PAGE).forEach(row => {
+  // Select / clear across ALL filtered rows (every page), not just the current page.
+  filteredRows.forEach(row => {
     const id = String(row.amazon_selling_partner_id);
     chk.checked ? selectedIds.add(id) : selectedIds.delete(id);
   });
   renderTable();
-  document.getElementById('chk-all').checked = chk.checked;
 }
 function updateSelCount() {
   const n = selectedIds.size;
   document.getElementById('sel-count').innerHTML = `<strong>${n}</strong> selected`;
   document.getElementById('btn-s23').disabled = n === 0;
+  // Keep the header checkbox in sync with the full filtered set across pages.
+  const chkAll = document.getElementById('chk-all');
+  if (chkAll) {
+    chkAll.checked = filteredRows.length > 0 &&
+      filteredRows.every(r => selectedIds.has(String(r.amazon_selling_partner_id)));
+  }
 }
 
 // ── Fold / expand ─────────────────────────────────────────────────────────────
@@ -937,6 +961,31 @@ async function cancelAll(spId, regionId) {
     refreshDetail(spId, row);
     updateCell(spId);
   }
+}
+
+// ── Cancel ALL stuck for a seller (every region, single pass) ──────────────────
+async function cancelAllSeller(spId) {
+  const st = initSt(spId);
+  if (st.cancelling) return;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (!row) return;
+  const regions = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+
+  st.cancelling = true;
+  st.shouldStop = false;
+  refreshDetail(spId, row);
+
+  for (const regionId of regions) {
+    if (st.shouldStop) break;
+    if ((st.queue[regionId]?.stuck || []).length > 0) {
+      await doCancelPass(spId, regionId);
+    }
+  }
+
+  st.cancelling = false;
+  st.waitMsg    = null;
+  refreshDetail(spId, row);
+  updateCell(spId);
 }
 
 // ── Step 4 — cancel one report ────────────────────────────────────────────────
