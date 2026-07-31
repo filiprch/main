@@ -237,6 +237,15 @@
     .rep-line { white-space: pre-wrap; word-break: break-word; }
     .rep-line .rt { color: #475569; margin-right: .5rem; }
     .rl-ok { color: #4ade80; } .rl-error { color: #f87171; } .rl-warn { color: #fbbf24; } .rl-info { color: #93c5fd; }
+    .rep-safety-wrap { display: flex; align-items: center; gap: .4rem; font-size: .78rem; }
+    .rep-sw-side { font-size: .72rem; color: #475569; }
+    .rep-sw-side.rep-sw-active { color: #e2e8f0; font-weight: 700; }
+    .rep-toggle { position: relative; display: inline-block; width: 38px; height: 20px; cursor: pointer; }
+    .rep-toggle input { opacity: 0; width: 0; height: 0; }
+    .rep-toggle-track { position: absolute; inset: 0; background: #2d3348; border-radius: 999px; transition: background .15s; }
+    .rep-toggle-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #94a3b8; border-radius: 50%; transition: transform .15s, background .15s; }
+    .rep-toggle input:checked + .rep-toggle-track { background: #059669; }
+    .rep-toggle input:checked + .rep-toggle-track .rep-toggle-thumb { transform: translateX(18px); background: #fff; }
   </style>
 </head>
 <body>
@@ -368,6 +377,15 @@
           <button class="btn btn-primary" id="rep-go" onclick="repGo()">Go</button>
           <button class="btn btn-red" id="rep-stop" onclick="repStop()" disabled>Stop</button>
           <label class="rep-chk"><input type="checkbox" id="rep-dry"> dry-run</label>
+          <div class="rep-safety-wrap" title="When ON, ask for confirmation before a live PUT run">
+            <span style="color:#475569">Safety</span>
+            <span class="rep-sw-side rep-sw-active" id="rep-sw-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="rep-safety" onchange="repSafetyChanged()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side" id="rep-sw-on">ON</span>
+          </div>
           <span class="status-pill"><span class="dot" id="rep-dot"></span><span id="rep-status">Idle</span></span>
         </div>
         <div id="rep-err" class="rep-err"></div>
@@ -1224,9 +1242,17 @@ function repSetRunning(running, dry) {
   repEl('rep-status').textContent = running ? (dry ? 'Running (dry-run)…' : 'Running…') : 'Idle';
 }
 
+function repSafetyChanged() {
+  const on = repEl('rep-safety').checked;
+  repEl('rep-sw-off').classList.toggle('rep-sw-active', !on);
+  repEl('rep-sw-on').classList.toggle('rep-sw-active', on);
+}
+
 async function repGo() {
   repEl('rep-err').textContent = '';
   const dry = repEl('rep-dry').checked;
+  const safety = repEl('rep-safety').checked;
+  if (!dry && safety && !confirm('Safety is ON — run LIVE and PUT to production for every seller in the list?')) return;
   repSince = 0;
   repEl('rep-log').innerHTML = '';
   try {
