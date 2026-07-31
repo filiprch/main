@@ -270,6 +270,7 @@
   <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
   <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Check Queue</button>
   <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Exchange &amp; Compare</button>
+  <button class="btn btn-green" id="btn-autorun" onclick="autoRun()">⏵ Auto run</button>
   <div class="status-pill">
     <div class="dot" id="dot-query"></div>
     <span id="lbl-query">Idle</span>
@@ -336,6 +337,7 @@
       <button class="btn btn-sm btn-ghost" id="sqp-ws-4"  onclick="loadSqpStatus(4)">Last 4 weeks</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-8"  onclick="loadSqpStatus(8)">Last 8 weeks</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-12" onclick="loadSqpStatus(12)">Last 12 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-refresh" onclick="loadSqpStatus(sqpStatusActiveWeeks || 4)" title="Reload the selected period">↻ Refresh</button>
     </div>
     <div id="sqp-status-content"><span class="token-idle">Select a period above to load.</span></div>
   </div>
@@ -838,6 +840,72 @@ async function runStep23() {
   document.getElementById('btn-s23').disabled = selectedIds.size === 0;
 }
 
+// ── Auto run — full pipeline ───────────────────────────────────────────────────
+// Check Queue → select all sellers → Exchange & Compare → for any seller with
+// stuck reports, cancel with auto-renew (auto-retry) ON. Turns itself off once
+// every seller has been checked and nothing remains to cancel.
+let autoRunActive = false;
+
+function setAutoRunBtn() {
+  const b = document.getElementById('btn-autorun');
+  if (b) {
+    b.textContent = autoRunActive ? '■ Stop auto-run' : '⏵ Auto run';
+    b.className    = 'btn ' + (autoRunActive ? 'btn-orange' : 'btn-green');
+  }
+  const q = document.getElementById('btn-query');
+  if (q) q.disabled = autoRunActive;
+}
+
+async function autoRun() {
+  // Second click while running → stop everything.
+  if (autoRunActive) {
+    autoRunActive = false;
+    Object.values(sellerState).forEach(st => { st.shouldStop = true; st.autoRetry = false; });
+    setAutoRunBtn();
+    setQS('ok', 'Auto-run stopped');
+    return;
+  }
+
+  autoRunActive = true;
+  setAutoRunBtn();
+
+  try {
+    // 1) Check Queue
+    await runQuery();
+    if (!autoRunActive) return;
+    setAutoRunBtn(); // runQuery re-enables btn-query — disable it again
+
+    // 2) Select all sellers in the filtered set
+    filteredRows.forEach(row => selectedIds.add(String(row.amazon_selling_partner_id)));
+    updateSelCount();
+    renderTable();
+
+    // 3) Exchange & Compare per seller, cancelling with auto-renew when stuck
+    for (const row of [...filteredRows]) {
+      if (!autoRunActive) break;
+      const spId = String(row.amazon_selling_partner_id);
+      const st   = initSt(spId);
+      st.autoRetry  = true;   // auto-renew ON for the cancel loop
+      st.shouldStop = false;
+      const ok = await step23ForSeller(spId, row);
+      if (ok && autoRunActive) {
+        const regions  = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+        const anyStuck = regions.some(r => (st.queue[r]?.stuck || []).length > 0);
+        if (anyStuck) await runAutoRetryLoop(spId, row);
+      }
+      st.autoRetry = false;   // done with this seller
+    }
+
+    if (autoRunActive) setQS('ok', 'Auto-run complete — all sellers checked');
+    else               setQS('ok', 'Auto-run stopped');
+  } catch (e) {
+    setQS('err', 'Auto-run error: ' + e.message);
+  } finally {
+    autoRunActive = false;
+    setAutoRunBtn();
+  }
+}
+
 // ── Auto-retry coordinator ────────────────────────────────────────────────────
 // Loop: cancel all stuck → re-run Step 2+3 → if more stuck, repeat → until clean → turn off.
 async function runAutoRetryLoop(spId, row) {
@@ -1159,7 +1227,6 @@ function repSetRunning(running, dry) {
 async function repGo() {
   repEl('rep-err').textContent = '';
   const dry = repEl('rep-dry').checked;
-  if (!dry && !confirm('Run LIVE — this PUTs to production for every seller in the list. Continue?')) return;
   repSince = 0;
   repEl('rep-log').innerHTML = '';
   try {
