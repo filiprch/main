@@ -246,6 +246,34 @@
     .rep-toggle-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #94a3b8; border-radius: 50%; transition: transform .15s, background .15s; }
     .rep-toggle input:checked + .rep-toggle-track { background: #059669; }
     .rep-toggle input:checked + .rep-toggle-track .rep-toggle-thumb { transform: translateX(18px); background: #fff; }
+
+    /* ── Marketing Streams card ── */
+    .ms-top { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .ms-left { flex: 1; min-width: 300px; }
+    .ms-right { flex: 1; min-width: 300px; }
+    .ms-ta { width: 100%; min-height: 110px; background: #0d0f1a; border: 1px solid #2d3348;
+      border-radius: 8px; color: #cbd5e1; font-family: monospace; font-size: .78rem;
+      padding: .6rem .7rem; resize: vertical; outline: none; }
+    .ms-ta:focus { border-color: #3b4fd8; }
+    .ms-controls { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .7rem; }
+    .ms-mp { display: flex; align-items: center; gap: .55rem; font-size: .78rem; color: #94a3b8; }
+    .ms-mp label { display: flex; align-items: center; gap: .25rem; cursor: pointer; }
+    .ms-counters { display: grid; grid-template-columns: repeat(5, 1fr); gap: .5rem; margin-bottom: .6rem; }
+    .ms-log { height: 150px; overflow-y: auto; background: #0b0d13; border: 1px solid #1e2130;
+      border-radius: 9px; padding: .5rem .7rem; font-family: monospace; font-size: .72rem; line-height: 1.5; }
+    .ms-pill { display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: .7rem; font-weight: 700; }
+    .ms-pill.act  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .ms-pill.miss { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
+    .ms-pill.pend { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; }
+    .ms-pill.na   { background: #1e2130;   color: #475569; border: 1px solid #252a3a; }
+    .ms-err { color: #f87171; font-size: .75rem; min-height: 1rem; margin-top: .4rem; }
+    .ms-table { width: 100%; border-collapse: collapse; font-size: .78rem; min-width: 720px; }
+    .ms-table thead th { background: #0d0f1a; color: #475569; font-size: .68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; padding: .45rem .6rem;
+      border-bottom: 1px solid #1e2130; text-align: left; white-space: nowrap; }
+    .ms-table tbody tr { border-bottom: 1px solid #161827; }
+    .ms-table tbody tr:hover { background: #1a1f30; }
+    .ms-table td { padding: .45rem .6rem; color: #cbd5e1; }
   </style>
 </head>
 <body>
@@ -402,6 +430,77 @@
     </div>
   </div>
 </div><!-- /card: reports-put -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Marketing Streams
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-marketing-streams">
+  <div class="card-hdr" onclick="toggleCard('marketing-streams')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">MARKETING STREAMS</span>
+      <div>
+        <div class="card-title">Marketing Streams</div>
+        <div class="card-desc">Check <code>sp-traffic</code> / <code>sp-conversion</code> subscriptions and activate the missing ones</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-marketing-streams">▼</button>
+  </div>
+  <div class="card-body" id="body-marketing-streams">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="ms-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="ms-sellers" class="ms-ta" spellcheck="false" placeholder="14575540296, 18745238280&#10;19229782488"></textarea>
+        <div class="ms-controls">
+          <div class="ms-mp">
+            <span style="color:#475569">Marketplace:</span>
+            <label><input type="checkbox" id="ms-mp-US" checked> US</label>
+            <label><input type="checkbox" id="ms-mp-CA"> Canada</label>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-primary" id="ms-check" onclick="msCheck()">Check Status</button>
+          <button class="btn btn-teal" id="ms-fix-sel" onclick="msFixSelected()" disabled>Add MS to Selected</button>
+          <button class="btn btn-green" id="ms-fix-all" onclick="msFixAll()" disabled>Fix All</button>
+          <button class="btn btn-red" id="ms-stop" onclick="msStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="ms-dot"></span><span id="ms-status">Idle</span></span>
+        </div>
+        <div id="ms-err" class="ms-err"></div>
+      </div>
+
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="ms-c-done">0</div><div class="rep-k">Checked</div></div>
+          <div class="rep-stat"><div class="rep-n rep-ok" id="ms-c-active">0</div><div class="rep-k">Active</div></div>
+          <div class="rep-stat"><div class="rep-n" id="ms-c-fixed" style="color:#2dd4bf">0</div><div class="rep-k">Fixed</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="ms-c-failed">0</div><div class="rep-k">Failed</div></div>
+          <div class="rep-stat"><div class="rep-n" id="ms-c-total">0</div><div class="rep-k">Total</div></div>
+        </div>
+        <div id="ms-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr>
+            <th style="width:32px"><input type="checkbox" id="ms-chk-all" onchange="msToggleAll(this)"></th>
+            <th>Seller ID</th>
+            <th>MP</th>
+            <th>Profile ID</th>
+            <th>Traffic</th>
+            <th>Conversion</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="ms-tbody">
+          <tr><td colspan="7"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: marketing-streams -->
+</div><!-- /card: marketing-streams -->
 
 </div><!-- /cards -->
 
@@ -1272,6 +1371,154 @@ async function repStop() { await fetch('/api/reports/stop', { method: 'POST' });
 
 setInterval(repPoll, 1000);
 repPoll();
+
+// ── Marketing Streams ──────────────────────────────────────────────────────────
+let msSince = 0;
+let msRows = [];
+const msSelected = new Set();
+
+function msMarketplaces() {
+  const out = [];
+  if (document.getElementById('ms-mp-US').checked) out.push('US');
+  if (document.getElementById('ms-mp-CA').checked) out.push('CA');
+  return out;
+}
+
+function msPill(status) {
+  const s = (status || '-').toUpperCase();
+  if (s === 'ACTIVE')  return `<span class="ms-pill act">ACTIVE</span>`;
+  if (s === 'MISSING') return `<span class="ms-pill miss">MISSING</span>`;
+  if (s === '-')       return `<span class="ms-pill na">—</span>`;
+  return `<span class="ms-pill pend">${esc(s)}</span>`;
+}
+
+function msNeedsFix(r) {
+  return r.state === 'missing' || r.state === 'partial';
+}
+
+function msRenderTable() {
+  const tb = document.getElementById('ms-tbody');
+  if (!msRows.length) {
+    tb.innerHTML = `<tr><td colspan="7"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>`;
+    document.getElementById('ms-fix-sel').disabled = true;
+    document.getElementById('ms-fix-all').disabled = true;
+    return;
+  }
+  tb.innerHTML = msRows.map(r => {
+    const fixable = msNeedsFix(r);
+    const sel = msSelected.has(r.key);
+    const note = r.error ? `<span class="token-err">${esc(r.error)}</span>` : esc(r.note || '');
+    return `<tr>
+      <td class="center">${fixable ? `<input type="checkbox" ${sel?'checked':''} onchange="msToggleRow('${esc(r.key)}',this)">` : ''}</td>
+      <td class="mono">${esc(r.seller_id)}</td>
+      <td>${esc(r.marketplace)}</td>
+      <td class="mono">${r.profile_id != null ? esc(r.profile_id) : '—'}</td>
+      <td>${msPill(r.traffic)}</td>
+      <td>${msPill(r.conversion)}</td>
+      <td>${note}</td>
+    </tr>`;
+  }).join('');
+  const anyFixable = msRows.some(msNeedsFix);
+  document.getElementById('ms-fix-all').disabled = !anyFixable;
+  document.getElementById('ms-fix-sel').disabled = msSelected.size === 0;
+  const chkAll = document.getElementById('ms-chk-all');
+  const fixable = msRows.filter(msNeedsFix);
+  if (chkAll) chkAll.checked = fixable.length > 0 && fixable.every(r => msSelected.has(r.key));
+}
+
+function msToggleRow(key, chk) {
+  chk.checked ? msSelected.add(key) : msSelected.delete(key);
+  msRenderTable();
+}
+
+function msToggleAll(chk) {
+  msRows.filter(msNeedsFix).forEach(r => chk.checked ? msSelected.add(r.key) : msSelected.delete(r.key));
+  msRenderTable();
+}
+
+async function msPoll() {
+  try {
+    const r = await fetch('/api/ms/state?since=' + msSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('ms-log').appendChild(div);
+      msSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('ms-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('ms-c-done').textContent   = s.counters.done;
+    document.getElementById('ms-c-active').textContent = s.counters.active;
+    document.getElementById('ms-c-fixed').textContent  = s.counters.fixed;
+    document.getElementById('ms-c-failed').textContent = s.counters.failed;
+    document.getElementById('ms-c-total').textContent  = s.counters.total;
+    msRows = s.rows || [];
+    msRenderTable();
+    msSetRunning(s.running, s.mode);
+  } catch (_) {}
+}
+
+function msSetRunning(running, mode) {
+  document.getElementById('ms-check').disabled = running;
+  document.getElementById('ms-stop').disabled = !running;
+  document.getElementById('ms-dot').className = 'dot ' + (running ? 'spin' : '');
+  document.getElementById('ms-status').textContent =
+    running ? (mode === 'fix' ? 'Adding MS…' : 'Checking…') : 'Idle';
+  if (running) {
+    document.getElementById('ms-fix-sel').disabled = true;
+    document.getElementById('ms-fix-all').disabled = true;
+  }
+}
+
+async function msStart(payload) {
+  document.getElementById('ms-err').textContent = '';
+  msSince = 0;
+  document.getElementById('ms-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/ms/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) { document.getElementById('ms-err').textContent = d.error || 'Failed to start.'; return; }
+    msPoll();
+  } catch (e) {
+    document.getElementById('ms-err').textContent = e.message;
+  }
+}
+
+function msCheck() {
+  msSelected.clear();
+  msStart({
+    mode: 'check',
+    sellers: document.getElementById('ms-sellers').value,
+    marketplaces: msMarketplaces(),
+  });
+}
+
+function msFixSelected() {
+  const targets = msRows
+    .filter(r => msSelected.has(r.key))
+    .map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
+  if (!targets.length) return;
+  msStart({ mode: 'fix', targets });
+}
+
+function msFixAll() {
+  const targets = msRows.filter(msNeedsFix).map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
+  if (!targets.length) return;
+  msStart({ mode: 'fix', targets });
+}
+
+async function msStop() { await fetch('/api/ms/stop', { method: 'POST' }); }
+
+setInterval(msPoll, 1000);
+msPoll();
 </script>
 </body>
 </html>
