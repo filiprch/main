@@ -514,9 +514,11 @@ def reports_state():
 # ══════════════════════════════════════════════════════════════════════════════
 
 ADS_HOST = os.environ.get("ADVERTISING_HOST", "https://advertising-api.amazon.com").rstrip("/")
-# The Ads API app. Falls back to the SQP LWA app when no dedicated Ads app is set.
-ADS_CLIENT_ID     = os.environ.get("ADS_CLIENT_ID") or LWA_CLIENT_ID
-ADS_CLIENT_SECRET = os.environ.get("ADS_CLIENT_SECRET") or LWA_CLIENT_SECRET
+# The Advertising API is a SEPARATE Amazon app from the SP-API one used by the
+# SQP cards — deliberately no fallback to LWA_CLIENT_ID. Presenting a token with
+# another app's ClientId is rejected with a blanket 401 Unauthorized.
+ADS_CLIENT_ID     = os.environ.get("ADS_CLIENT_ID", "")
+ADS_CLIENT_SECRET = os.environ.get("ADS_CLIENT_SECRET", "")
 
 MS_DESTINATION_ARN = os.environ.get(
     "MS_DESTINATION_ARN", "arn:aws:sqs:us-east-1:059267949095:marketing"
@@ -573,8 +575,8 @@ def _ads_lwa_exchange(refresh_token: str) -> str:
     """Exchange an Ads refresh token (Atzr|…) for a short-lived access token."""
     if not ADS_CLIENT_ID or not ADS_CLIENT_SECRET:
         raise ValueError(
-            "Ads API credentials missing — set LWA_CLIENT_ID/LWA_CLIENT_SECRET "
-            "(or ADS_CLIENT_ID/ADS_CLIENT_SECRET) in .env"
+            "This token needs an LWA exchange — set ADS_CLIENT_ID and "
+            "ADS_CLIENT_SECRET (the Advertising app's credentials) in .env"
         )
     resp = http_requests.post(
         LWA_TOKEN_URL,
@@ -704,10 +706,9 @@ def _ms_worker(targets: list, mode: str) -> None:
         _ms_log("info", f"Start [{mode.upper()}] — {len(targets)} seller/marketplace pair(s)")
         # Surface which Ads app is being used — a ClientId that doesn't match the
         # app that issued the token is the usual cause of a blanket 401.
-        cid_src = "ADS_CLIENT_ID" if os.environ.get("ADS_CLIENT_ID") else "LWA_CLIENT_ID"
         cid = ADS_CLIENT_ID or "(unset)"
-        cid_short = cid if len(cid) <= 24 else f"{cid[:18]}…{cid[-6:]}"
-        _ms_log("info", f"Ads host {ADS_HOST} · ClientId {cid_short} (from {cid_src})")
+        cid_short = cid if len(cid) <= 30 else f"{cid[:24]}…{cid[-6:]}"
+        _ms_log("info", f"Ads host {ADS_HOST} · ClientId {cid_short}")
 
         # Resolve DB tokens per marketplace in one query each.
         by_mp: dict = {}
@@ -846,7 +847,11 @@ def ms_start():
     if not DB_CONFIG["password"]:
         return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
     if not ADS_CLIENT_ID:
-        return jsonify({"ok": False, "error": "LWA_CLIENT_ID (or ADS_CLIENT_ID) is not set in .env."}), 400
+        return jsonify({"ok": False, "error": (
+            "ADS_CLIENT_ID is not set in .env. The Advertising API uses a different "
+            "Amazon app than SP-API — copy the Amazon-Advertising-API-ClientId value "
+            "from your Postman request headers into ADS_CLIENT_ID."
+        )}), 400
 
     _ms_stop_event.clear()
     with _ms_lock:
