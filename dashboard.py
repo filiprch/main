@@ -629,6 +629,12 @@ def _ms_get_subscriptions(access_token: str, profile_id) -> dict:
         headers=_ads_headers(access_token, profile_id),
         timeout=30,
     )
+    if resp.status_code in (401, 403):
+        raise ValueError(
+            f"GET subscriptions {resp.status_code}: {resp.text[:120]} "
+            "— check Amazon-Advertising-API-ClientId matches the Ads app that "
+            "issued this token (set ADS_CLIENT_ID in .env)"
+        )
     if resp.status_code != 200:
         raise ValueError(f"GET subscriptions {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
@@ -696,6 +702,12 @@ def _ms_worker(targets: list, mode: str) -> None:
     token_cache: dict = {}
     try:
         _ms_log("info", f"Start [{mode.upper()}] — {len(targets)} seller/marketplace pair(s)")
+        # Surface which Ads app is being used — a ClientId that doesn't match the
+        # app that issued the token is the usual cause of a blanket 401.
+        cid_src = "ADS_CLIENT_ID" if os.environ.get("ADS_CLIENT_ID") else "LWA_CLIENT_ID"
+        cid = ADS_CLIENT_ID or "(unset)"
+        cid_short = cid if len(cid) <= 24 else f"{cid[:18]}…{cid[-6:]}"
+        _ms_log("info", f"Ads host {ADS_HOST} · ClientId {cid_short} (from {cid_src})")
 
         # Resolve DB tokens per marketplace in one query each.
         by_mp: dict = {}
