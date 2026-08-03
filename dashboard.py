@@ -540,6 +540,20 @@ _MS_TOKENS_QUERY = """
       AND ap.account_info_marketplace_id = %(marketplace_id)s
 """
 
+# Marketing Streams is only available to users on pricing plan 2. Sellers on any
+# other plan are filtered out of the results entirely (not shown as a column).
+MS_REQUIRED_PRICING_PLAN = 2
+
+_MS_SELLER_INFO_QUERY = """
+    SELECT asp.id                 AS sp_id,
+           asp.name               AS name,
+           mrpu.pricing_plan_id   AS pricing_plan_id
+    FROM amazon_selling_partner asp
+    JOIN my_real_profit_user mrpu
+        ON asp.my_real_profit_user_id = mrpu.id
+    WHERE asp.id = ANY(%(ids)s)
+"""
+
 _ms_lock = threading.Lock()
 _ms_stop_event = threading.Event()
 _ms_state = {
@@ -699,6 +713,26 @@ def _ms_fetch_profiles(seller_ids: list, marketplace_id: str) -> dict:
     return {str(r["sp_id"]): {"token": r["token"], "profile_id": r["profile_id"]} for r in rows}
 
 
+def _ms_fetch_seller_info(seller_ids: list) -> dict:
+    """Look up {sp_id: {name, pricing_plan_id}} for the given sellers."""
+    ids = []
+    for s in seller_ids:
+        try:
+            ids.append(int(s))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(_MS_SELLER_INFO_QUERY, {"ids": ids})
+            rows = cur.fetchall()
+    return {
+        str(r["sp_id"]): {"name": r["name"], "pricing_plan_id": r["pricing_plan_id"]}
+        for r in rows
+    }
+
+
 def _ms_worker(targets: list, mode: str) -> None:
     """targets: list of (seller_id, marketplace_code). mode: 'check' | 'fix'."""
     token_cache: dict = {}
@@ -709,6 +743,39 @@ def _ms_worker(targets: list, mode: str) -> None:
         cid = ADS_CLIENT_ID or "(unset)"
         cid_short = cid if len(cid) <= 30 else f"{cid[:24]}…{cid[-6:]}"
         _ms_log("info", f"Ads host {ADS_HOST} · ClientId {cid_short}")
+
+        # Marketing Streams is a pricing-plan-2 feature: look up seller names and
+        # plans once, then drop everyone who is not on the plan.
+        try:
+            info_map = _ms_fetch_seller_info(sorted({sid for sid, _ in targets}))
+        except Exception as exc:
+            _ms_log("error", f"Seller lookup failed — {exc}")
+            with _ms_lock:
+                _ms_state["counters"]["total"] = 0
+            return
+
+        allowed, skipped = [], set()
+        for sid, mp in targets:
+            info = info_map.get(str(sid))
+            plan = info.get("pricing_plan_id") if info else None
+            try:
+                on_plan = int(plan) == MS_REQUIRED_PRICING_PLAN
+            except (TypeError, ValueError):
+                on_plan = False
+            if on_plan:
+                allowed.append((sid, mp))
+            else:
+                skipped.add(sid)
+        if skipped:
+            _ms_log("warn", f"Hidden — not on pricing plan {MS_REQUIRED_PRICING_PLAN}: "
+                            f"{len(skipped)} seller(s): {', '.join(sorted(skipped)[:12])}"
+                            f"{'…' if len(skipped) > 12 else ''}")
+        targets = allowed
+        with _ms_lock:
+            _ms_state["counters"]["total"] = len(targets)
+        if not targets:
+            _ms_log("warn", "Nothing to process — no sellers on the required pricing plan.")
+            return
 
         # Resolve DB tokens per marketplace in one query each.
         by_mp: dict = {}
@@ -733,6 +800,7 @@ def _ms_worker(targets: list, mode: str) -> None:
             key = f"{sid}|{mp}"
             row = {
                 "key": key, "seller_id": sid, "marketplace": mp,
+                "name": (info_map.get(str(sid)) or {}).get("name") or "",
                 "profile_id": None, "traffic": "-", "conversion": "-",
                 "state": "error", "error": None, "note": "",
             }

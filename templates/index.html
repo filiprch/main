@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SQP Bot Dashboard</title>
+  <title>Dashboard</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -274,14 +274,29 @@
     .ms-table tbody tr { border-bottom: 1px solid #161827; }
     .ms-table tbody tr:hover { background: #1a1f30; }
     .ms-table td { padding: .45rem .6rem; color: #cbd5e1; }
+    .ms-filter-input { background: #0d0f1a; border: 1px solid #2d3348; border-radius: 6px;
+      color: #cbd5e1; padding: 5px 10px; font-size: .78rem; outline: none; width: 240px; }
+    .ms-filter-input:focus { border-color: #3b4fd8; }
+    .ms-name { color: #cbd5e1; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ══ FEATURE: copy seller by click ═══════════════════════════════════════
+       Click a seller ID in the Marketing Streams table to copy it.
+       To remove this feature, delete this CSS block, the msCopySeller()
+       function, and the onclick on the seller-id cell (all three are tagged
+       "copy seller by click").
+       ═══════════════════════════════════════════════════════════════════════ */
+    .ms-copy { cursor: pointer; border-bottom: 1px dashed #334155; }
+    .ms-copy:hover { color: #93c5fd; border-bottom-color: #3b4fd8; }
+    .ms-copy.copied { color: #4ade80; border-bottom-color: #4ade80; }
+    /* ══ END FEATURE: copy seller by click ═══════════════════════════════════ */
   </style>
 </head>
 <body>
 
 <div class="dash-header">
   <div>
-    <h1>SQP Dashboard</h1>
-    <p class="dash-sub">Search Query Performance — operations hub</p>
+    <h1>Dashboard</h1>
+    <p class="dash-sub">Operations Hub</p>
   </div>
 </div>
 
@@ -299,9 +314,9 @@
         <div class="card-desc">Find and cancel <code>SQP_BY_ASIN</code> reports stuck in Amazon's processing queue</div>
       </div>
     </div>
-    <button class="card-fold" id="fold-stuck-queue">▼</button>
+    <button class="card-fold" id="fold-stuck-queue">▶</button>
   </div>
-  <div class="card-body" id="body-stuck-queue">
+  <div class="card-body hidden" id="body-stuck-queue">
 
 <div class="query-bar">
   <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
@@ -366,9 +381,9 @@
         <div class="card-desc">Weekly completion of <code>SQP_BY_ASIN_CONVERT</code> reports (start_date = Sunday)</div>
       </div>
     </div>
-    <button class="card-fold" id="fold-sqp-status">▼</button>
+    <button class="card-fold" id="fold-sqp-status">▶</button>
   </div>
-  <div class="card-body" id="body-sqp-status">
+  <div class="card-body hidden" id="body-sqp-status">
     <div class="week-tabs">
       <button class="btn btn-sm btn-ghost" id="sqp-ws-1"  onclick="loadSqpStatus(1)">Last week</button>
       <button class="btn btn-sm btn-ghost" id="sqp-ws-4"  onclick="loadSqpStatus(4)">Last 4 weeks</button>
@@ -392,9 +407,9 @@
         <div class="card-desc">PUT one body to <code>/reports/bi/&lt;seller_id&gt;/reports</code> for every seller in a batch</div>
       </div>
     </div>
-    <button class="card-fold" id="fold-reports-put">▼</button>
+    <button class="card-fold" id="fold-reports-put">▶</button>
   </div>
-  <div class="card-body" id="body-reports-put">
+  <div class="card-body hidden" id="body-reports-put">
     <div class="rep-grid">
       <div class="rep-inputs">
         <label class="rep-label" for="rep-body">Body (JSON)</label>
@@ -443,9 +458,9 @@
         <div class="card-desc">Check <code>sp-traffic</code> / <code>sp-conversion</code> subscriptions and activate the missing ones</div>
       </div>
     </div>
-    <button class="card-fold" id="fold-marketing-streams">▼</button>
+    <button class="card-fold" id="fold-marketing-streams">▶</button>
   </div>
-  <div class="card-body" id="body-marketing-streams">
+  <div class="card-body hidden" id="body-marketing-streams">
 
     <div class="ms-top">
       <div class="ms-left">
@@ -464,6 +479,18 @@
           <button class="btn btn-green" id="ms-fix-all" onclick="msFixAll()" disabled>Fix All</button>
           <button class="btn btn-red" id="ms-stop" onclick="msStop()" disabled>Stop</button>
           <span class="status-pill"><span class="dot" id="ms-dot"></span><span id="ms-status">Idle</span></span>
+        </div>
+        <div class="ms-controls">
+          <input type="text" id="ms-filter" class="ms-filter-input" placeholder="Filter rows by seller ID or name…" oninput="msRenderTable()">
+          <div class="rep-safety-wrap" title="Hide rows where both streams are already active">
+            <span style="color:#475569">Hide active</span>
+            <span class="rep-sw-side rep-sw-active" id="ms-ha-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="ms-hide-active" onchange="msHideActiveChanged()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side" id="ms-ha-on">ON</span>
+          </div>
         </div>
         <div id="ms-err" class="ms-err"></div>
       </div>
@@ -486,6 +513,7 @@
           <tr>
             <th style="width:32px"><input type="checkbox" id="ms-chk-all" onchange="msToggleAll(this)"></th>
             <th>Seller ID</th>
+            <th>Name</th>
             <th>MP</th>
             <th>Profile ID</th>
             <th>Traffic</th>
@@ -494,7 +522,7 @@
           </tr>
         </thead>
         <tbody id="ms-tbody">
-          <tr><td colspan="7"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>
+          <tr><td colspan="8"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -1396,35 +1424,92 @@ function msNeedsFix(r) {
   return r.state === 'missing' || r.state === 'partial';
 }
 
+// Rows currently shown, after the text filter and the "hide active" toggle.
+function msVisibleRows() {
+  const q = (document.getElementById('ms-filter').value || '').trim().toLowerCase();
+  const hideActive = document.getElementById('ms-hide-active').checked;
+  return msRows.filter(r => {
+    if (hideActive && r.state === 'ok') return false;
+    if (!q) return true;
+    return String(r.seller_id).toLowerCase().includes(q) ||
+           String(r.name || '').toLowerCase().includes(q);
+  });
+}
+
+function msHideActiveChanged() {
+  const on = document.getElementById('ms-hide-active').checked;
+  document.getElementById('ms-ha-off').classList.toggle('rep-sw-active', !on);
+  document.getElementById('ms-ha-on').classList.toggle('rep-sw-active', on);
+  msRenderTable();
+}
+
 function msRenderTable() {
   const tb = document.getElementById('ms-tbody');
   if (!msRows.length) {
-    tb.innerHTML = `<tr><td colspan="7"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>`;
     document.getElementById('ms-fix-sel').disabled = true;
     document.getElementById('ms-fix-all').disabled = true;
     return;
   }
-  tb.innerHTML = msRows.map(r => {
-    const fixable = msNeedsFix(r);
-    const sel = msSelected.has(r.key);
-    const note = r.error ? `<span class="token-err">${esc(r.error)}</span>` : esc(r.note || '');
-    return `<tr>
-      <td class="center">${fixable ? `<input type="checkbox" ${sel?'checked':''} onchange="msToggleRow('${esc(r.key)}',this)">` : ''}</td>
-      <td class="mono">${esc(r.seller_id)}</td>
-      <td>${esc(r.marketplace)}</td>
-      <td class="mono">${r.profile_id != null ? esc(r.profile_id) : '—'}</td>
-      <td>${msPill(r.traffic)}</td>
-      <td>${msPill(r.conversion)}</td>
-      <td>${note}</td>
-    </tr>`;
-  }).join('');
-  const anyFixable = msRows.some(msNeedsFix);
-  document.getElementById('ms-fix-all').disabled = !anyFixable;
+  const rows = msVisibleRows();
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="8"><span class="token-idle">No rows match the current filter.</span></td></tr>`;
+  } else {
+    tb.innerHTML = rows.map(r => {
+      const fixable = msNeedsFix(r);
+      const sel = msSelected.has(r.key);
+      const note = r.error ? `<span class="token-err">${esc(r.error)}</span>` : esc(r.note || '');
+      // copy seller by click — the ms-copy span below is part of that feature
+      return `<tr>
+        <td class="center">${fixable ? `<input type="checkbox" ${sel?'checked':''} onchange="msToggleRow('${esc(r.key)}',this)">` : ''}</td>
+        <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
+        <td class="ms-name" title="${esc(r.name || '')}">${esc(r.name || '—')}</td>
+        <td>${esc(r.marketplace)}</td>
+        <td class="mono">${r.profile_id != null ? esc(r.profile_id) : '—'}</td>
+        <td>${msPill(r.traffic)}</td>
+        <td>${msPill(r.conversion)}</td>
+        <td>${note}</td>
+      </tr>`;
+    }).join('');
+  }
+  // Bulk actions operate on what is visible, so filters scope them too.
+  const fixable = rows.filter(msNeedsFix);
+  document.getElementById('ms-fix-all').disabled = fixable.length === 0;
   document.getElementById('ms-fix-sel').disabled = msSelected.size === 0;
   const chkAll = document.getElementById('ms-chk-all');
-  const fixable = msRows.filter(msNeedsFix);
   if (chkAll) chkAll.checked = fixable.length > 0 && fixable.every(r => msSelected.has(r.key));
 }
+
+/* ══ FEATURE: copy seller by click ═════════════════════════════════════════
+   Copies the clicked seller ID to the clipboard and flashes the cell green.
+   To remove: delete this function, the .ms-copy CSS block, and the
+   <span class="ms-copy" …> wrapper in msRenderTable above.
+   ═════════════════════════════════════════════════════════════════════════ */
+function msCopySeller(el, sellerId) {
+  const flash = () => {
+    el.classList.add('copied');
+    const original = el.textContent;
+    el.textContent = 'copied ✓';
+    setTimeout(() => { el.textContent = original; el.classList.remove('copied'); }, 800);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(sellerId).then(flash).catch(() => fallback());
+  } else {
+    fallback();
+  }
+  function fallback() {
+    // http://127.0.0.1 has no async clipboard in some browsers — use execCommand.
+    const ta = document.createElement('textarea');
+    ta.value = sellerId;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); flash(); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+}
+/* ══ END FEATURE: copy seller by click ════════════════════════════════════ */
 
 function msToggleRow(key, chk) {
   chk.checked ? msSelected.add(key) : msSelected.delete(key);
@@ -1432,7 +1517,8 @@ function msToggleRow(key, chk) {
 }
 
 function msToggleAll(chk) {
-  msRows.filter(msNeedsFix).forEach(r => chk.checked ? msSelected.add(r.key) : msSelected.delete(r.key));
+  msVisibleRows().filter(msNeedsFix).forEach(r =>
+    chk.checked ? msSelected.add(r.key) : msSelected.delete(r.key));
   msRenderTable();
 }
 
@@ -1510,7 +1596,9 @@ function msFixSelected() {
 }
 
 function msFixAll() {
-  const targets = msRows.filter(msNeedsFix).map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
+  // Scoped to the visible rows so filters/hide-active also limit what gets fixed.
+  const targets = msVisibleRows().filter(msNeedsFix)
+    .map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
   if (!targets.length) return;
   msStart({ mode: 'fix', targets });
 }
