@@ -94,11 +94,13 @@ def check_format() -> bool:
         warn, notes = [], []
         if parsed != parsed.strip():
             warn.append("leading/trailing whitespace in the value dotenv produced")
+        # Passwords may legitimately contain quotes, so only machine-issued
+        # credentials are checked for them.
         cred_like = key.endswith(("_ID", "_SECRET", "_TOKEN"))
-        if parsed[:1] in ("'", '"') or parsed[-1:] in ("'", '"'):
-            warn.append("quote character left inside the value")
-        elif cred_like and ('"' in parsed or "'" in parsed):
+        if cred_like and ('"' in parsed or "'" in parsed):
             warn.append("quote character inside the value")
+        elif not cred_like and (parsed[:1] in ("'", '"') and parsed[-1:] in ("'", '"')):
+            warn.append("value is wrapped in quotes — dotenv should have removed them")
         if any(ord(c) < 32 for c in parsed):
             warn.append("control character inside the value")
         if " " in parsed.strip() and key.endswith(("_ID", "_SECRET", "_TOKEN")):
