@@ -103,6 +103,12 @@ def get_db():
 
 
 def lwa_exchange(refresh_token: str) -> dict:
+    if not LWA_CLIENT_ID or not LWA_CLIENT_SECRET:
+        missing = " and ".join(
+            n for n, v in (("LWA_CLIENT_ID", LWA_CLIENT_ID),
+                           ("LWA_CLIENT_SECRET", LWA_CLIENT_SECRET)) if not v
+        )
+        raise ValueError(f"{missing} not set in .env (needed for the SP-API token exchange)")
     resp = http_requests.post(
         LWA_TOKEN_URL,
         data={
@@ -208,6 +214,17 @@ def step2_exchange_token():
                 "access_token": result["body"].get("access_token", ""),
                 "expires_in":   result["body"].get("expires_in"),
             })
+        body = result["body"] if isinstance(result["body"], dict) else {}
+        if body.get("error") == "invalid_client":
+            # The credentials reached Amazon but were rejected: wrong app.
+            cid = LWA_CLIENT_ID or "(unset)"
+            cid_short = cid if len(cid) <= 30 else f"{cid[:24]}…{cid[-6:]}"
+            return jsonify({"ok": False, "error": (
+                f"LWA rejected LWA_CLIENT_ID {cid_short} (invalid_client). These must be "
+                "the SP-API app's credentials — if you replaced them with the Advertising "
+                "app's values, restore LWA_CLIENT_ID/LWA_CLIENT_SECRET and keep the Ads "
+                "ones in ADS_CLIENT_ID/ADS_CLIENT_SECRET."
+            )}), 400
         return jsonify({"ok": False, "error": f"LWA {result['status_code']}: {result['body']}"}), 400
 
     except Exception as exc:
@@ -955,7 +972,26 @@ def ms_state():
         })
 
 
+def _config_summary() -> None:
+    """Print which card is configured, so missing .env values surface at boot."""
+    def state(*names):
+        missing = [n for n in names if not os.environ.get(n)]
+        return "ok" if not missing else "MISSING " + ", ".join(missing)
+
+    print("Config:")
+    print(f"  Cancel Stuck Reports  : {state('DB_PASSWORD', 'LWA_CLIENT_ID', 'LWA_CLIENT_SECRET')}")
+    print(f"  Global SQP Status     : {state('DB_PASSWORD')}")
+    print(f"  Batch Reports PUT     : {state('PROD_HOST')}"
+          f"{'' if os.environ.get('ACCESS_TOKEN') or os.environ.get('API_PASSWORD') else ' + ACCESS_TOKEN or API_PASSWORD'}")
+    print(f"  Marketing Streams     : {state('DB_PASSWORD', 'ADS_CLIENT_ID')}")
+    if LWA_CLIENT_ID and ADS_CLIENT_ID and LWA_CLIENT_ID == ADS_CLIENT_ID:
+        print("  ! LWA_CLIENT_ID and ADS_CLIENT_ID are identical — SP-API and the "
+              "Advertising API normally use different apps.")
+
+
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
+    _config_summary()
+    print(f"Dashboard on http://{host}:{port}")
     app.run(debug=True, host=host, port=port)
