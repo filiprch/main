@@ -8,6 +8,7 @@ Then open http://localhost:5000
 import datetime
 import json
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -970,6 +971,395 @@ def ms_state():
             "rows": _ms_state["rows"],
             "next": len(_ms_state["logs"]),
         })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Subscriptions — add analytics schedulers, then track the initial backfill
+# ══════════════════════════════════════════════════════════════════════════════
+
+SUBS_DB_PATH = os.environ.get(
+    "SUBS_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "subscriptions.db")
+)
+SUBS_RETENTION_HOURS = int(os.environ.get("SUBS_RETENTION_HOURS", "48"))
+SUBS_LOOKBACK_DAYS = int(os.environ.get("SUBS_LOOKBACK_DAYS", "546"))
+SUBS_REPORT_TYPES = ("AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL", "ORDER_GENERAL")
+
+# Backfill window for ORDER_GENERAL: only sellers whose earliest existing report
+# starts after the requested start date need filling in, and only up to the
+# earlier of that first report and the seller's data access start.
+_SUBS_ORDER_GENERAL_QUERY = """
+    WITH vars AS (
+        SELECT %(start_date)s::date AS start_date,
+               %(seller_ids)s::bigint[] AS seller_ids
+    ), seller_min_date_by_type AS (
+        SELECT ari.amazon_selling_partner_id,
+               ari.amazon_region_id,
+               ari.report_type,
+               MIN(ari.start_date) AS min_date,
+               v.start_date
+        FROM amazon_report_info ari
+        JOIN vars v ON TRUE
+        WHERE ari.amazon_selling_partner_id = ANY (v.seller_ids)
+          AND ari.report_type = 'ORDER_GENERAL'
+        GROUP BY ari.amazon_selling_partner_id, ari.amazon_region_id,
+                 ari.report_type, v.start_date
+        HAVING MIN(ari.start_date) > v.start_date
+    )
+    SELECT st.amazon_selling_partner_id                                   AS seller_id,
+           st.report_type                                                 AS report_type,
+           ar.name                                                        AS region_name,
+           to_char(v.start_date, 'YYYY-MM-DD')                            AS start,
+           to_char(LEAST(st.min_date, asp.data_access_start_from), 'YYYY-MM-DD') AS "end"
+    FROM seller_min_date_by_type st
+    JOIN vars v ON TRUE
+    JOIN amazon_selling_partner asp ON asp.id = st.amazon_selling_partner_id
+    LEFT JOIN amazon_region ar ON st.amazon_region_id = ar.id
+    WHERE v.start_date < LEAST(st.min_date, asp.data_access_start_from)
+"""
+
+_SUBS_SHIPMENTS_QUERY = """
+    WITH vars AS (
+        SELECT %(start_interval)s::date AS start_interval,
+               %(end_interval)s::date   AS end_interval,
+               %(seller_ids)s::bigint[] AS seller_ids
+    )
+    SELECT asp.id                                        AS seller_id,
+           'AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL'     AS report_type,
+           asp.state                                     AS region_name,
+           to_char(v.start_interval, 'YYYY-MM-DD')       AS start,
+           to_char(v.end_interval, 'YYYY-MM-DD')         AS "end"
+    FROM amazon_selling_partner asp
+    JOIN vars v ON TRUE
+    WHERE asp.id = ANY (v.seller_ids)
+"""
+
+# Progress of the initial backfill: anything not DONE/UNABLE_TO_GENERATE is
+# still being fetched.
+_SUBS_PROGRESS_QUERY = """
+    SELECT amazon_selling_partner_id AS seller_id,
+           COUNT(*)                                                            AS total,
+           COUNT(*) FILTER (WHERE status NOT IN ('DONE','UNABLE_TO_GENERATE')) AS pending
+    FROM amazon_report_info
+    WHERE amazon_selling_partner_id = ANY (%(ids)s)
+      AND report_type IN %(types)s
+    GROUP BY amazon_selling_partner_id
+"""
+
+
+def _subs_db():
+    conn = sqlite3.connect(SUBS_DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _subs_init() -> None:
+    with _subs_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_log (
+                seller_id      TEXT PRIMARY KEY,
+                name           TEXT,
+                status         TEXT,
+                added_at       TEXT,
+                updated_at     TEXT,
+                scheduler_rows INTEGER DEFAULT 0,
+                total          INTEGER DEFAULT 0,
+                pending        INTEGER DEFAULT 0,
+                seen_pending   INTEGER DEFAULT 0,
+                error          TEXT,
+                payload        TEXT
+            )
+        """)
+
+
+def _subs_purge() -> int:
+    """Drop entries older than the retention window (48h by default)."""
+    cutoff = (datetime.datetime.now() - datetime.timedelta(hours=SUBS_RETENTION_HOURS)).isoformat()
+    with _subs_db() as conn:
+        cur = conn.execute("DELETE FROM subscription_log WHERE added_at < ?", (cutoff,))
+        return cur.rowcount or 0
+
+
+def _subs_rows() -> list:
+    _subs_purge()
+    with _subs_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM subscription_log ORDER BY added_at DESC"
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        added = datetime.datetime.fromisoformat(d["added_at"])
+        age = datetime.datetime.now() - added
+        d["age_hours"] = round(age.total_seconds() / 3600, 1)
+        d["expires_in_hours"] = round(SUBS_RETENTION_HOURS - d["age_hours"], 1)
+        d["ready"] = d["status"] == "FETCHED"
+        out.append(d)
+    return out
+
+
+def _subs_build_payload(seller_ids: list, lookback_days: int) -> tuple:
+    """Return (payload_list, per_seller_counts) for the scheduler request."""
+    ids = []
+    for s in seller_ids:
+        try:
+            ids.append(int(s))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return [], {}
+
+    today = datetime.date.today()
+    start_date = today - datetime.timedelta(days=lookback_days)
+    end_interval = today - datetime.timedelta(days=1)
+
+    payload, counts = [], {}
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(_SUBS_ORDER_GENERAL_QUERY,
+                        {"start_date": start_date, "seller_ids": ids})
+            order_rows = cur.fetchall()
+            cur.execute(_SUBS_SHIPMENTS_QUERY,
+                        {"start_interval": start_date, "end_interval": end_interval,
+                         "seller_ids": ids})
+            ship_rows = cur.fetchall()
+
+    # ORDER_GENERAL first, then shipments — same order as the manual process.
+    for r in order_rows:
+        sid = str(r["seller_id"])
+        payload.append({
+            "sellerId": sid,
+            "reportType": r["report_type"],
+            "regionName": r["region_name"],
+            "start": r["start"],
+            "end": r["end"],
+        })
+        counts[sid] = counts.get(sid, 0) + 1
+    for r in ship_rows:
+        sid = str(r["seller_id"])
+        payload.append({
+            "sellerId": int(r["seller_id"]),
+            "reportType": r["report_type"],
+            "regionName": r["region_name"],
+            "start": r["start"],
+            "end": r["end"],
+        })
+        counts[sid] = counts.get(sid, 0) + 1
+    return payload, counts
+
+
+def _subs_send(token: str, payload: list):
+    return http_requests.post(
+        f"{REPORTS_PROD_HOST}/admin/scheduler/add",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=120,
+    )
+
+
+def _subs_refresh() -> dict:
+    """Re-read backfill progress for every logged seller and update statuses."""
+    rows = _subs_rows()
+    if not rows:
+        return {"checked": 0, "ready": 0}
+
+    ids = []
+    for r in rows:
+        try:
+            ids.append(int(r["seller_id"]))
+        except (TypeError, ValueError):
+            continue
+    progress = {}
+    if ids:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(_SUBS_PROGRESS_QUERY, {"ids": ids, "types": SUBS_REPORT_TYPES})
+                for p in cur.fetchall():
+                    progress[str(p["seller_id"])] = {"total": p["total"], "pending": p["pending"]}
+
+    ready = 0
+    now = datetime.datetime.now().isoformat()
+    with _subs_db() as conn:
+        for r in rows:
+            sid = r["seller_id"]
+            p = progress.get(sid, {"total": 0, "pending": 0})
+            seen_pending = r["seen_pending"] or 0
+            if p["pending"] > 0:
+                status, seen_pending = "FETCHING", 1
+            elif seen_pending or p["total"] > 0:
+                # Pending work was observed and has now cleared, or reports
+                # exist and none are outstanding → the backfill is complete.
+                status = "FETCHED"
+            else:
+                # No reports yet — the scheduler has not produced them.
+                status = r["status"] if r["status"] == "ERROR" else "SENT"
+            if status == "FETCHED":
+                ready += 1
+            conn.execute(
+                "UPDATE subscription_log SET status=?, total=?, pending=?, "
+                "seen_pending=?, updated_at=? WHERE seller_id=?",
+                (status, p["total"], p["pending"], seen_pending, now, sid),
+            )
+    return {"checked": len(rows), "ready": ready}
+
+
+_subs_lock = threading.Lock()
+_subs_state = {"running": False, "logs": []}
+
+
+def _subs_log(level: str, msg: str) -> None:
+    with _subs_lock:
+        _subs_state["logs"].append({
+            "i": len(_subs_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "msg": msg,
+        })
+
+
+def _subs_worker(seller_ids: list, lookback_days: int, token: str) -> None:
+    try:
+        _subs_log("info", f"Building scheduler payload for {len(seller_ids)} seller(s), "
+                          f"lookback {lookback_days} days")
+        try:
+            payload, counts = _subs_build_payload(seller_ids, lookback_days)
+        except Exception as exc:
+            _subs_log("error", f"Query failed — {exc}")
+            return
+        if not payload:
+            _subs_log("warn", "Queries returned no rows — nothing to schedule.")
+            return
+
+        names = _ms_fetch_seller_info(seller_ids) if seller_ids else {}
+        _subs_log("info", f"Payload has {len(payload)} scheduler row(s): " +
+                          ", ".join(f"{s}×{n}" for s, n in counts.items()))
+
+        resp = _subs_send(token, payload)
+        ok = 200 <= resp.status_code < 300
+        body = (resp.text or "").strip().replace("\n", " ")[:200]
+        if ok:
+            _subs_log("ok", f"POST /admin/scheduler/add → {resp.status_code} {body}")
+        else:
+            _subs_log("error", f"POST /admin/scheduler/add → {resp.status_code} {body}")
+
+        now = datetime.datetime.now().isoformat()
+        with _subs_db() as conn:
+            for sid in {str(s) for s in seller_ids}:
+                if sid not in counts:
+                    _subs_log("warn", f"{sid}: no scheduler rows produced — not logged")
+                    continue
+                conn.execute(
+                    "INSERT INTO subscription_log (seller_id, name, status, added_at, "
+                    "updated_at, scheduler_rows, total, pending, seen_pending, error, payload) "
+                    "VALUES (?,?,?,?,?,?,0,0,0,?,?) "
+                    "ON CONFLICT(seller_id) DO UPDATE SET status=excluded.status, "
+                    "added_at=excluded.added_at, updated_at=excluded.updated_at, "
+                    "scheduler_rows=excluded.scheduler_rows, seen_pending=0, "
+                    "error=excluded.error, payload=excluded.payload",
+                    (sid, (names.get(sid) or {}).get("name", ""), "SENT" if ok else "ERROR",
+                     now, now, counts.get(sid, 0), None if ok else f"{resp.status_code} {body}",
+                     json.dumps([p for p in payload if str(p["sellerId"]) == sid])),
+                )
+        if ok:
+            _subs_log("info", "Logged. Statuses will move to FETCHING then FETCHED as reports run.")
+            try:
+                _subs_refresh()
+            except Exception as exc:
+                _subs_log("warn", f"Initial status refresh failed — {exc}")
+    finally:
+        with _subs_lock:
+            _subs_state["running"] = False
+
+
+def _subs_token():
+    """Bearer token for the prod admin API (same auth as Batch Reports PUT)."""
+    if REPORTS_ACCESS_TOKEN:
+        return REPORTS_ACCESS_TOKEN
+    return reports_api_login()
+
+
+@app.route("/api/subs/preview", methods=["POST"])
+def subs_preview():
+    payload_in = request.get_json(silent=True) or {}
+    seller_ids = _parse_seller_ids(payload_in.get("sellers") or "")
+    lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    try:
+        payload, counts = _subs_build_payload(seller_ids, lookback)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    missing = [s for s in seller_ids if s not in counts]
+    return jsonify({"ok": True, "payload": payload, "counts": counts, "no_rows": missing})
+
+
+@app.route("/api/subs/add", methods=["POST"])
+def subs_add():
+    with _subs_lock:
+        if _subs_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+    payload_in = request.get_json(silent=True) or {}
+    seller_ids = _parse_seller_ids(payload_in.get("sellers") or "")
+    lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+    try:
+        token = _subs_token()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    _subs_init()
+    with _subs_lock:
+        _subs_state["logs"] = []
+        _subs_state["running"] = True
+    threading.Thread(target=_subs_worker, args=(seller_ids, lookback, token), daemon=True).start()
+    return jsonify({"ok": True, "count": len(seller_ids)})
+
+
+@app.route("/api/subs/refresh", methods=["POST"])
+def subs_refresh_route():
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    try:
+        _subs_init()
+        return jsonify({"ok": True, **_subs_refresh()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/subs/remove", methods=["POST"])
+def subs_remove():
+    sid = str((request.get_json(silent=True) or {}).get("seller_id", "")).strip()
+    if not sid:
+        return jsonify({"ok": False, "error": "seller_id required"}), 400
+    with _subs_db() as conn:
+        conn.execute("DELETE FROM subscription_log WHERE seller_id = ?", (sid,))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/subs/state")
+def subs_state():
+    since = request.args.get("since", default=0, type=int)
+    try:
+        _subs_init()
+        rows = _subs_rows()
+    except Exception as exc:
+        rows = []
+        _subs_log("error", f"Logbook read failed — {exc}")
+    with _subs_lock:
+        logs = [e for e in _subs_state["logs"] if e["i"] >= since]
+        running = _subs_state["running"]
+        nxt = len(_subs_state["logs"])
+    return jsonify({
+        "running": running, "logs": logs, "next": nxt, "rows": rows,
+        "retention_hours": SUBS_RETENTION_HOURS,
+        "default_lookback": SUBS_LOOKBACK_DAYS,
+    })
 
 
 def _config_summary() -> None:

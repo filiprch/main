@@ -294,6 +294,16 @@
     .ms-filter-input:focus { border-color: #3b4fd8; }
     .ms-name { color: #cbd5e1; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+    /* ── Subscriptions card ── */
+    .subs-payload { margin-top: .7rem; max-height: 220px; overflow: auto; background: #0b0d13;
+      border: 1px solid #1e2130; border-radius: 8px; padding: .6rem .75rem;
+      font-family: monospace; font-size: .72rem; color: #93c5fd; white-space: pre-wrap; word-break: break-word; }
+    .subs-pill { display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: .68rem; font-weight: 700; }
+    .subs-pill.sent     { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; }
+    .subs-pill.fetching { background: #1e3a8a44; color: #93c5fd; border: 1px solid #1e40af; }
+    .subs-pill.fetched  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .subs-pill.error    { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
+
     /* ══ FEATURE: copy seller by click ═══════════════════════════════════════
        Click a seller ID in the Marketing Streams table to copy it.
        To remove this feature, delete this CSS block, the msCopySeller()
@@ -541,6 +551,75 @@
 
   </div><!-- /card-body: marketing-streams -->
 </div><!-- /card: marketing-streams -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Subscriptions
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-subscriptions">
+  <div class="card-hdr" onclick="toggleCard('subscriptions')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#c2410c22;color:#fb923c;border-color:#c2410c44">SUBSCRIPTIONS</span>
+      <div>
+        <div class="card-title">Subscriptions</div>
+        <div class="card-desc">Add analytics schedulers, then track the initial backfill until sellers are ready to hand on</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-subscriptions">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-subscriptions">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="subs-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="subs-sellers" class="ms-ta" spellcheck="false" placeholder="38362789959"></textarea>
+        <div class="ms-controls">
+          <span style="color:#475569;font-size:.78rem">Lookback</span>
+          <input type="number" id="subs-lookback" class="ms-filter-input" style="width:90px" value="546" min="1">
+          <span style="color:#475569;font-size:.78rem">days</span>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-ghost" id="subs-preview" onclick="subsPreview()">Preview payload</button>
+          <button class="btn btn-primary" id="subs-add" onclick="subsAdd()">Add Schedulers</button>
+          <span class="status-pill"><span class="dot" id="subs-dot"></span><span id="subs-status">Idle</span></span>
+        </div>
+        <div id="subs-err" class="ms-err"></div>
+        <pre id="subs-payload" class="subs-payload hidden"></pre>
+      </div>
+      <div class="ms-right">
+        <div id="subs-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="ms-status-bar">
+      <span class="ms-status-label">Logbook</span>
+      <span id="subs-summary" class="ms-status-label"></span>
+      <button class="btn btn-sm btn-ghost" onclick="subsRefresh()">↻ Refresh statuses</button>
+      <label class="rep-chk" style="margin-left:.4rem">
+        <input type="checkbox" id="subs-auto" checked> auto-refresh
+      </label>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr>
+            <th>Seller ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Reports</th>
+            <th>Added</th>
+            <th>Expires in</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="subs-tbody">
+          <tr><td colspan="7"><span class="token-idle">Logbook is empty.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: subscriptions -->
+</div><!-- /card: subscriptions -->
 
 </div><!-- /cards -->
 
@@ -1664,6 +1743,134 @@ async function msStop() { await fetch('/api/ms/stop', { method: 'POST' }); }
 
 setInterval(msPoll, 1000);
 msPoll();
+
+// ── Subscriptions ──────────────────────────────────────────────────────────────
+let subsSince = 0;
+let subsLastRefresh = 0;
+
+function subsPill(status) {
+  const s = String(status || '').toUpperCase();
+  const cls = { SENT: 'sent', FETCHING: 'fetching', FETCHED: 'fetched', ERROR: 'error' }[s] || 'sent';
+  const label = { SENT: 'SCHEDULERS SENT', FETCHING: 'REPORTS FETCHING',
+                  FETCHED: 'REPORTS FETCHED', ERROR: 'ERROR' }[s] || s;
+  return `<span class="subs-pill ${cls}">${esc(label)}</span>`;
+}
+
+function subsRenderRows(rows) {
+  const tb = document.getElementById('subs-tbody');
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="7"><span class="token-idle">Logbook is empty.</span></td></tr>`;
+    document.getElementById('subs-summary').textContent = '';
+    return;
+  }
+  tb.innerHTML = rows.map(r => `
+    <tr>
+      <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
+      <td class="ms-name" title="${esc(r.name || '')}">${esc(r.name || '—')}</td>
+      <td>${subsPill(r.status)}${r.error ? ` <span class="token-err">${esc(r.error)}</span>` : ''}</td>
+      <td class="mono">${r.pending > 0 ? `${r.pending} pending / ${r.total}` : (r.total > 0 ? `${r.total} done` : '—')}</td>
+      <td class="mono">${r.age_hours}h ago</td>
+      <td class="mono">${r.expires_in_hours > 0 ? r.expires_in_hours + 'h' : 'expired'}</td>
+      <td><button class="btn btn-sm btn-ghost" onclick="subsRemove('${esc(r.seller_id)}')" title="Remove from logbook">✕</button></td>
+    </tr>`).join('');
+
+  const ready = rows.filter(r => r.ready);
+  const el = document.getElementById('subs-summary');
+  el.innerHTML = ready.length
+    ? `<span style="color:#4ade80">${ready.length} ready to send on</span> · ${rows.length} tracked`
+    : `${rows.length} tracked`;
+}
+
+async function subsPoll() {
+  try {
+    const r = await fetch('/api/subs/state?since=' + subsSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('subs-log').appendChild(div);
+      subsSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('subs-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    subsRenderRows(s.rows || []);
+    document.getElementById('subs-add').disabled = s.running;
+    document.getElementById('subs-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('subs-status').textContent = s.running ? 'Sending…' : 'Idle';
+
+    // Re-check backfill progress periodically while anything is outstanding.
+    const auto = document.getElementById('subs-auto').checked;
+    const pending = (s.rows || []).some(r => r.status === 'SENT' || r.status === 'FETCHING');
+    if (auto && pending && !s.running && Date.now() - subsLastRefresh > 60000) {
+      subsLastRefresh = Date.now();
+      fetch('/api/subs/refresh', { method: 'POST' });
+    }
+  } catch (_) {}
+}
+
+async function subsPreview() {
+  const err = document.getElementById('subs-err');
+  const box = document.getElementById('subs-payload');
+  err.textContent = '';
+  box.classList.add('hidden');
+  try {
+    const r = await fetch('/api/subs/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('subs-sellers').value,
+        lookback_days: document.getElementById('subs-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Preview failed.'; return; }
+    box.textContent = JSON.stringify(d.payload, null, 2);
+    box.classList.remove('hidden');
+    if (d.no_rows && d.no_rows.length) {
+      err.textContent = 'No scheduler rows for: ' + d.no_rows.join(', ') +
+        ' (already backfilled, or seller not found)';
+    }
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function subsAdd() {
+  const err = document.getElementById('subs-err');
+  err.textContent = '';
+  subsSince = 0;
+  document.getElementById('subs-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/subs/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('subs-sellers').value,
+        lookback_days: document.getElementById('subs-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    subsPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function subsRefresh() {
+  subsLastRefresh = Date.now();
+  await fetch('/api/subs/refresh', { method: 'POST' });
+  subsPoll();
+}
+
+async function subsRemove(sellerId) {
+  await fetch('/api/subs/remove', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seller_id: sellerId }),
+  });
+  subsPoll();
+}
+
+setInterval(subsPoll, 2000);
+subsPoll();
 </script>
 </body>
 </html>
