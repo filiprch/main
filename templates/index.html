@@ -304,6 +304,14 @@
     .subs-pill.fetched  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
     .subs-pill.error    { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
 
+    /* ── Remover card (destructive) ── */
+    .rm-card { border-color: #7f1d1d; }
+    .rm-card .card-hdr { border-bottom-color: #7f1d1d; }
+    .rm-badge { background: #7f1d1d33 !important; color: #f87171 !important; border-color: #7f1d1d88 !important; }
+    .rm-title { color: #f87171 !important; }
+    .rm-warn { color: #f87171; font-weight: 600; }
+    .rm-counters { grid-template-columns: repeat(3, 1fr); }
+
     /* ══ FEATURE: copy seller by click ═══════════════════════════════════════
        Click a seller ID in the Marketing Streams table to copy it.
        To remove this feature, delete this CSS block, the msCopySeller()
@@ -620,6 +628,58 @@
 
   </div><!-- /card-body: subscriptions -->
 </div><!-- /card: subscriptions -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Remover  (destructive — deletes sellers from MRP)
+     ══════════════════════════════════════════════════════════ -->
+<div class="card rm-card" id="card-remover">
+  <div class="card-hdr" onclick="toggleCard('remover')">
+    <div class="card-hdr-left">
+      <span class="card-badge rm-badge">REMOVER</span>
+      <div>
+        <div class="card-title rm-title">Remover</div>
+        <div class="card-desc">Permanently delete sellers from MRP — <span class="rm-warn">this cannot be undone</span></div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-remover">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-remover">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="rm-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="rm-sellers" class="ms-ta" spellcheck="false" placeholder="13008112061"></textarea>
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="When ON, you must confirm before anything is deleted">
+            <span style="color:#475569">Safety</span>
+            <span class="rep-sw-side" id="rm-sw-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="rm-safety" checked onchange="rmSafetyChanged()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="rm-sw-on">ON</span>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-red" id="rm-go" onclick="rmGo()">Delete sellers</button>
+          <button class="btn btn-ghost" id="rm-stop" onclick="rmStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="rm-dot"></span><span id="rm-status">Idle</span></span>
+        </div>
+        <div id="rm-err" class="ms-err"></div>
+      </div>
+
+      <div class="ms-right">
+        <div class="rep-counters">
+          <div class="rep-stat"><div class="rep-n" id="rm-c-progress">0/0</div><div class="rep-k">Deleted</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="rm-c-failed">0</div><div class="rep-k">Failed</div></div>
+          <div class="rep-stat"><div class="rep-n" id="rm-c-total">0</div><div class="rep-k">Total</div></div>
+        </div>
+        <div id="rm-log" class="ms-log"></div>
+      </div>
+    </div>
+
+  </div><!-- /card-body: remover -->
+</div><!-- /card: remover -->
 
 </div><!-- /cards -->
 
@@ -1871,6 +1931,74 @@ async function subsRemove(sellerId) {
 
 setInterval(subsPoll, 2000);
 subsPoll();
+
+// ── Remover (destructive) ──────────────────────────────────────────────────────
+let rmSince = 0;
+
+function rmSafetyChanged() {
+  const on = document.getElementById('rm-safety').checked;
+  document.getElementById('rm-sw-off').classList.toggle('rep-sw-active', !on);
+  document.getElementById('rm-sw-on').classList.toggle('rep-sw-active', on);
+}
+
+async function rmPoll() {
+  try {
+    const r = await fetch('/api/remove/state?since=' + rmSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('rm-log').appendChild(div);
+      rmSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('rm-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('rm-c-progress').textContent = `${s.counters.deleted}/${s.counters.total}`;
+    document.getElementById('rm-c-failed').textContent   = s.counters.failed;
+    document.getElementById('rm-c-total').textContent    = s.counters.total;
+    document.getElementById('rm-go').disabled   = s.running;
+    document.getElementById('rm-stop').disabled = !s.running;
+    document.getElementById('rm-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('rm-status').textContent = s.running ? 'Deleting…' : 'Idle';
+  } catch (_) {}
+}
+
+async function rmGo() {
+  const err = document.getElementById('rm-err');
+  err.textContent = '';
+  const raw = document.getElementById('rm-sellers').value;
+  const ids = raw.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+  const unique = [...new Set(ids)];
+  if (!unique.length) { err.textContent = 'No seller IDs provided.'; return; }
+
+  if (document.getElementById('rm-safety').checked) {
+    const preview = unique.slice(0, 10).join(', ') + (unique.length > 10 ? `, … (+${unique.length - 10} more)` : '');
+    if (!confirm(
+      `PERMANENTLY DELETE ${unique.length} seller(s) from MRP?\n\n${preview}\n\n` +
+      `This cannot be undone.`)) return;
+  }
+
+  rmSince = 0;
+  document.getElementById('rm-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/remove/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellers: raw }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    rmPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function rmStop() { await fetch('/api/remove/stop', { method: 'POST' }); }
+
+setInterval(rmPoll, 1000);
+rmPoll();
 </script>
 </body>
 </html>

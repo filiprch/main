@@ -1362,6 +1362,116 @@ def subs_state():
     })
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Remover — delete sellers from MRP. Destructive: there is no undo.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_rm_lock = threading.Lock()
+_rm_stop_event = threading.Event()
+_rm_state = {
+    "running": False,
+    "logs": [],
+    "counters": {"total": 0, "done": 0, "deleted": 0, "failed": 0},
+}
+
+
+def _rm_log(level: str, msg: str) -> None:
+    with _rm_lock:
+        _rm_state["logs"].append({
+            "i": len(_rm_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "msg": msg,
+        })
+
+
+def _rm_delete(token: str, seller_id: str):
+    return http_requests.delete(
+        f"{REPORTS_PROD_HOST}/user/remove-seller/{seller_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120,
+    )
+
+
+def _rm_worker(token: str, seller_ids: list) -> None:
+    try:
+        _rm_log("warn", f"Deleting {len(seller_ids)} seller(s) from {REPORTS_PROD_HOST} "
+                        "— this cannot be undone.")
+        for idx, seller_id in enumerate(seller_ids, 1):
+            if _rm_stop_event.is_set():
+                _rm_log("warn", f"Stopped by user after {idx - 1}/{len(seller_ids)} seller(s).")
+                break
+            prefix = f"[{idx}/{len(seller_ids)}] seller {seller_id}"
+            try:
+                resp = _rm_delete(token, seller_id)
+                if resp.ok:
+                    _rm_log("ok", f"{prefix}: DELETED ({resp.status_code})")
+                    field = "deleted"
+                else:
+                    snippet = (resp.text or "").strip().replace("\n", " ")[:200]
+                    _rm_log("error", f"{prefix}: FAILED ({resp.status_code}) {snippet}")
+                    field = "failed"
+            except Exception as exc:
+                _rm_log("error", f"{prefix}: ERROR {exc}")
+                field = "failed"
+            with _rm_lock:
+                _rm_state["counters"]["done"] += 1
+                _rm_state["counters"][field] += 1
+            time.sleep(0.1)
+
+        c = _rm_state["counters"]
+        _rm_log("info", f"Finished. {c['deleted']}/{c['total']} deleted, {c['failed']} failed.")
+    finally:
+        with _rm_lock:
+            _rm_state["running"] = False
+
+
+@app.route("/api/remove/start", methods=["POST"])
+def remove_start():
+    with _rm_lock:
+        if _rm_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+
+    payload = request.get_json(silent=True) or {}
+    seller_ids = _parse_seller_ids(payload.get("sellers") or "")
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+    try:
+        token = REPORTS_ACCESS_TOKEN if REPORTS_ACCESS_TOKEN else reports_api_login()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    _rm_stop_event.clear()
+    with _rm_lock:
+        _rm_state["logs"] = []
+        _rm_state["counters"] = {"total": len(seller_ids), "done": 0, "deleted": 0, "failed": 0}
+        _rm_state["running"] = True
+    threading.Thread(target=_rm_worker, args=(token, seller_ids), daemon=True).start()
+    return jsonify({"ok": True, "count": len(seller_ids), "sellers": seller_ids})
+
+
+@app.route("/api/remove/stop", methods=["POST"])
+def remove_stop():
+    _rm_stop_event.set()
+    _rm_log("warn", "Stop requested...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/remove/state")
+def remove_state():
+    since = request.args.get("since", default=0, type=int)
+    with _rm_lock:
+        return jsonify({
+            "running": _rm_state["running"],
+            "counters": _rm_state["counters"],
+            "logs": [e for e in _rm_state["logs"] if e["i"] >= since],
+            "next": len(_rm_state["logs"]),
+            "prod_host": REPORTS_PROD_HOST,
+        })
+
+
 def _config_summary() -> None:
     """Print which card is configured, so missing .env values surface at boot."""
     def state(*names):
