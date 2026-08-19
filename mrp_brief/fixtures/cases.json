@@ -1,0 +1,115 @@
+[
+  {
+    "_case": "alex_signoff",
+    "_note": "Client supplies the info Mary asked for and closes. Not a bare thanks, so 5a misses it. Code routes to JUDGE; the model confirms the sign-off.",
+    "_expect": "JUDGE",
+    "thread_id": "19fd70285eece913",
+    "source": "gmail",
+    "subject": "One Client wants to switch from our Subscription to their own Subscription",
+    "search_hint_count": 4,
+    "messages": [
+      {"id": "19fd70285eece913", "ts": "2026-08-06T12:18:02Z", "sender": "alex@wearesynq.com", "to": ["support@myrealprofit.com"], "labels": ["Label_4532895706505684286", "INBOX"], "body": "One of our clients (Mezcla) would like to switch from our Subscription to their own paid plan by the end of the month."},
+      {"id": "19fd782643e04a5c", "ts": "2026-08-06T14:37:54Z", "sender": "support@myrealprofit.com", "to": ["mary@myrealprofit.com"], "labels": ["SENT"], "is_forward": true, "body": "Forwarded message from Alexander Swade"},
+      {"id": "19fdb6552b1a66de", "ts": "2026-08-07T08:44:21Z", "sender": "mary@myrealprofit.com", "to": ["alex@wearesynq.com"], "cc": ["support@myrealprofit.com"], "body": "Thanks for the note, and yes, this is no problem at all. We can simply transfer the account over to them."},
+      {"id": "19fdb6a9db073620", "ts": "2026-08-07T08:50:12Z", "sender": "alex@wearesynq.com", "to": ["mary@myrealprofit.com"], "cc": ["support@myrealprofit.com"], "labels": ["INBOX"], "body": "Hi Mary, Thanks for the help with this. The email address for the new owner of the Mezcla account is kaleb@eatmezcla.com. He is already on the account. Thanks!"}
+    ]
+  },
+  {
+    "_case": "kennon_truncated_search",
+    "_note": "The exact failure that produced the false positive: search reported 7 messages, the fetch returned 5. Must NOT be flagged.",
+    "_expect": "UNVERIFIED",
+    "thread_id": "19ff0ad3cf9ec171",
+    "source": "gmail",
+    "subject": "MRP: legacy reporting retirement",
+    "search_hint_count": 7,
+    "messages": [
+      {"id": "19ff0ad3cf9ec171", "ts": "2026-08-11T11:55:00Z", "sender": "angelina@myrealprofit.com", "to": ["kennon@fogobrands.com"], "body": "Looping in our Support Angels team."},
+      {"id": "19ff1cb48d5e93e7", "ts": "2026-08-11T17:07:39Z", "sender": "support@myrealprofit.com", "to": ["angelina@myrealprofit.com"], "body": "We'll share all necessary information regarding MCP shortly."},
+      {"id": "1a00ef22601d7e5f", "ts": "2026-08-17T08:58:53Z", "sender": "angelina@myrealprofit.com", "to": ["kennon@fogobrands.com"], "body": "A new Aggregated account has been created."},
+      {"id": "1a00f870c101c3db", "ts": "2026-08-17T11:41:31Z", "sender": "kennon@fogobrands.com", "to": ["angelina@myrealprofit.com"], "body": "Thanks Angelina. Just to confirm, do you have an automated export to csv option?"},
+      {"id": "1a011401a8b3a664", "ts": "2026-08-17T19:43:11Z", "sender": "kennon@fogobrands.com", "to": ["angelina@myrealprofit.com"], "body": "Can we also have all of our accounts default to show all the below slicers in the Day to Day view?"}
+    ]
+  },
+  {
+    "_case": "kennon_complete",
+    "_note": "Same thread fetched properly. Angelina answered last, so it is closed.",
+    "_expect": "RESOLVED",
+    "thread_id": "19ff0ad3cf9ec171",
+    "source": "gmail",
+    "subject": "MRP: legacy reporting retirement",
+    "search_hint_count": 7,
+    "messages": [
+      {"id": "19ff0ad3cf9ec171", "ts": "2026-08-11T11:55:00Z", "sender": "angelina@myrealprofit.com", "to": ["kennon@fogobrands.com"], "body": "Looping in our Support Angels team."},
+      {"id": "19ff1cb48d5e93e7", "ts": "2026-08-11T17:07:39Z", "sender": "support@myrealprofit.com", "to": ["angelina@myrealprofit.com"], "body": "We'll share all necessary information regarding MCP shortly."},
+      {"id": "1a00ef22601d7e5f", "ts": "2026-08-17T08:58:53Z", "sender": "angelina@myrealprofit.com", "to": ["kennon@fogobrands.com"], "body": "A new Aggregated account has been created."},
+      {"id": "1a00f870c101c3db", "ts": "2026-08-17T11:41:31Z", "sender": "kennon@fogobrands.com", "to": ["angelina@myrealprofit.com"], "body": "Thanks Angelina. Just to confirm, do you have an automated export to csv option?"},
+      {"id": "1a011401a8b3a664", "ts": "2026-08-17T19:43:11Z", "sender": "kennon@fogobrands.com", "to": ["angelina@myrealprofit.com"], "body": "Can we also have all of our accounts default to show all the below slicers in the Day to Day view?"},
+      {"id": "1a0166a1b2c3d4e5", "ts": "2026-08-18T17:36:00Z", "sender": "kennon@fogobrands.com", "to": ["angelina@myrealprofit.com"], "body": "Hi Angelina, I'm just checking on these two requests. Thanks!"},
+      {"id": "1a0177b2c3d4e5f6", "ts": "2026-08-18T18:55:00Z", "sender": "angelina@myrealprofit.com", "to": ["kennon@fogobrands.com"], "cc": ["mary@myrealprofit.com", "support@myrealprofit.com"], "body": "Please find the details on your requests below: 1. CSV export - we don't have an automated option. 2. Day-to-Day report - we can set these to be pre-selected by default."}
+    ]
+  },
+  {
+    "_case": "budimir_outbound_forward",
+    "_note": "support@ routed the client request to Mary. Handed off, not waiting.",
+    "_expect": "HANDED_OFF",
+    "thread_id": "19ff4b45629d99a5",
+    "source": "gmail",
+    "subject": "Invoice information",
+    "search_hint_count": 2,
+    "messages": [
+      {"id": "19ff4b45629d99a5", "ts": "2026-08-12T06:41:22Z", "sender": "info@merletoys.com", "to": ["support@myrealprofit.com"], "labels": ["INBOX"], "body": "Could you please show our company data on invoices: Merle Toys GmbH, VAT No. ATU75675048. Could you please send us monthly invoices per E-Mail."},
+      {"id": "19ff4b5578d7332b", "ts": "2026-08-12T06:42:32Z", "sender": "support@myrealprofit.com", "to": ["mary@myrealprofit.com"], "labels": ["SENT"], "is_forward": true, "body": "Forwarded message from Merle Toys"}
+    ]
+  },
+  {
+    "_case": "inbound_forward_regression",
+    "_note": "Guards the original miss: Mary forwarded a client access request INTO support@. Still waiting.",
+    "_expect": "WAITING",
+    "thread_id": "19fc6c2b2cbdd40b",
+    "source": "gmail",
+    "subject": "Fwd: Troubleshooting Access to Advanced Reports",
+    "search_hint_count": 2,
+    "messages": [
+      {"id": "19fc762771d5da61", "ts": "2026-08-03T11:28:29Z", "sender": "david@rygrp.com", "to": ["support@myrealprofit.com"], "labels": ["INBOX"], "body": "I am a bit confused by the current setup. My understanding was we would have a single login for all accounts."},
+      {"id": "19fc7634646d568b", "ts": "2026-08-03T11:29:58Z", "sender": "mary@myrealprofit.com", "to": ["support@myrealprofit.com"], "labels": ["INBOX"], "is_forward": true, "body": "Forwarded message from David Redlich"}
+    ]
+  },
+  {
+    "_case": "bare_closing_phrase",
+    "_note": "Whole message is courtesy. Closed without needing the model.",
+    "_expect": "RESOLVED",
+    "thread_id": "1a01138a48fe2de6",
+    "source": "gmail",
+    "subject": "MCP onboarding",
+    "search_hint_count": 2,
+    "messages": [
+      {"id": "1a01138a48fe2de5", "ts": "2026-08-17T09:00:00Z", "sender": "support@myrealprofit.com", "to": ["bruno@cgklinens.com"], "body": "Here is the MCP onboarding information."},
+      {"id": "1a01138a48fe2de6", "ts": "2026-08-17T18:00:00Z", "sender": "bruno@cgklinens.com", "to": ["support@myrealprofit.com"], "labels": ["INBOX"], "body": "Thanks!"}
+    ]
+  },
+  {
+    "_case": "stale_needs_reply_label",
+    "_note": "Stale 🟡 on a thread whose latest message is ours. The label must not resurrect it.",
+    "_expect": "RESOLVED",
+    "thread_id": "1a0054c965810855",
+    "source": "gmail",
+    "subject": "Troubleshooting Access to Advanced Reports",
+    "search_hint_count": 2,
+    "messages": [
+      {"id": "1a0054c965810854", "ts": "2026-08-15T11:00:00Z", "sender": "maria@rygrp.com", "to": ["support@myrealprofit.com"], "labels": ["Label_3966147451254597849", "INBOX"], "body": "Historical COGS data is still missing from the UK Advanced P&L."},
+      {"id": "1a0054c965810855", "ts": "2026-08-15T12:01:39Z", "sender": "support@myrealprofit.com", "to": ["maria@rygrp.com"], "labels": ["Label_3966147451254597849", "SENT"], "body": "I'm passing this to the expert team for review."}
+    ]
+  },
+  {
+    "_case": "genuine_waiting",
+    "_note": "Real unanswered request, escalated by age. Must still be flagged.",
+    "_expect": "WAITING",
+    "thread_id": "19fc8b8ee10c6db2",
+    "source": "gmail",
+    "subject": "MCP via Claude Chat",
+    "search_hint_count": 1,
+    "messages": [
+      {"id": "19fc8b8ee10c6db2", "ts": "2026-08-03T10:00:00Z", "sender": "tyler@triplelinebrands.com", "to": ["support@myrealprofit.com"], "labels": ["INBOX"], "body": "Can we get OAuth 2.0 support so my whole team can connect, not just me? This is blocking our rollout."}
+    ]
+  }
+]
