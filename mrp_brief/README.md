@@ -86,6 +86,32 @@ purpose. `dedupe` merges them and the recovered full message list resolves the
 thread — a partial fetch plus a complete one should never leave the item
 flagged.
 
+## Muting an item
+
+Reply in the thread of any recent brief:
+
+```
+!mute <link>              stay quiet until the client writes again
+!mute forever <link>      never flag this again
+!unmute <link>            undo either
+```
+
+Anything after the link is kept as a note. The link can be a Slack permalink,
+a Gmail message id, or a thread id — matching is loose on purpose so nobody
+has to look up an internal id.
+
+Three properties worth knowing:
+
+- **`!mute` re-arms.** The default scope is `until_new_client_message`, so the
+  moment the client writes again the item comes back. A mute is a snooze, not
+  a hole to lose mail in. Use `forever` only when the conversation is over.
+- **It covers both paths.** The routine finds items two ways — carry-forward
+  from the ledger, and a fresh 72h scan. A mute is checked in both, otherwise
+  the scan would simply rediscover the thread tomorrow.
+- **Only the team can mute.** Directives from non-`@myrealprofit.com` authors
+  are ignored, and muted counts still appear in the audit line — silence is
+  fine, invisible silence is not.
+
 ## Ledger
 
 `ledger.py` replaces re-parsing state out of a Slack thread reply each run.

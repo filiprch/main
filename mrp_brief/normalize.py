@@ -18,8 +18,8 @@ import sys
 from datetime import datetime, timezone
 
 from .rules import (
-    HANDED_OFF, JUDGE, RESOLVED, UNVERIFIED, WAITING,
-    Message, Thread, classify, dedupe,
+    HANDED_OFF, JUDGE, MUTED, RESOLVED, UNVERIFIED, WAITING,
+    Message, Mute, Thread, classify, dedupe,
 )
 
 
@@ -67,19 +67,23 @@ def load(paths: list[str]) -> list[Thread]:
     return threads
 
 
-def build_report(threads: list[Thread], now: datetime | None = None) -> dict:
+def build_report(
+    threads: list[Thread],
+    now: datetime | None = None,
+    mutes: list[Mute] | None = None,
+) -> dict:
     threads = dedupe(threads)
     buckets: dict[str, list] = {
         "waiting": [], "judge": [], "resolved": [],
-        "handed_off": [], "unverified": [],
+        "handed_off": [], "unverified": [], "muted": [],
     }
     key = {
         WAITING: "waiting", JUDGE: "judge", RESOLVED: "resolved",
-        HANDED_OFF: "handed_off", UNVERIFIED: "unverified",
+        HANDED_OFF: "handed_off", UNVERIFIED: "unverified", MUTED: "muted",
     }
     by_id = {t.thread_id: t for t in threads}
     for thread in threads:
-        v = classify(thread, now=now)
+        v = classify(thread, now=now, mutes=mutes)
         buckets[key[v.verdict]].append({
             "thread_id": v.thread_id,
             "source": by_id[v.thread_id].source,
@@ -100,16 +104,20 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("paths", nargs="+", help="raw JSON dump files or globs")
     ap.add_argument("--out", help="write report here (default: stdout)")
+    ap.add_argument("--mutes", help="path to mutes.json (default: package store)")
     args = ap.parse_args(argv)
 
-    report = build_report(load(args.paths))
+    from . import mute as mute_mod
+    mutes = mute_mod.load(args.mutes or mute_mod.STORE)
+    report = build_report(load(args.paths), mutes=mutes)
     text = json.dumps(report, indent=2)
     if args.out:
         with open(args.out, "w") as fh:
             fh.write(text + "\n")
         c = report["counts"]
         print(f"waiting={c['waiting']} judge={c['judge']} resolved={c['resolved']} "
-              f"handed_off={c['handed_off']} unverified={c['unverified']}")
+              f"handed_off={c['handed_off']} unverified={c['unverified']} "
+              f"muted={c['muted']}")
     else:
         print(text)
     return 0

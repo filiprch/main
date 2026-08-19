@@ -45,6 +45,7 @@ RESOLVED = "RESOLVED"       # closed -> drop from ledger
 HANDED_OFF = "HANDED_OFF"   # routed to a teammate -> drop, count only
 WAITING = "WAITING"         # flag it
 JUDGE = "JUDGE"             # model must read this one
+MUTED = "MUTED"             # a human told us to stay quiet
 
 
 @dataclass
@@ -82,6 +83,52 @@ class Thread:
 
     def sorted_messages(self) -> list[Message]:
         return sorted(self.messages, key=lambda m: m.ts)
+
+
+@dataclass
+class Mute:
+    """A human instruction to stop flagging a thread.
+
+    `tokens` are whatever identified the item when the mute was written -- a
+    thread id, a message id, or a pasted permalink. Matching is deliberately
+    loose so nobody has to look up an internal id to silence something.
+
+    scope:
+      until_new_client_message  (default) -- re-arms the moment the client
+                                 writes again, so a mute can never become a
+                                 permanent black hole
+      forever                 -- never flag this thread again
+    """
+
+    tokens: list[str]
+    scope: str = "until_new_client_message"
+    baseline_ts: datetime | None = None
+    muted_by: str = ""
+    note: str = ""
+
+    def matches(self, thread: "Thread") -> bool:
+        ids = {thread.thread_id.lower()}
+        ids |= {m.id.lower() for m in thread.messages}
+        for raw in self.tokens:
+            tok = (raw or "").strip().lower()
+            if not tok:
+                continue
+            if tok in ids:
+                return True
+            # a pasted permalink contains the id somewhere in it
+            if any(i and i in tok for i in ids):
+                return True
+        return False
+
+    def still_muted(self, thread: "Thread") -> bool:
+        if self.scope == "forever":
+            return True
+        if self.baseline_ts is None:
+            return True
+        return not any(
+            (not m.sender_is_mrp) and m.ts > self.baseline_ts
+            for m in thread.messages
+        )
 
 
 @dataclass
@@ -141,9 +188,22 @@ def is_inbound_forward(msg: Message) -> bool:
     return SUPPORT_ADDRESS in msg.recipients
 
 
-def classify(thread: Thread, now: datetime | None = None) -> Verdict:
+def classify(
+    thread: Thread,
+    now: datetime | None = None,
+    mutes: list[Mute] | None = None,
+) -> Verdict:
     now = now or datetime.now(timezone.utc)
     tid = thread.thread_id
+
+    # --- Mute gate. A human said stay quiet; that outranks everything. -------
+    # Checked before the evidence gate so a muted thread produces no warning
+    # either. An `until_new_client_message` mute re-arms on new client mail.
+    for mute in mutes or []:
+        if mute.matches(thread) and mute.still_muted(thread):
+            who = f" by {mute.muted_by}" if mute.muted_by else ""
+            note = f" - {mute.note}" if mute.note else ""
+            return Verdict(tid, MUTED, f"muted{who} ({mute.scope}){note}")
 
     # --- Evidence gate. An unverified item is never flagged. -----------------
     if not thread.fetch_complete:
