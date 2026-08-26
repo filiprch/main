@@ -1,0 +1,2237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f1a; color: #e2e8f0; min-height: 100vh; padding: 1.5rem 2rem 6rem;
+    }
+    /* ── Dashboard layout ── */
+    .dash-header { display: flex; align-items: flex-end; gap: 1rem; margin-bottom: 2rem; }
+    h1 { font-size: 1.6rem; font-weight: 800; color: #f8fafc; letter-spacing: -.02em; }
+    .dash-sub { font-size: .8rem; color: #334155; margin-top: .25rem; }
+    .cards { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Card ── */
+    .card { background: #111320; border: 1px solid #1e2130; border-radius: 14px; overflow: hidden; }
+    .card-hdr {
+      display: flex; align-items: center; gap: 1rem;
+      padding: .9rem 1.25rem; cursor: pointer; user-select: none;
+      background: #161827; border-bottom: 1px solid #1e2130;
+      transition: background .12s;
+    }
+    .card-hdr:hover { background: #1a1f30; }
+    .card-hdr-left { display: flex; align-items: center; gap: .85rem; flex: 1; min-width: 0; }
+    .card-badge {
+      background: #3b4fd822; color: #818cf8; border: 1px solid #3b4fd844;
+      font-size: .62rem; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+      letter-spacing: .07em; white-space: nowrap; flex-shrink: 0;
+    }
+    .card-title { font-size: .9rem; font-weight: 700; color: #f1f5f9; }
+    .card-desc  { font-size: .75rem; color: #475569; margin-top: 2px; }
+    .card-fold  {
+      background: none; border: none; color: #475569; font-size: .85rem;
+      cursor: pointer; padding: 2px 7px; border-radius: 4px; flex-shrink: 0; line-height: 1;
+    }
+    .card-fold:hover { color: #94a3b8; background: #1e2130; }
+    .card-body { padding: 1.25rem 1.25rem 1.5rem; }
+
+    .query-bar {
+      display: flex; align-items: center; gap: 1rem;
+      background: #161827; border: 1px solid #252a3a;
+      border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem;
+    }
+    .step-badge {
+      background: #3b4fd8; color: #fff; font-size: .68rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 999px; letter-spacing: .05em; white-space: nowrap;
+    }
+    .query-desc { font-size: .82rem; color: #64748b; flex: 1; }
+
+    button.btn {
+      border: none; border-radius: 7px; padding: .45rem 1.1rem;
+      font-size: .82rem; font-weight: 600; cursor: pointer; transition: opacity .15s; white-space: nowrap;
+    }
+    button.btn:disabled { opacity: .35; cursor: not-allowed; }
+    button.btn:hover:not(:disabled) { opacity: .85; }
+    .btn-primary { background: #3b4fd8; color: #fff; }
+    .btn-teal    { background: #0d9488; color: #fff; }
+    .btn-red     { background: #dc2626; color: #fff; }
+    .btn-ghost   { background: #1e2130; color: #94a3b8; border: 1px solid #2d3348; }
+    .btn-green   { background: #059669; color: #fff; }
+    .btn-orange  { background: #d97706; color: #fff; }
+    .btn-sm      { padding: 2px 9px; font-size: .72rem; border-radius: 5px; }
+
+    .status-pill { display: flex; align-items: center; gap: .4rem; font-size: .78rem; color: #64748b; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; flex-shrink: 0; }
+    .dot.ok   { background: #22c55e; }
+    .dot.err  { background: #ef4444; }
+    .dot.spin { background: #f59e0b; animation: pulse .7s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+    .controls-bar {
+      display: flex; align-items: center; flex-wrap: wrap; gap: .6rem;
+      background: #161827; border: 1px solid #252a3a;
+      border-radius: 10px; padding: .75rem 1rem; margin-bottom: .6rem;
+    }
+    .controls-bar input[type="text"],
+    .controls-bar input[type="number"] {
+      background: #0d0f1a; border: 1px solid #2d3348; border-radius: 6px;
+      color: #cbd5e1; padding: 4px 9px; font-size: .78rem; outline: none;
+    }
+    .controls-bar input[type="text"]   { width: 180px; }
+    .controls-bar input[type="number"] { width: 90px; }
+    .controls-bar input:focus { border-color: #3b4fd8; }
+    .region-group { display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: #94a3b8; }
+    .region-group label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+    .sep { width: 1px; height: 18px; background: #252a3a; margin: 0 .2rem; }
+    .sel-count { font-size: .78rem; color: #94a3b8; margin-left: auto; }
+    .sel-count strong { color: #f8fafc; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .79rem; min-width: 900px; }
+    thead th {
+      background: #0d0f1a; color: #475569; font-size: .7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; padding: .5rem .65rem;
+      border-bottom: 1px solid #1e2130; white-space: nowrap; user-select: none;
+    }
+    thead th.sortable { cursor: pointer; }
+    thead th.sortable:hover { color: #94a3b8; }
+    thead th.sort-asc::after  { content: " ↑"; color: #3b4fd8; }
+    thead th.sort-desc::after { content: " ↓"; color: #3b4fd8; }
+
+    tbody tr.data-row { border-bottom: 1px solid #161827; }
+    tbody tr.data-row:hover { background: #1a1f30; }
+    tbody tr.data-row.selected-row { background: #1a2044; }
+    tbody tr.data-row.warn-row { border-left: 3px solid #f59e0b; }
+    tbody td { padding: .5rem .65rem; color: #cbd5e1; vertical-align: middle; }
+    td.center { text-align: center; }
+
+    .badge { display: inline-block; border-radius: 5px; padding: 1px 7px; font-weight: 700; font-size: .78rem; }
+    .badge-stuck      { background: #7c3aed22; color: #a78bfa; border: 1px solid #7c3aed44; }
+    .badge-stuck.high { background: #dc262622; color: #f87171; border: 1px solid #dc262644; }
+    .badge-region     { background: #0f2a2a;   color: #5eead4; border: 1px solid #0d948844; font-size: .7rem; }
+    .mono { font-family: monospace; font-size: .73rem; color: #64748b; }
+
+    .token-ok   { color: #22c55e; font-size: .75rem; font-weight: 600; }
+    .token-err  { color: #f87171; font-size: .72rem; }
+    .token-idle { color: #334155; font-size: .72rem; }
+
+    .queue-chips { display: flex; gap: .3rem; flex-wrap: wrap; align-items: center; }
+    .qchip { font-size: .68rem; padding: 2px 7px; border-radius: 4px; font-weight: 600; }
+    .qchip.stuck   { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; cursor: pointer; }
+    .qchip.clear   { background: #14532d44; color: #4ade80; border: 1px solid #14532d; cursor: pointer; }
+    .qchip.warn    { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; cursor: pointer; }
+    .qchip.pending { background: #1e2a1a44; color: #a3e635; border: 1px solid #365314; animation: pulse .7s ease-in-out infinite; }
+    .qchip.idle    { background: #1e2130; color: #475569; border: 1px solid #252a3a; }
+    .ar-badge {
+      display: inline-flex; align-items: center;
+      background: #05966922; color: #34d399; border: 1px solid #05966966;
+      border-radius: 4px; font-size: .64rem; font-weight: 700; padding: 1px 5px;
+    }
+
+    .fold-btn {
+      background: none; border: none; color: #475569; font-size: .85rem;
+      cursor: pointer; padding: 2px 6px; border-radius: 4px; line-height: 1;
+    }
+    .fold-btn:hover { color: #94a3b8; background: #1e2130; }
+
+    .detail-row td { padding: 0 !important; }
+    .detail-inner { background: #111320; border-top: 1px solid #1e2130; padding: 1rem 1.25rem 1.25rem; }
+    .detail-title { font-size: .7rem; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .75rem; }
+    .detail-regions { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    .region-block { flex: 1; min-width: 260px; }
+    .region-title { font-size: .72rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .6rem; }
+
+    .sec { margin-bottom: .85rem; }
+    .sec-header {
+      display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+      margin-bottom: .35rem; cursor: pointer; padding: 4px 0;
+    }
+    .sec-label { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; flex: 1; }
+    .sec-label.stuck { color: #f87171; }
+    .sec-label.warn  { color: #fbbf24; }
+    .toggle-ico { font-size: .75rem; color: #64748b; padding: 1px 5px; border-radius: 4px; flex-shrink: 0; }
+
+    .report-list { max-height: 400px; overflow-y: auto; }
+    .report-row {
+      display: flex; align-items: center; gap: .5rem;
+      padding: 3px 0; border-bottom: 1px solid #1a1f2e;
+    }
+    .report-row .mono { flex: 1; font-size: .72rem; }
+    .r-status { font-size: .7rem; min-width: 80px; }
+
+    .retry-bar { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
+    .retry-info { font-size: .7rem; color: #94a3b8; }
+    .retry-info strong { color: #f8fafc; }
+    .countdown { color: #fbbf24 !important; font-weight: 600; }
+    .seller-cancel-bar { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+    .pagination {
+      display: flex; align-items: center; gap: .5rem;
+      margin-top: .75rem; font-size: .78rem; color: #475569;
+    }
+    .pagination button {
+      background: #161827; border: 1px solid #252a3a; color: #94a3b8;
+      border-radius: 5px; padding: 2px 10px; font-size: .75rem; cursor: pointer;
+    }
+    .pagination button:disabled { opacity: .3; cursor: not-allowed; }
+    .pagination button:hover:not(:disabled) { background: #1e2130; }
+
+    /* ── Global SQP Status card ── */
+    .week-tabs { display: flex; gap: .4rem; margin-bottom: 1.1rem; flex-wrap: wrap; }
+    .week-tabs .btn.active { background: #3b4fd8; color: #fff; }
+
+    .sqp-status-wrap { overflow-x: auto; }
+    .sqp-stat-table { width: 100%; border-collapse: collapse; font-size: .79rem; min-width: 560px; }
+    .sqp-stat-table thead th {
+      background: #0d0f1a; color: #475569; font-size: .68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; padding: .5rem .75rem;
+      border-bottom: 1px solid #1e2130; text-align: left; white-space: nowrap;
+    }
+    .sqp-stat-table tbody tr { border-bottom: 1px solid #161827; }
+    .sqp-stat-table tbody tr:hover { background: #1a1f30; }
+    .sqp-stat-table td { padding: .5rem .75rem; vertical-align: middle; }
+    .sqp-stat-table .week-label { color: #94a3b8; font-size: .75rem; white-space: nowrap; }
+    .sqp-done    { color: #4ade80; font-weight: 700; font-size: .82rem; }
+    .sqp-notdone { color: #f87171; font-weight: 700; font-size: .82rem; }
+    .sqp-unable  { color: #64748b; font-size: .82rem; }
+    .sqp-total   { color: #64748b; font-size: .78rem; }
+
+    .pbar-wrap {
+      display: flex; align-items: center; gap: .55rem; min-width: 200px;
+    }
+    .pbar-track {
+      flex: 1; height: 8px; background: #1e2130; border-radius: 99px; overflow: hidden;
+    }
+    .pbar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
+    .pbar-pct  { font-size: .72rem; font-weight: 700; min-width: 36px; text-align: right; }
+
+    .hidden { display: none !important; }
+
+    /* ── Reports PUT (Batch) card ── */
+    .rep-grid { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+    .rep-inputs { flex: 1; min-width: 300px; display: flex; flex-direction: column; }
+    .rep-output { flex: 1.2; min-width: 320px; display: flex; flex-direction: column; }
+    .rep-label { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #475569; margin: 0 0 .35rem; }
+    .rep-ta { background: #0d0f1a; border: 1px solid #2d3348; border-radius: 8px; color: #cbd5e1;
+      font-family: monospace; font-size: .78rem; padding: .6rem .7rem; resize: vertical; outline: none;
+      margin-bottom: .9rem; min-height: 200px; }
+    .rep-ta-sm { min-height: 80px; }
+    .rep-ta:focus { border-color: #3b4fd8; }
+    .rep-controls { display: flex; align-items: center; gap: .6rem; margin-bottom: .5rem; flex-wrap: wrap; }
+    .rep-chk { display: flex; align-items: center; gap: .35rem; font-size: .78rem; color: #94a3b8; cursor: pointer; }
+    .rep-err { color: #f87171; font-size: .75rem; min-height: 1rem; }
+    .rep-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; margin-bottom: .7rem; }
+    .rep-stat { background: #161827; border: 1px solid #252a3a; border-radius: 9px; padding: .55rem; text-align: center; }
+    .rep-n { font-size: 1.5rem; font-weight: 800; color: #f1f5f9; font-variant-numeric: tabular-nums; }
+    .rep-n.rep-ok { color: #4ade80; }
+    .rep-n.rep-fail { color: #f87171; }
+    .rep-k { font-size: .62rem; color: #475569; text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+    .rep-log { flex: 1; min-height: 260px; max-height: 52vh; overflow-y: auto;
+      background: #0b0d13; border: 1px solid #1e2130; border-radius: 9px; padding: .6rem .75rem;
+      font-family: monospace; font-size: .73rem; line-height: 1.5; }
+    .rep-line { white-space: pre-wrap; word-break: break-word; }
+    .rep-line .rt { color: #475569; margin-right: .5rem; }
+    .rl-ok { color: #4ade80; } .rl-error { color: #f87171; } .rl-warn { color: #fbbf24; } .rl-info { color: #93c5fd; }
+    .rep-safety-wrap { display: flex; align-items: center; gap: .4rem; font-size: .78rem; }
+    .rep-sw-side { font-size: .72rem; color: #475569; }
+    .rep-sw-side.rep-sw-active { color: #e2e8f0; font-weight: 700; }
+    .rep-toggle { position: relative; display: inline-block; width: 38px; height: 20px; cursor: pointer; }
+    .rep-toggle input { opacity: 0; width: 0; height: 0; }
+    .rep-toggle-track { position: absolute; inset: 0; background: #2d3348; border-radius: 999px; transition: background .15s; }
+    .rep-toggle-thumb { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #94a3b8; border-radius: 50%; transition: transform .15s, background .15s; }
+    .rep-toggle input:checked + .rep-toggle-track { background: #059669; }
+    .rep-toggle input:checked + .rep-toggle-track .rep-toggle-thumb { transform: translateX(18px); background: #fff; }
+
+    /* ── Marketing Streams card ── */
+    .ms-top { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .ms-left { flex: 1; min-width: 300px; }
+    .ms-right { flex: 1; min-width: 300px; }
+    .ms-ta { width: 100%; min-height: 110px; background: #0d0f1a; border: 1px solid #2d3348;
+      border-radius: 8px; color: #cbd5e1; font-family: monospace; font-size: .78rem;
+      padding: .6rem .7rem; resize: vertical; outline: none; }
+    .ms-ta:focus { border-color: #3b4fd8; }
+    .ms-controls { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .7rem; }
+    .ms-mp { display: flex; align-items: center; gap: .55rem; font-size: .78rem; color: #94a3b8; }
+    .ms-mp label { display: flex; align-items: center; gap: .25rem; cursor: pointer; }
+    .ms-counters { display: grid; grid-template-columns: repeat(5, 1fr); gap: .5rem; margin-bottom: .6rem; }
+    .ms-log { height: 150px; overflow-y: auto; background: #0b0d13; border: 1px solid #1e2130;
+      border-radius: 9px; padding: .5rem .7rem; font-family: monospace; font-size: .72rem; line-height: 1.5; }
+    .ms-pill { display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: .7rem; font-weight: 700; }
+    .ms-pill.act  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .ms-pill.miss { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
+    .ms-pill.pend { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; }
+    .ms-pill.na   { background: #1e2130;   color: #475569; border: 1px solid #252a3a; }
+
+    /* ── Status filter chips ── */
+    .ms-status-bar { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; margin-top: .7rem; }
+    .ms-status-label { font-size: .72rem; color: #475569; margin-right: .15rem; }
+    #ms-status-chips { display: inline-flex; gap: .35rem; flex-wrap: wrap; }
+    .ms-chip { cursor: pointer; user-select: none; font-size: .67rem; font-weight: 700;
+      padding: 3px 9px; border-radius: 999px; letter-spacing: .03em;
+      background: #14161f; color: #3f4756; border: 1px solid #222736;
+      transition: background .12s, color .12s, border-color .12s; }
+    .ms-chip:hover { border-color: #3b4fd8; }
+    .ms-chip .n { opacity: .75; font-weight: 600; margin-left: 2px; }
+    .ms-chip.on.tone-act  { background: #14532d44; color: #4ade80; border-color: #14532d; }
+    .ms-chip.on.tone-miss { background: #7f1d1d44; color: #f87171; border-color: #7f1d1d; }
+    .ms-chip.on.tone-pend { background: #78350f55; color: #fbbf24; border-color: #92400e; }
+    .ms-chip.on.tone-na   { background: #23283a;   color: #94a3b8; border-color: #2d3348; }
+    .ms-err { color: #f87171; font-size: .75rem; min-height: 1rem; margin-top: .4rem; }
+    .ms-table { width: 100%; border-collapse: collapse; font-size: .78rem; min-width: 720px; }
+    .ms-table thead th { background: #0d0f1a; color: #475569; font-size: .68rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .05em; padding: .45rem .6rem;
+      border-bottom: 1px solid #1e2130; text-align: left; white-space: nowrap; }
+    .ms-table tbody tr { border-bottom: 1px solid #161827; }
+    .ms-table tbody tr:hover { background: #1a1f30; }
+    .ms-table td { padding: .45rem .6rem; color: #cbd5e1; }
+    .ms-filter-input { background: #0d0f1a; border: 1px solid #2d3348; border-radius: 6px;
+      color: #cbd5e1; padding: 5px 10px; font-size: .78rem; outline: none; width: 240px; }
+    .ms-filter-input:focus { border-color: #3b4fd8; }
+    .ms-name { color: #cbd5e1; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Subscriptions card ── */
+    .subs-payload { margin-top: .7rem; max-height: 220px; overflow: auto; background: #0b0d13;
+      border: 1px solid #1e2130; border-radius: 8px; padding: .6rem .75rem;
+      font-family: monospace; font-size: .72rem; color: #93c5fd; white-space: pre-wrap; word-break: break-word; }
+    .subs-pill { display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: .68rem; font-weight: 700; }
+    .subs-pill.sent     { background: #78350f55; color: #fbbf24; border: 1px solid #92400e; }
+    .subs-pill.fetching { background: #1e3a8a44; color: #93c5fd; border: 1px solid #1e40af; }
+    .subs-pill.fetched  { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }
+    .subs-pill.error    { background: #7f1d1d44; color: #f87171; border: 1px solid #7f1d1d; }
+
+    /* ── Remover card (destructive) ── */
+    .rm-card { border-color: #7f1d1d; }
+    .rm-card .card-hdr { border-bottom-color: #7f1d1d; }
+    .rm-badge { background: #7f1d1d33 !important; color: #f87171 !important; border-color: #7f1d1d88 !important; }
+    .rm-title { color: #f87171 !important; }
+    .rm-warn { color: #f87171; font-weight: 600; }
+    .rm-counters { grid-template-columns: repeat(3, 1fr); }
+    .upg-detail { color: #64748b; font-size: .7rem; margin-left: .25rem; }
+
+    /* ══ FEATURE: copy seller by click ═══════════════════════════════════════
+       Click a seller ID in the Marketing Streams table to copy it.
+       To remove this feature, delete this CSS block, the msCopySeller()
+       function, and the onclick on the seller-id cell (all three are tagged
+       "copy seller by click").
+       ═══════════════════════════════════════════════════════════════════════ */
+    .ms-copy { cursor: pointer; border-bottom: 1px dashed #334155; }
+    .ms-copy:hover { color: #93c5fd; border-bottom-color: #3b4fd8; }
+    .ms-copy.copied { color: #4ade80; border-bottom-color: #4ade80; }
+    /* ══ END FEATURE: copy seller by click ═══════════════════════════════════ */
+  </style>
+</head>
+<body>
+
+<div class="dash-header">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="dash-sub">Operations Hub</p>
+  </div>
+</div>
+
+<div class="cards">
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Stuck Queue — Cancel Reports
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-stuck-queue">
+  <div class="card-hdr" onclick="toggleCard('stuck-queue')">
+    <div class="card-hdr-left">
+      <span class="card-badge">STUCK QUEUE</span>
+      <div>
+        <div class="card-title">Cancel Stuck Reports</div>
+        <div class="card-desc">Find and cancel <code>SQP_BY_ASIN</code> reports stuck in Amazon's processing queue</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-stuck-queue">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-stuck-queue">
+
+<div class="query-bar">
+  <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
+  <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Check Queue</button>
+  <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Exchange &amp; Compare</button>
+  <button class="btn btn-green" id="btn-autorun" onclick="autoRun()">⏵ Auto run</button>
+  <div class="status-pill">
+    <div class="dot" id="dot-query"></div>
+    <span id="lbl-query">Idle</span>
+  </div>
+</div>
+
+<div id="results-section" class="hidden">
+  <div class="controls-bar">
+    <input type="text"   id="f-name"  placeholder="Filter seller name…"  oninput="applyFilters()" />
+    <input type="number" id="f-stuck" placeholder="Min stuck" min="0"    oninput="applyFilters()" />
+    <div class="region-group">
+      <span style="color:#475569">Regions:</span>
+      <label><input type="checkbox" id="f-r1" checked onchange="applyFilters()"> R1</label>
+      <label><input type="checkbox" id="f-r2" checked onchange="applyFilters()"> R2</label>
+      <label><input type="checkbox" id="f-r3" checked onchange="applyFilters()"> R3</label>
+    </div>
+    <span class="sel-count" id="sel-count"><strong>0</strong> selected</span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:32px"><input type="checkbox" id="chk-all" onchange="toggleAll(this)"></th>
+          <th style="width:24px">#</th>
+          <th class="sortable" onclick="sortBy('seller_name')">Seller Name</th>
+          <th>SP ID</th>
+          <th class="sortable" onclick="sortBy('stuck_reports_total')">Stuck</th>
+          <th class="sortable" onclick="sortBy('region_1_count')">R1</th>
+          <th class="sortable" onclick="sortBy('region_2_count')">R2</th>
+          <th class="sortable" onclick="sortBy('region_3_count')">R3</th>
+          <th>Refresh Token</th>
+          <th>Step 2 — Token</th>
+          <th>Step 3 — Queue</th>
+          <th style="width:36px"></th>
+        </tr>
+      </thead>
+      <tbody id="sellers-tbody"></tbody>
+    </table>
+  </div>
+  <div class="pagination" id="pagination"></div>
+</div>
+
+  </div><!-- /card-body: stuck-queue -->
+</div><!-- /card: stuck-queue -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Global SQP Status
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-sqp-status">
+  <div class="card-hdr" onclick="toggleCard('sqp-status')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">GLOBAL STATUS</span>
+      <div>
+        <div class="card-title">Global SQP Status</div>
+        <div class="card-desc">Weekly completion of <code>SQP_BY_ASIN_CONVERT</code> reports (start_date = Sunday)</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-sqp-status">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-sqp-status">
+    <div class="week-tabs">
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-1"  onclick="loadSqpStatus(1)">Last week</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-4"  onclick="loadSqpStatus(4)">Last 4 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-8"  onclick="loadSqpStatus(8)">Last 8 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-ws-12" onclick="loadSqpStatus(12)">Last 12 weeks</button>
+      <button class="btn btn-sm btn-ghost" id="sqp-refresh" onclick="loadSqpStatus(sqpStatusActiveWeeks || 4)" title="Reload the selected period">↻ Refresh</button>
+    </div>
+    <div id="sqp-status-content"><span class="token-idle">Select a period above to load.</span></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Reports PUT (Batch)
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-reports-put">
+  <div class="card-hdr" onclick="toggleCard('reports-put')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#7c3aed22;color:#a78bfa;border-color:#7c3aed44">REPORTS PUT</span>
+      <div>
+        <div class="card-title">Batch Reports PUT</div>
+        <div class="card-desc">PUT one body to <code>/reports/bi/&lt;seller_id&gt;/reports</code> for every seller in a batch</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-reports-put">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-reports-put">
+    <div class="rep-grid">
+      <div class="rep-inputs">
+        <label class="rep-label" for="rep-body">Body (JSON)</label>
+        <textarea id="rep-body" class="rep-ta" spellcheck="false" placeholder='{ "reports": [ { "reportId": "...", "reportName": "Day-to-Day", "type": "DAY_TO_DAY" } ] }'></textarea>
+        <label class="rep-label" for="rep-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="rep-sellers" class="rep-ta rep-ta-sm" spellcheck="false" placeholder="27760726877, 12345&#10;67890"></textarea>
+        <div class="rep-controls">
+          <button class="btn btn-primary" id="rep-go" onclick="repGo()">Go</button>
+          <button class="btn btn-red" id="rep-stop" onclick="repStop()" disabled>Stop</button>
+          <label class="rep-chk"><input type="checkbox" id="rep-dry"> dry-run</label>
+          <div class="rep-safety-wrap" title="When ON, ask for confirmation before a live PUT run">
+            <span style="color:#475569">Safety</span>
+            <span class="rep-sw-side rep-sw-active" id="rep-sw-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="rep-safety" onchange="repSafetyChanged()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side" id="rep-sw-on">ON</span>
+          </div>
+          <span class="status-pill"><span class="dot" id="rep-dot"></span><span id="rep-status">Idle</span></span>
+        </div>
+        <div id="rep-err" class="rep-err"></div>
+      </div>
+      <div class="rep-output">
+        <div class="rep-counters">
+          <div class="rep-stat"><div class="rep-n" id="rep-c-done">0</div><div class="rep-k">Performed</div></div>
+          <div class="rep-stat"><div class="rep-n rep-ok" id="rep-c-ok">0</div><div class="rep-k">OK</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="rep-c-failed">0</div><div class="rep-k">Failed</div></div>
+          <div class="rep-stat"><div class="rep-n" id="rep-c-total">0</div><div class="rep-k">Total</div></div>
+        </div>
+        <div id="rep-log" class="rep-log"></div>
+      </div>
+    </div>
+  </div>
+</div><!-- /card: reports-put -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Marketing Streams
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-marketing-streams">
+  <div class="card-hdr" onclick="toggleCard('marketing-streams')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">MARKETING STREAMS</span>
+      <div>
+        <div class="card-title">Marketing Streams</div>
+        <div class="card-desc">Check <code>sp-traffic</code> / <code>sp-conversion</code> subscriptions and activate the missing ones</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-marketing-streams">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-marketing-streams">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="ms-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="ms-sellers" class="ms-ta" spellcheck="false" placeholder="14575540296, 18745238280&#10;19229782488"></textarea>
+        <div class="ms-controls">
+          <div class="ms-mp">
+            <span style="color:#475569">Marketplace:</span>
+            <label><input type="checkbox" id="ms-mp-US" checked> US</label>
+            <label><input type="checkbox" id="ms-mp-CA"> Canada</label>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-primary" id="ms-check" onclick="msCheck()">Check Status</button>
+          <button class="btn btn-teal" id="ms-fix-sel" onclick="msFixSelected()" disabled>Add MS to Selected</button>
+          <button class="btn btn-green" id="ms-fix-all" onclick="msFixAll()" disabled>Fix All</button>
+          <button class="btn btn-red" id="ms-stop" onclick="msStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="ms-dot"></span><span id="ms-status">Idle</span></span>
+        </div>
+        <div class="ms-controls">
+          <input type="text" id="ms-filter" class="ms-filter-input" placeholder="Filter rows by seller ID or name…" oninput="msRenderTable()">
+        </div>
+        <div class="ms-status-bar">
+          <span class="ms-status-label">Show status:</span>
+          <span id="ms-status-chips"></span>
+          <button class="btn btn-sm btn-ghost" onclick="msStatusAll(true)">All</button>
+          <button class="btn btn-sm btn-ghost" onclick="msStatusAll(false)">None</button>
+        </div>
+        <div id="ms-err" class="ms-err"></div>
+      </div>
+
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="ms-c-done">0</div><div class="rep-k">Checked</div></div>
+          <div class="rep-stat"><div class="rep-n rep-ok" id="ms-c-active">0</div><div class="rep-k">Active</div></div>
+          <div class="rep-stat"><div class="rep-n" id="ms-c-fixed" style="color:#2dd4bf">0</div><div class="rep-k">Fixed</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="ms-c-failed">0</div><div class="rep-k">Failed</div></div>
+          <div class="rep-stat"><div class="rep-n" id="ms-c-total">0</div><div class="rep-k">Total</div></div>
+        </div>
+        <div id="ms-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr>
+            <th style="width:32px"><input type="checkbox" id="ms-chk-all" onchange="msToggleAll(this)"></th>
+            <th>Seller ID</th>
+            <th>Name</th>
+            <th>MP</th>
+            <th>Profile ID</th>
+            <th>Traffic</th>
+            <th>Conversion</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="ms-tbody">
+          <tr><td colspan="8"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: marketing-streams -->
+</div><!-- /card: marketing-streams -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Subscriptions
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-subscriptions">
+  <div class="card-hdr" onclick="toggleCard('subscriptions')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#c2410c22;color:#fb923c;border-color:#c2410c44">SUBSCRIPTIONS</span>
+      <div>
+        <div class="card-title">Subscriptions</div>
+        <div class="card-desc">Add analytics schedulers, then track the initial backfill until sellers are ready to hand on</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-subscriptions">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-subscriptions">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="subs-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="subs-sellers" class="ms-ta" spellcheck="false" placeholder="38362789959"></textarea>
+        <div class="ms-controls">
+          <span style="color:#475569;font-size:.78rem">Lookback</span>
+          <input type="number" id="subs-lookback" class="ms-filter-input" style="width:90px" value="546" min="1">
+          <span style="color:#475569;font-size:.78rem">days</span>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-ghost" id="subs-preview" onclick="subsPreview()">Preview payload</button>
+          <button class="btn btn-primary" id="subs-add" onclick="subsAdd()">Add Schedulers</button>
+          <span class="status-pill"><span class="dot" id="subs-dot"></span><span id="subs-status">Idle</span></span>
+        </div>
+        <div id="subs-err" class="ms-err"></div>
+        <pre id="subs-payload" class="subs-payload hidden"></pre>
+      </div>
+      <div class="ms-right">
+        <div id="subs-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="ms-status-bar">
+      <span class="ms-status-label">Logbook</span>
+      <span id="subs-summary" class="ms-status-label"></span>
+      <button class="btn btn-sm btn-ghost" onclick="subsRefresh()">↻ Refresh statuses</button>
+      <label class="rep-chk" style="margin-left:.4rem">
+        <input type="checkbox" id="subs-auto" checked> auto-refresh
+      </label>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr>
+            <th>Seller ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Reports</th>
+            <th>Added</th>
+            <th>Expires in</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="subs-tbody">
+          <tr><td colspan="7"><span class="token-idle">Logbook is empty.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: subscriptions -->
+</div><!-- /card: subscriptions -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Upgrader
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-upgrader">
+  <div class="card-hdr" onclick="toggleCard('upgrader')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#7c3aed22;color:#a78bfa;border-color:#7c3aed44">UPGRADER</span>
+      <div>
+        <div class="card-title">Upgrader</div>
+        <div class="card-desc">CORE → Advanced: add the advertising schedulers that were never activated, per seller/region/marketplace</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-upgrader">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-upgrader">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="upg-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="upg-sellers" class="ms-ta" spellcheck="false" placeholder="37277337656"></textarea>
+
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="Find and add Marketing Streams in the marketplaces that support them">
+            <span style="color:#475569">Marketing Streams</span>
+            <span class="rep-sw-side" id="upg-ms-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="upg-ms" checked onchange="upgToggles()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="upg-ms-on">ON</span>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="Also add the analytics subscription (backfill) schedulers">
+            <span style="color:#475569">Subscriptions</span>
+            <span class="rep-sw-side" id="upg-subs-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="upg-subs" checked onchange="upgToggles()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="upg-subs-on">ON</span>
+          </div>
+          <span id="upg-lookback-wrap">
+            <span style="color:#475569;font-size:.78rem">lookback</span>
+            <input type="number" id="upg-lookback" class="ms-filter-input" style="width:80px" value="546" min="1">
+            <span style="color:#475569;font-size:.78rem">days</span>
+          </span>
+        </div>
+
+        <div class="ms-controls">
+          <button class="btn btn-ghost" id="upg-preview" onclick="upgPreview()">Preview</button>
+          <button class="btn btn-primary" id="upg-go" onclick="upgGo()">Run Upgrade</button>
+          <button class="btn btn-red" id="upg-stop" onclick="upgStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="upg-dot"></span><span id="upg-status">Idle</span></span>
+        </div>
+        <div id="upg-err" class="ms-err"></div>
+        <pre id="upg-payload" class="subs-payload hidden"></pre>
+      </div>
+
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="upg-c-sellers">0</div><div class="rep-k">Sellers</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-combos">0</div><div class="rep-k">Combos</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-rows">0</div><div class="rep-k">Ad rows</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-ms" style="color:#2dd4bf">0</div><div class="rep-k">MS added</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="upg-c-failed">0</div><div class="rep-k">Failed</div></div>
+        </div>
+        <div id="upg-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr><th>Seller ID</th><th>Region</th><th>Marketplace</th>
+              <th>Streams</th><th>Subscriptions</th><th>Schedulers</th></tr>
+        </thead>
+        <tbody id="upg-tbody">
+          <tr><td colspan="6"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: upgrader -->
+</div><!-- /card: upgrader -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Remover  (destructive — deletes sellers from MRP)
+     ══════════════════════════════════════════════════════════ -->
+<div class="card rm-card" id="card-remover">
+  <div class="card-hdr" onclick="toggleCard('remover')">
+    <div class="card-hdr-left">
+      <span class="card-badge rm-badge">REMOVER</span>
+      <div>
+        <div class="card-title rm-title">Remover</div>
+        <div class="card-desc">Permanently delete sellers from MRP — <span class="rm-warn">this cannot be undone</span></div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-remover">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-remover">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="rm-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="rm-sellers" class="ms-ta" spellcheck="false" placeholder="13008112061"></textarea>
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="When ON, you must confirm before anything is deleted">
+            <span style="color:#475569">Safety</span>
+            <span class="rep-sw-side" id="rm-sw-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="rm-safety" checked onchange="rmSafetyChanged()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="rm-sw-on">ON</span>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-red" id="rm-go" onclick="rmGo()">Delete sellers</button>
+          <button class="btn btn-ghost" id="rm-stop" onclick="rmStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="rm-dot"></span><span id="rm-status">Idle</span></span>
+        </div>
+        <div id="rm-err" class="ms-err"></div>
+      </div>
+
+      <div class="ms-right">
+        <div class="rep-counters">
+          <div class="rep-stat"><div class="rep-n" id="rm-c-progress">0/0</div><div class="rep-k">Deleted</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="rm-c-failed">0</div><div class="rep-k">Failed</div></div>
+          <div class="rep-stat"><div class="rep-n" id="rm-c-total">0</div><div class="rep-k">Total</div></div>
+        </div>
+        <div id="rm-log" class="ms-log"></div>
+      </div>
+    </div>
+
+  </div><!-- /card-body: remover -->
+</div><!-- /card: remover -->
+
+</div><!-- /cards -->
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allRows      = [];
+let filteredRows = [];
+let sortKey      = 'stuck_reports_total';
+let sortDir      = -1;
+let selectedIds  = new Set();
+let currentPage  = 1;
+const PAGE       = 20;
+
+// sellerState[spId] = {
+//   tokenOk, token, tokenError,
+//   queue: { regionId: { status, count, stuck:[], cleared:[] } },
+//   cancelStatus: { reportId: 'idle'|'cancelling'|'cancelled'|'failed' },
+//   detailOpen, stuckOpen:{}, clearedOpen:{},
+//   autoRetry: bool,   ← per seller
+//   cancelling: bool,  ← cancel-all loop running
+//   shouldStop: bool,  ← stop signal
+//   waitMsg: string|null
+// }
+const sellerState = {};
+
+function initSt(spId) {
+  if (!sellerState[spId]) sellerState[spId] = {
+    tokenOk: null, token: null, tokenError: null,
+    queue: {}, cancelStatus: {},
+    detailOpen: false, stuckOpen: {}, clearedOpen: {},
+    autoRetry: false, cancelling: false, shouldStop: false, waitMsg: null,
+  };
+  return sellerState[spId];
+}
+
+// ── Step 1 ────────────────────────────────────────────────────────────────────
+async function runQuery() {
+  setQS('spin', 'Running query…');
+  document.getElementById('btn-query').disabled = true;
+  document.getElementById('results-section').classList.add('hidden');
+  try {
+    const resp = await fetch('/api/step1/sqp-stuck?all=true');
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    allRows = data.rows;
+    allRows.forEach(r => initSt(String(r.amazon_selling_partner_id)));
+    selectedIds.clear();
+    currentPage = 1;
+    applyFilters();
+    document.getElementById('results-section').classList.remove('hidden');
+    setQS(data.total > 0 ? 'err' : 'ok',
+      data.total > 0 ? `${data.total} seller(s) with stuck reports` : 'Queue is clean');
+  } catch (e) {
+    setQS('err', 'Query failed: ' + e.message);
+  } finally {
+    document.getElementById('btn-query').disabled = false;
+  }
+}
+
+// ── Filters / sort ────────────────────────────────────────────────────────────
+function applyFilters() {
+  const name   = document.getElementById('f-name').value.trim().toLowerCase();
+  const minStk = parseInt(document.getElementById('f-stuck').value) || 0;
+  const r1 = document.getElementById('f-r1').checked;
+  const r2 = document.getElementById('f-r2').checked;
+  const r3 = document.getElementById('f-r3').checked;
+  filteredRows = allRows.filter(row => {
+    if (name && !row.seller_name.toLowerCase().includes(name)) return false;
+    if (row.stuck_reports_total < minStk) return false;
+    if (!r1 && row.region_1_count > 0 && !row.region_2_count && !row.region_3_count) return false;
+    if (!r2 && row.region_2_count > 0 && !row.region_1_count && !row.region_3_count) return false;
+    if (!r3 && row.region_3_count > 0 && !row.region_1_count && !row.region_2_count) return false;
+    return true;
+  });
+  sortRows(); currentPage = 1; renderTable();
+}
+
+function sortBy(key) {
+  sortDir = sortKey === key ? sortDir * -1 : -1;
+  sortKey = key;
+  document.querySelectorAll('thead th.sortable').forEach(th => {
+    th.classList.remove('sort-asc','sort-desc');
+    if (th.getAttribute('onclick') === `sortBy('${key}')`)
+      th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+  });
+  sortRows(); renderTable();
+}
+function sortRows() {
+  filteredRows.sort((a, b) => {
+    const av = a[sortKey] ?? '', bv = b[sortKey] ?? '';
+    return (typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv))) * sortDir;
+  });
+}
+
+// ── Render table ──────────────────────────────────────────────────────────────
+function renderTable() {
+  const start = (currentPage - 1) * PAGE;
+  const rows  = filteredRows.slice(start, start + PAGE);
+  let html = '';
+  rows.forEach((row, i) => {
+    const spId   = String(row.amazon_selling_partner_id);
+    const sel    = selectedIds.has(spId);
+    const st     = sellerState[spId] || {};
+    const isHigh = row.stuck_reports_total >= 10;
+    const anyCleared = [1,2,3].some(r => (st.queue[r]?.cleared||[]).length > 0);
+    html += `
+      <tr class="data-row ${sel ? 'selected-row' : ''} ${anyCleared ? 'warn-row' : ''}">
+        <td class="center"><input type="checkbox" ${sel?'checked':''} onchange="toggleRow('${esc(spId)}',this)"></td>
+        <td class="mono">${start + i + 1}</td>
+        <td>${anyCleared ? '<span style="color:#fbbf24;margin-right:4px" title="Some reports in DB are not in Amazon queue — re-request needed">⚠</span>' : ''}${esc(row.seller_name)}</td>
+        <td class="mono">${esc(spId)}</td>
+        <td><span class="badge badge-stuck ${isHigh?'high':''}">${row.stuck_reports_total}</span></td>
+        <td><span class="badge badge-region">${row.region_1_count}</span></td>
+        <td><span class="badge badge-region">${row.region_2_count}</span></td>
+        <td><span class="badge badge-region">${row.region_3_count}</span></td>
+        <td class="mono">${esc(row.refresh_token_preview)}</td>
+        <td id="s2-${esc(spId)}">${renderToken(st)}</td>
+        <td id="s3-${esc(spId)}">${renderQueue(st, row)}</td>
+        <td class="center">
+          <button class="fold-btn" title="Toggle details" onclick="toggleDetail('${esc(spId)}')">${st.detailOpen ? '▼' : '▶'}</button>
+        </td>
+      </tr>
+      <tr class="detail-row ${st.detailOpen ? '' : 'hidden'}" id="detail-${esc(spId)}">
+        <td colspan="12"><div class="detail-inner" id="di-${esc(spId)}">${renderDetailInner(spId, row)}</div></td>
+      </tr>`;
+  });
+  document.getElementById('sellers-tbody').innerHTML = html;
+  renderPagination();
+  updateSelCount();
+}
+
+function renderToken(st) {
+  if (st.tokenOk === null || st.tokenOk === undefined) return `<span class="token-idle">—</span>`;
+  if (st.tokenOk) return `<span class="token-ok">✓ OK</span> <span class="mono">${esc((st.token||'').slice(0,14))}…</span>`;
+  return `<span class="token-err">✗ ${esc(st.tokenError||'Failed')}</span>`;
+}
+
+function renderQueue(st, row) {
+  const spId    = String(row.amazon_selling_partner_id);
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+  if (!regions.length) return '<span class="token-idle">—</span>';
+  if (!st.token && !st.tokenOk) return '<span class="token-idle">Need token first</span>';
+
+  const chips = regions.map(r => {
+    const q = st.queue[r];
+    if (!q) return `<span class="qchip idle">R${r}: ?</span>`;
+    if (q.status === 'loading') return `<span class="qchip pending">R${r}: …</span>`;
+    if (q.status === 'err') return `<span class="qchip idle" style="color:#f87171">R${r}: ✗</span>`;
+    const n = (q.stuck||[]).length;
+    return `<span class="qchip ${n>0?'stuck':'clear'}" onclick="openDetail('${esc(spId)}')" title="Click for details">R${r}: ${n} stuck</span>`;
+  });
+
+  // Yellow warning — reports in DB not found in Amazon queue
+  const totalCleared = regions.reduce((s, r) => s + (st.queue[r]?.cleared||[]).length, 0);
+  if (totalCleared > 0) {
+    chips.push(`<span class="qchip warn" onclick="openDetail('${esc(spId)}')" title="Reports in DB not in Amazon queue — need re-request">⚠ ${totalCleared}</span>`);
+  }
+
+  // Per-seller auto-retry indicator
+  if (st.autoRetry) chips.push(`<span class="ar-badge">AR ON</span>`);
+
+  return `<div class="queue-chips">${chips.join('')}</div>`;
+}
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function renderDetailInner(spId, row) {
+  const st      = sellerState[spId] || {};
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+  const hasData = regions.some(r => st.queue[r]?.status === 'done');
+  if (!hasData) return `<span class="token-idle">Run Exchange &amp; Compare to see results.</span>`;
+
+  // Total stuck (not yet cancelled) across every region for this seller.
+  let totalStuck = 0;
+  regions.forEach(r => {
+    const stuck = st.queue[r]?.stuck || [];
+    totalStuck += stuck.filter(id => (st.cancelStatus || {})[id] !== 'cancelled').length;
+  });
+
+  let html = `<div class="detail-title">Queue Comparison &amp; Cancellation</div>`;
+  if (totalStuck > 0) {
+    const stopBtn = st.cancelling
+      ? `<button class="btn btn-sm btn-orange" onclick="stopCancelling('${esc(spId)}')">■ Stop</button>`
+      : '';
+    html += `<div class="seller-cancel-bar">
+      <button class="btn btn-red" onclick="cancelAllSeller('${esc(spId)}')" ${st.cancelling ? 'disabled' : ''}>
+        Cancel ALL stuck — all regions (${totalStuck})
+      </button>
+      ${stopBtn}
+      ${st.waitMsg ? `<span class="retry-info countdown">${esc(st.waitMsg)}</span>` : ''}
+    </div>`;
+  }
+  html += `<div class="detail-regions">`;
+  regions.forEach(regionId => {
+    const q = st.queue[regionId];
+    html += `<div class="region-block"><div class="region-title">Region ${regionId}</div>`;
+    if (!q || q.status !== 'done') {
+      const msg = !q ? 'Not checked' : q.status === 'loading' ? 'Loading…' : 'Error: ' + esc(q.error||'');
+      html += `<span class="token-idle">${msg}</span>`;
+    } else {
+      const stuck   = q.stuck   || [];
+      const cleared = q.cleared || [];
+      const stuckOpen   = st.stuckOpen[regionId]   !== false;
+      const clearedOpen = st.clearedOpen[regionId] === true;
+
+      if (stuck.length > 0) {
+        const cancelledN = stuck.filter(id => (st.cancelStatus||{})[id] === 'cancelled').length;
+        const failedN    = stuck.filter(id => (st.cancelStatus||{})[id] === 'failed').length;
+        const remainN    = stuck.length - cancelledN;
+        html += `<div class="sec">
+          <div class="sec-header" onclick="toggleStuck('${esc(spId)}',${regionId})">
+            <span class="sec-label stuck">🔴 Stuck in Amazon queue (${remainN})</span>
+            <span class="toggle-ico">${stuckOpen ? '▼' : '▶'}</span>
+          </div>
+          <div id="stuck-list-${esc(spId)}-${regionId}" class="${stuckOpen?'':'hidden'}">
+            <div class="retry-bar" id="retry-bar-${esc(spId)}-${regionId}">
+              ${retryBarHTML(spId, regionId, remainN, failedN, st)}
+            </div>
+            <div class="report-list">
+              ${stuck.map(id => renderReportRow(id, spId, regionId)).join('')}
+            </div>
+          </div>
+        </div>`;
+      }
+
+      if (cleared.length > 0) {
+        html += `<div class="sec">
+          <div class="sec-header" onclick="toggleCleared('${esc(spId)}',${regionId})">
+            <span class="sec-label warn">⚠ Not in Amazon queue — re-request needed (${cleared.length})</span>
+            <span class="toggle-ico">${clearedOpen ? '▼' : '▶'}</span>
+          </div>
+          <div id="cleared-list-${esc(spId)}-${regionId}" class="${clearedOpen?'':'hidden'}">
+            <div class="report-list">
+              ${cleared.map(id => `<div class="report-row"><span class="mono">${esc(id)}</span></div>`).join('')}
+            </div>
+          </div>
+        </div>`;
+      }
+
+      if (!stuck.length && !cleared.length) html += `<span class="token-idle">No matching reports found.</span>`;
+    }
+    html += `</div>`;
+  });
+  return html + `</div>`;
+}
+
+function retryBarHTML(spId, regionId, remainN, failedN, st) {
+  const arBtn = `<button class="btn btn-sm ${st.autoRetry ? 'btn-green' : 'btn-ghost'}"
+    onclick="toggleSellerAutoRetry('${esc(spId)}')" title="${st.autoRetry ? 'Auto-retry ON — click to disable' : 'Enable auto-retry for this seller'}">
+    ⟳ Auto: ${st.autoRetry ? 'ON' : 'OFF'}</button>`;
+
+  const stopBtn = st.cancelling
+    ? `<button class="btn btn-sm btn-orange" onclick="stopCancelling('${esc(spId)}')">■ Stop</button>`
+    : '';
+
+  const cancelBtn = `<button class="btn btn-red btn-sm"
+    onclick="cancelAll('${esc(spId)}',${regionId})"
+    ${st.cancelling ? 'disabled' : ''}
+    >Cancel All (${remainN})</button>`;
+
+  let info = '';
+  if (st.waitMsg) {
+    info = `<span class="retry-info countdown">${esc(st.waitMsg)}</span>`;
+  } else if (failedN > 0 && !st.cancelling) {
+    info = `<span class="retry-info"><strong>${failedN}</strong> failed</span>`;
+  }
+
+  return cancelBtn + arBtn + stopBtn + info;
+}
+
+function renderReportRow(id, spId, regionId) {
+  const st     = sellerState[spId] || {};
+  const status = (st.cancelStatus||{})[id] || 'idle';
+  const statusHTML = {
+    idle:       '',
+    cancelling: `<span style="color:#f59e0b">cancelling…</span>`,
+    cancelled:  `<span style="color:#4ade80">✓ Cancelled</span>`,
+    failed:     `<span style="color:#f87171">✗ Failed</span>`,
+  }[status] || '';
+  const busy = status === 'cancelling' || st.cancelling;
+  return `<div class="report-row" id="rr-${esc(id)}">
+    <span class="mono">${esc(id)}</span>
+    <span class="r-status">${statusHTML}</span>
+    ${status !== 'cancelled'
+      ? `<button class="btn btn-red btn-sm" onclick="cancelOne('${esc(spId)}',${regionId},'${esc(id)}')" ${busy?'disabled':''}>Cancel</button>`
+      : ''}
+  </div>`;
+}
+
+function renderPagination() {
+  const total = filteredRows.length;
+  const pages = Math.ceil(total / PAGE) || 1;
+  const el = document.getElementById('pagination');
+  if (pages <= 1) { el.innerHTML = `<span style="color:#334155;font-size:.75rem">${total} result(s)</span>`; return; }
+  el.innerHTML = `
+    <button onclick="goPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>&larr; Prev</button>
+    <span>Page ${currentPage} / ${pages} &nbsp;·&nbsp; ${total} results</span>
+    <button onclick="goPage(${currentPage+1})" ${currentPage>=pages?'disabled':''}>Next &rarr;</button>`;
+}
+function goPage(p) { currentPage = p; renderTable(); window.scrollTo(0,0); }
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+function toggleRow(spId, chk) {
+  chk.checked ? selectedIds.add(spId) : selectedIds.delete(spId);
+  chk.closest('tr').classList.toggle('selected-row', chk.checked);
+  updateSelCount();
+}
+function toggleAll(chk) {
+  // Select / clear across ALL filtered rows (every page), not just the current page.
+  filteredRows.forEach(row => {
+    const id = String(row.amazon_selling_partner_id);
+    chk.checked ? selectedIds.add(id) : selectedIds.delete(id);
+  });
+  renderTable();
+}
+function updateSelCount() {
+  const n = selectedIds.size;
+  document.getElementById('sel-count').innerHTML = `<strong>${n}</strong> selected`;
+  document.getElementById('btn-s23').disabled = n === 0;
+  // Keep the header checkbox in sync with the full filtered set across pages.
+  const chkAll = document.getElementById('chk-all');
+  if (chkAll) {
+    chkAll.checked = filteredRows.length > 0 &&
+      filteredRows.every(r => selectedIds.has(String(r.amazon_selling_partner_id)));
+  }
+}
+
+// ── Fold / expand ─────────────────────────────────────────────────────────────
+function toggleDetail(spId) {
+  const st = sellerState[spId] || {};
+  st.detailOpen = !st.detailOpen;
+  const row = document.getElementById(`detail-${spId}`);
+  if (row) row.classList.toggle('hidden', !st.detailOpen);
+  const btn = [...document.querySelectorAll('.fold-btn')].find(b => b.getAttribute('onclick') === `toggleDetail('${spId}')`);
+  if (btn) btn.textContent = st.detailOpen ? '▼' : '▶';
+}
+function openDetail(spId) {
+  const st = sellerState[spId] || {};
+  if (st.detailOpen) return;
+  st.detailOpen = true;
+  const row = document.getElementById(`detail-${spId}`);
+  if (row) row.classList.remove('hidden');
+  const btn = [...document.querySelectorAll('.fold-btn')].find(b => b.getAttribute('onclick') === `toggleDetail('${spId}')`);
+  if (btn) btn.textContent = '▼';
+}
+function toggleStuck(spId, regionId) {
+  const st = sellerState[spId] || {};
+  if (!st.stuckOpen) st.stuckOpen = {};
+  const cur = st.stuckOpen[regionId] !== false;
+  st.stuckOpen[regionId] = !cur;
+  const el = document.getElementById(`stuck-list-${spId}-${regionId}`);
+  if (el) el.classList.toggle('hidden', cur);
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) refreshDetail(spId, row);
+}
+function toggleCleared(spId, regionId) {
+  const st = sellerState[spId] || {};
+  if (!st.clearedOpen) st.clearedOpen = {};
+  st.clearedOpen[regionId] = !st.clearedOpen[regionId];
+  const el = document.getElementById(`cleared-list-${spId}-${regionId}`);
+  if (el) el.classList.toggle('hidden', !st.clearedOpen[regionId]);
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) refreshDetail(spId, row);
+}
+function refreshDetail(spId, row) {
+  const el = document.getElementById(`di-${spId}`);
+  if (el) el.innerHTML = renderDetailInner(spId, row);
+}
+
+// ── Per-seller auto-retry toggle ──────────────────────────────────────────────
+function toggleSellerAutoRetry(spId) {
+  const st = sellerState[spId] || {};
+  st.autoRetry = !st.autoRetry;
+  if (!st.autoRetry) st.shouldStop = true; // signal running loop to stop
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) { refreshDetail(spId, row); updateCell(spId); }
+}
+
+function stopCancelling(spId) {
+  const st = sellerState[spId] || {};
+  st.shouldStop = true;
+  st.autoRetry  = false;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (row) { refreshDetail(spId, row); updateCell(spId); }
+}
+
+// ── Step 2+3 per seller ───────────────────────────────────────────────────────
+async function step23ForSeller(spId, row) {
+  const st = initSt(spId);
+
+  // Step 2 — exchange token
+  const c2 = document.getElementById(`s2-${spId}`);
+  if (c2) c2.innerHTML = `<span class="token-idle">Exchanging…</span>`;
+  try {
+    const resp = await fetch(`/api/step2/exchange-token?sp_id=${encodeURIComponent(spId)}`);
+    const data = await resp.json();
+    st.tokenOk    = data.ok;
+    st.token      = data.ok ? data.access_token : null;
+    st.tokenError = data.ok ? null : data.error;
+  } catch(e) {
+    st.tokenOk = false; st.tokenError = e.message;
+  }
+  updateCell(spId);
+  if (!st.tokenOk) return false;
+
+  // Step 3 — check queue + compare per region
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+  regions.forEach(r => { st.queue[r] = { status: 'loading' }; });
+  updateCell(spId);
+
+  await Promise.all(regions.map(async regionId => {
+    try {
+      const url = `/api/step3/check-queue?sp_id=${encodeURIComponent(spId)}&region_id=${regionId}&access_token=${encodeURIComponent(st.token)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.ok) {
+        const newStuck = data.stuck_in_amazon || [];
+        // Preserve 'cancelled' status; reset 'failed' to 'idle' for re-runs
+        newStuck.forEach(id => {
+          if (!st.cancelStatus[id] || st.cancelStatus[id] === 'failed') {
+            st.cancelStatus[id] = 'idle';
+          }
+        });
+        st.queue[regionId] = { status: 'done', count: data.amazon_count, stuck: newStuck, cleared: data.cleared_from_amazon || [] };
+      } else {
+        st.queue[regionId] = { status: 'err', error: data.error };
+      }
+    } catch(e) {
+      st.queue[regionId] = { status: 'err', error: e.message };
+    }
+    updateCell(spId);
+    if (st.detailOpen) refreshDetail(spId, row);
+  }));
+
+  const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+  if (anyStuck) { openDetail(spId); refreshDetail(spId, row); }
+  return true;
+}
+
+async function runStep23() {
+  document.getElementById('btn-s23').disabled = true;
+  for (const spId of [...selectedIds]) {
+    const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+    if (!row) continue;
+    const st  = initSt(spId);
+    const ok  = await step23ForSeller(spId, row);
+
+    // If auto-retry ON and stuck found → auto-start cancellations
+    if (ok && st.autoRetry) {
+      const regions  = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+      const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+      if (anyStuck) await runAutoRetryLoop(spId, row);
+    }
+  }
+  document.getElementById('btn-s23').disabled = selectedIds.size === 0;
+}
+
+// ── Auto run — full pipeline ───────────────────────────────────────────────────
+// Check Queue → select all sellers → Exchange & Compare → for any seller with
+// stuck reports, cancel with auto-renew (auto-retry) ON. Turns itself off once
+// every seller has been checked and nothing remains to cancel.
+let autoRunActive = false;
+
+function setAutoRunBtn() {
+  const b = document.getElementById('btn-autorun');
+  if (b) {
+    b.textContent = autoRunActive ? '■ Stop auto-run' : '⏵ Auto run';
+    b.className    = 'btn ' + (autoRunActive ? 'btn-orange' : 'btn-green');
+  }
+  const q = document.getElementById('btn-query');
+  if (q) q.disabled = autoRunActive;
+}
+
+async function autoRun() {
+  // Second click while running → stop everything.
+  if (autoRunActive) {
+    autoRunActive = false;
+    Object.values(sellerState).forEach(st => { st.shouldStop = true; st.autoRetry = false; });
+    setAutoRunBtn();
+    setQS('ok', 'Auto-run stopped');
+    return;
+  }
+
+  autoRunActive = true;
+  setAutoRunBtn();
+
+  try {
+    // 1) Check Queue
+    await runQuery();
+    if (!autoRunActive) return;
+    setAutoRunBtn(); // runQuery re-enables btn-query — disable it again
+
+    // 2) Select all sellers in the filtered set
+    filteredRows.forEach(row => selectedIds.add(String(row.amazon_selling_partner_id)));
+    updateSelCount();
+    renderTable();
+
+    // 3) Exchange & Compare per seller, cancelling with auto-renew when stuck
+    for (const row of [...filteredRows]) {
+      if (!autoRunActive) break;
+      const spId = String(row.amazon_selling_partner_id);
+      const st   = initSt(spId);
+      st.autoRetry  = true;   // auto-renew ON for the cancel loop
+      st.shouldStop = false;
+      const ok = await step23ForSeller(spId, row);
+      if (ok && autoRunActive) {
+        const regions  = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+        const anyStuck = regions.some(r => (st.queue[r]?.stuck || []).length > 0);
+        if (anyStuck) await runAutoRetryLoop(spId, row);
+      }
+      st.autoRetry = false;   // done with this seller
+    }
+
+    if (autoRunActive) setQS('ok', 'Auto-run complete — all sellers checked');
+    else               setQS('ok', 'Auto-run stopped');
+  } catch (e) {
+    setQS('err', 'Auto-run error: ' + e.message);
+  } finally {
+    autoRunActive = false;
+    setAutoRunBtn();
+  }
+}
+
+// ── Auto-retry coordinator ────────────────────────────────────────────────────
+// Loop: cancel all stuck → re-run Step 2+3 → if more stuck, repeat → until clean → turn off.
+async function runAutoRetryLoop(spId, row) {
+  const st      = initSt(spId);
+  const regions = [1,2,3].filter(r => row[`region_${r}_count`] > 0);
+
+  st.cancelling = true;
+  st.shouldStop = false;
+  refreshDetail(spId, row);
+
+  const MAX_ROUNDS = 10;
+  let round = 0;
+
+  while (st.autoRetry && !st.shouldStop && round++ < MAX_ROUNDS) {
+    // Cancel all stuck reports in every region
+    for (const regionId of regions) {
+      if ((st.queue[regionId]?.stuck||[]).length > 0 && !st.shouldStop) {
+        await cancelAllWithRetry(spId, regionId);
+      }
+    }
+
+    if (st.shouldStop || !st.autoRetry) break;
+
+    // Re-run Step 2+3 to detect new stuck reports
+    st.waitMsg = 'Re-checking queue…';
+    regions.forEach(r => updateRetryBar(spId, r));
+    await step23ForSeller(spId, row);
+    st.waitMsg = null;
+
+    const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
+    if (!anyStuck) {
+      // Queue is clean — done
+      st.autoRetry = false;
+      break;
+    }
+    // New stuck reports found — loop will cancel them next round
+  }
+
+  st.cancelling = false;
+  st.autoRetry  = false;
+  st.waitMsg    = null;
+  refreshDetail(spId, row);
+  updateCell(spId);
+}
+
+// Cancel region: pause 30s after every 2nd failure, then restart from beginning.
+// With auto-retry OFF: single pass, no waits.
+async function cancelAllWithRetry(spId, regionId) {
+  const st    = initSt(spId);
+  const stuck = st.queue[regionId]?.stuck || [];
+  let failCount  = 0;
+  let restarts   = 0;
+  const MAX_RESTARTS = 8; // hard stop after N × 30s pauses
+
+  for (let i = 0; i < stuck.length; i++) {
+    if (st.shouldStop) break;
+
+    const id = stuck[i];
+    if ((st.cancelStatus[id] || 'idle') === 'cancelled') continue;
+
+    await cancelOne(spId, regionId, id);
+    await sleep(300);
+
+    if (st.cancelStatus[id] === 'failed') {
+      failCount++;
+      if (failCount >= 3 && st.autoRetry && restarts < MAX_RESTARTS) {
+        restarts++;
+        failCount = 0;
+
+        // 60-second countdown before retry
+        for (let sec = 60; sec > 0; sec--) {
+          if (st.shouldStop || !st.autoRetry) break;
+          st.waitMsg = `3 failures — retrying in ${sec}s…`;
+          updateRetryBar(spId, regionId);
+          await sleep(1000);
+        }
+        st.waitMsg = null;
+        if (st.shouldStop || !st.autoRetry) break;
+
+        // Reset all failed → idle and restart list from top
+        stuck.forEach(pid => {
+          if (st.cancelStatus[pid] === 'failed') st.cancelStatus[pid] = 'idle';
+        });
+        i = -1; // will be incremented to 0
+      }
+    }
+  }
+
+  st.waitMsg = null;
+}
+
+// Single pass with no retry logic (used when auto-retry is OFF)
+async function doCancelPass(spId, regionId) {
+  const st = initSt(spId);
+  const pending = (st.queue[regionId]?.stuck || [])
+    .filter(id => (st.cancelStatus[id] || 'idle') !== 'cancelled');
+  for (const id of pending) {
+    if (st.shouldStop) break;
+    await cancelOne(spId, regionId, id);
+    await sleep(300);
+  }
+}
+
+// ── Manual Cancel All ─────────────────────────────────────────────────────────
+async function cancelAll(spId, regionId) {
+  const st = initSt(spId);
+  if (st.cancelling) return;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+
+  if (st.autoRetry) {
+    // Auto-retry ON: full loop (cancel → re-check → repeat until clean → turn off)
+    await runAutoRetryLoop(spId, row);
+  } else {
+    // Auto-retry OFF: single pass, no waits
+    st.cancelling = true;
+    st.shouldStop = false;
+    refreshDetail(spId, row);
+    await doCancelPass(spId, regionId);
+    st.cancelling = false;
+    st.waitMsg    = null;
+    refreshDetail(spId, row);
+    updateCell(spId);
+  }
+}
+
+// ── Cancel ALL stuck for a seller (every region, single pass) ──────────────────
+async function cancelAllSeller(spId) {
+  const st = initSt(spId);
+  if (st.cancelling) return;
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  if (!row) return;
+  const regions = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+
+  st.cancelling = true;
+  st.shouldStop = false;
+  refreshDetail(spId, row);
+
+  for (const regionId of regions) {
+    if (st.shouldStop) break;
+    if ((st.queue[regionId]?.stuck || []).length > 0) {
+      await doCancelPass(spId, regionId);
+    }
+  }
+
+  st.cancelling = false;
+  st.waitMsg    = null;
+  refreshDetail(spId, row);
+  updateCell(spId);
+}
+
+// ── Step 4 — cancel one report ────────────────────────────────────────────────
+async function cancelOne(spId, regionId, reportId) {
+  const st = initSt(spId);
+  st.cancelStatus[reportId] = 'cancelling';
+  updateReportRow(reportId, spId, regionId);
+
+  try {
+    const resp = await fetch('/api/step4/cancel-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_id: reportId, access_token: st.token, region_id: regionId }),
+    });
+    const data = await resp.json();
+    st.cancelStatus[reportId] = data.ok ? 'cancelled' : 'failed';
+    if (data.ok && st.queue[regionId]?.stuck) {
+      st.queue[regionId].stuck = st.queue[regionId].stuck.filter(i => i !== reportId);
+    }
+  } catch {
+    st.cancelStatus[reportId] = 'failed';
+  }
+
+  updateReportRow(reportId, spId, regionId);
+  updateCell(spId);
+  updateRetryBar(spId, regionId);
+}
+
+function updateReportRow(reportId, spId, regionId) {
+  const el = document.getElementById(`rr-${reportId}`);
+  if (el) el.outerHTML = renderReportRow(reportId, spId, regionId);
+}
+
+function updateRetryBar(spId, regionId) {
+  const el = document.getElementById(`retry-bar-${spId}-${regionId}`);
+  if (!el) return;
+  const st      = sellerState[spId] || {};
+  const stuck   = st.queue[regionId]?.stuck || [];
+  const cancelledN = stuck.filter(id => (st.cancelStatus||{})[id] === 'cancelled').length;
+  const failedN    = stuck.filter(id => (st.cancelStatus||{})[id] === 'failed').length;
+  const remainN    = stuck.length - cancelledN;
+  el.innerHTML = retryBarHTML(spId, regionId, remainN, failedN, st);
+}
+
+// ── Util ──────────────────────────────────────────────────────────────────────
+function updateCell(spId) {
+  const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+  const st  = sellerState[spId] || {};
+  const c2  = document.getElementById(`s2-${spId}`);
+  const c3  = document.getElementById(`s3-${spId}`);
+  if (c2) c2.innerHTML = renderToken(st);
+  if (c3 && row) c3.innerHTML = renderQueue(st, row);
+}
+
+// ── Global SQP Status card ────────────────────────────────────────────────────
+let sqpStatusActiveWeeks = null;
+
+async function loadSqpStatus(weeks) {
+  sqpStatusActiveWeeks = weeks;
+
+  // Highlight active tab
+  [1, 4, 8, 12].forEach(w => {
+    const btn = document.getElementById(`sqp-ws-${w}`);
+    if (btn) btn.classList.toggle('active', w === weeks);
+  });
+
+  const content = document.getElementById('sqp-status-content');
+  content.innerHTML = `<span class="token-idle">Loading…</span>`;
+
+  try {
+    const resp = await fetch(`/api/sqp-global-status?weeks=${weeks}`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    content.innerHTML = renderSqpStatusTable(data.rows);
+  } catch(e) {
+    content.innerHTML = `<span class="token-err">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderSqpStatusTable(rows) {
+  if (!rows.length) return `<span class="token-idle">No data found for this period.</span>`;
+
+  let html = `<div class="sqp-status-wrap"><table class="sqp-stat-table">
+    <thead><tr>
+      <th>Week of (Sunday)</th>
+      <th>Done</th>
+      <th>Not Done</th>
+      <th>Unable</th>
+      <th>Total</th>
+      <th style="min-width:220px">Completion</th>
+    </tr></thead><tbody>`;
+
+  rows.forEach(row => {
+    const doneN    = row.done_count     || 0;
+    const notDoneN = row.not_done_count || 0;
+    const unableN  = row.unable_count   || 0;
+    const denominator = doneN + notDoneN;
+    const pct   = denominator > 0 ? Math.round((doneN / denominator) * 100) : 0;
+    const color = pct >= 95 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
+
+    html += `<tr>
+      <td class="week-label mono">${esc(row.start_date)}</td>
+      <td class="sqp-done">${doneN.toLocaleString()}</td>
+      <td class="sqp-notdone">${notDoneN.toLocaleString()}</td>
+      <td class="sqp-unable">${unableN.toLocaleString()}</td>
+      <td class="sqp-total">${(row.total_count || 0).toLocaleString()}</td>
+      <td>
+        <div class="pbar-wrap">
+          <div class="pbar-track">
+            <div class="pbar-fill" style="width:${pct}%;background:${color}"></div>
+          </div>
+          <span class="pbar-pct" style="color:${color}">${pct}%</span>
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  return html + `</tbody></table></div>`;
+}
+
+// ── Card fold/expand ──────────────────────────────────────────────────────────
+function toggleCard(id) {
+  const body = document.getElementById(`body-${id}`);
+  const btn  = document.getElementById(`fold-${id}`);
+  const open = !body.classList.contains('hidden');
+  body.classList.toggle('hidden', open);
+  if (btn) btn.textContent = open ? '▶' : '▼';
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function setQS(state, text) {
+  document.getElementById('dot-query').className = 'dot ' + state;
+  document.getElementById('lbl-query').textContent = text;
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Reports PUT (Batch) ────────────────────────────────────────────────────────
+let repSince = 0;
+function repEl(id) { return document.getElementById(id); }
+
+async function repPoll() {
+  try {
+    const r = await fetch('/api/reports/state?since=' + repSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      repEl('rep-log').appendChild(div);
+      repSince = e.i + 1;
+    }
+    if (s.logs.length) repEl('rep-log').scrollTop = repEl('rep-log').scrollHeight;
+    repEl('rep-c-done').textContent   = s.counters.done;
+    repEl('rep-c-ok').textContent     = s.counters.ok;
+    repEl('rep-c-failed').textContent = s.counters.failed;
+    repEl('rep-c-total').textContent  = s.counters.total;
+    repSetRunning(s.running, s.dry_run);
+  } catch (_) {}
+}
+
+function repSetRunning(running, dry) {
+  repEl('rep-go').disabled = running;
+  repEl('rep-stop').disabled = !running;
+  repEl('rep-dot').className = 'dot ' + (running ? 'spin' : '');
+  repEl('rep-status').textContent = running ? (dry ? 'Running (dry-run)…' : 'Running…') : 'Idle';
+}
+
+function repSafetyChanged() {
+  const on = repEl('rep-safety').checked;
+  repEl('rep-sw-off').classList.toggle('rep-sw-active', !on);
+  repEl('rep-sw-on').classList.toggle('rep-sw-active', on);
+}
+
+async function repGo() {
+  repEl('rep-err').textContent = '';
+  const dry = repEl('rep-dry').checked;
+  const safety = repEl('rep-safety').checked;
+  if (!dry && safety && !confirm('Safety is ON — run LIVE and PUT to production for every seller in the list?')) return;
+  repSince = 0;
+  repEl('rep-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/reports/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: repEl('rep-body').value, sellers: repEl('rep-sellers').value, dry_run: dry }),
+    });
+    const d = await r.json();
+    if (!d.ok) { repEl('rep-err').textContent = d.error || 'Failed to start.'; return; }
+    repPoll();
+  } catch (e) {
+    repEl('rep-err').textContent = e.message;
+  }
+}
+
+async function repStop() { await fetch('/api/reports/stop', { method: 'POST' }); }
+
+setInterval(repPoll, 1000);
+repPoll();
+
+// ── Marketing Streams ──────────────────────────────────────────────────────────
+let msSince = 0;
+let msRows = [];
+const msSelected = new Set();
+
+function msMarketplaces() {
+  const out = [];
+  if (document.getElementById('ms-mp-US').checked) out.push('US');
+  if (document.getElementById('ms-mp-CA').checked) out.push('CA');
+  return out;
+}
+
+// Statuses a stream subscription can report. ACTIVE / ARCHIVED / SUSPENDED /
+// PENDING_CONFIRMATION come from Amazon; MISSING (no subscription for that
+// dataset) and ERROR (the seller's check itself failed) are ours.
+const MS_STATUSES = ['ACTIVE', 'MISSING', 'SUSPENDED', 'ARCHIVED',
+                     'PENDING_CONFIRMATION', 'PENDING', 'ERROR'];
+const msStatusKnown = new Set(MS_STATUSES);
+const msStatusSel = new Set(MS_STATUSES);   // all shown by default
+
+function msTone(s) {
+  if (s === 'ACTIVE') return 'act';
+  if (s === 'MISSING' || s === 'SUSPENDED' || s === 'ERROR') return 'miss';
+  if (s === 'ARCHIVED') return 'na';
+  return 'pend';
+}
+
+function msPill(status) {
+  const s = (status || '-').toUpperCase();
+  if (s === '-') return `<span class="ms-pill na">—</span>`;
+  return `<span class="ms-pill ${msTone(s)}">${esc(s)}</span>`;
+}
+
+// The statuses a single row carries (both datasets, or ERROR if it failed).
+function msRowStatuses(r) {
+  if (r.state === 'error') return ['ERROR'];
+  return [r.traffic, r.conversion]
+    .map(v => String(v || '').toUpperCase())
+    .filter(v => v && v !== '-');
+}
+
+function msRenderStatusChips() {
+  // Count rows per status, not streams — a row with both streams ACTIVE is one row.
+  const counts = {};
+  msRows.forEach(r => new Set(msRowStatuses(r)).forEach(s => { counts[s] = (counts[s] || 0) + 1; }));
+  // Any status Amazon returns that we didn't anticipate shows up too, selected.
+  Object.keys(counts).forEach(s => {
+    if (!msStatusKnown.has(s)) { msStatusKnown.add(s); msStatusSel.add(s); }
+  });
+  const extras = [...msStatusKnown].filter(s => !MS_STATUSES.includes(s)).sort();
+  const all = [...MS_STATUSES, ...extras];
+  document.getElementById('ms-status-chips').innerHTML = all.map(s => {
+    const on = msStatusSel.has(s);
+    const n = counts[s] || 0;
+    return `<span class="ms-chip ${on ? 'on tone-' + msTone(s) : ''}"
+      onclick="msToggleStatus('${s}')" title="${on ? 'Click to hide' : 'Click to show'} ${s}"
+      >${s}<span class="n">${n}</span></span>`;
+  }).join('');
+}
+
+function msToggleStatus(s) {
+  msStatusSel.has(s) ? msStatusSel.delete(s) : msStatusSel.add(s);
+  msRenderTable();
+}
+
+function msStatusAll(on) {
+  msStatusKnown.forEach(s => on ? msStatusSel.add(s) : msStatusSel.delete(s));
+  msRenderTable();
+}
+
+function msNeedsFix(r) {
+  return r.state === 'missing' || r.state === 'partial';
+}
+
+// Rows currently shown, after the text filter and the status chips.
+// A row is kept when any of its statuses is selected.
+function msVisibleRows() {
+  const q = (document.getElementById('ms-filter').value || '').trim().toLowerCase();
+  return msRows.filter(r => {
+    if (!msRowStatuses(r).some(s => msStatusSel.has(s))) return false;
+    if (!q) return true;
+    return String(r.seller_id).toLowerCase().includes(q) ||
+           String(r.name || '').toLowerCase().includes(q);
+  });
+}
+
+function msRenderTable() {
+  const tb = document.getElementById('ms-tbody');
+  msRenderStatusChips();
+  if (!msRows.length) {
+    tb.innerHTML = `<tr><td colspan="8"><span class="token-idle">Paste seller IDs and press Check Status.</span></td></tr>`;
+    document.getElementById('ms-fix-sel').disabled = true;
+    document.getElementById('ms-fix-all').disabled = true;
+    return;
+  }
+  const rows = msVisibleRows();
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="8"><span class="token-idle">No rows match the current filter.</span></td></tr>`;
+  } else {
+    tb.innerHTML = rows.map(r => {
+      const fixable = msNeedsFix(r);
+      const sel = msSelected.has(r.key);
+      const note = r.error ? `<span class="token-err">${esc(r.error)}</span>` : esc(r.note || '');
+      // copy seller by click — the ms-copy span below is part of that feature
+      return `<tr>
+        <td class="center">${fixable ? `<input type="checkbox" ${sel?'checked':''} onchange="msToggleRow('${esc(r.key)}',this)">` : ''}</td>
+        <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
+        <td class="ms-name" title="${esc(r.name || '')}">${esc(r.name || '—')}</td>
+        <td>${esc(r.marketplace)}</td>
+        <td class="mono">${r.profile_id != null ? esc(r.profile_id) : '—'}</td>
+        <td>${msPill(r.traffic)}</td>
+        <td>${msPill(r.conversion)}</td>
+        <td>${note}</td>
+      </tr>`;
+    }).join('');
+  }
+  // Bulk actions operate on what is visible, so filters scope them too.
+  const fixable = rows.filter(msNeedsFix);
+  document.getElementById('ms-fix-all').disabled = fixable.length === 0;
+  document.getElementById('ms-fix-sel').disabled = msSelected.size === 0;
+  const chkAll = document.getElementById('ms-chk-all');
+  if (chkAll) chkAll.checked = fixable.length > 0 && fixable.every(r => msSelected.has(r.key));
+}
+
+/* ══ FEATURE: copy seller by click ═════════════════════════════════════════
+   Copies the clicked seller ID to the clipboard and flashes the cell green.
+   To remove: delete this function, the .ms-copy CSS block, and the
+   <span class="ms-copy" …> wrapper in msRenderTable above.
+   ═════════════════════════════════════════════════════════════════════════ */
+function msCopySeller(el, sellerId) {
+  const flash = () => {
+    el.classList.add('copied');
+    const original = el.textContent;
+    el.textContent = 'copied ✓';
+    setTimeout(() => { el.textContent = original; el.classList.remove('copied'); }, 800);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(sellerId).then(flash).catch(() => fallback());
+  } else {
+    fallback();
+  }
+  function fallback() {
+    // http://127.0.0.1 has no async clipboard in some browsers — use execCommand.
+    const ta = document.createElement('textarea');
+    ta.value = sellerId;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); flash(); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+}
+/* ══ END FEATURE: copy seller by click ════════════════════════════════════ */
+
+function msToggleRow(key, chk) {
+  chk.checked ? msSelected.add(key) : msSelected.delete(key);
+  msRenderTable();
+}
+
+function msToggleAll(chk) {
+  msVisibleRows().filter(msNeedsFix).forEach(r =>
+    chk.checked ? msSelected.add(r.key) : msSelected.delete(r.key));
+  msRenderTable();
+}
+
+async function msPoll() {
+  try {
+    const r = await fetch('/api/ms/state?since=' + msSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('ms-log').appendChild(div);
+      msSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('ms-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('ms-c-done').textContent   = s.counters.done;
+    document.getElementById('ms-c-active').textContent = s.counters.active;
+    document.getElementById('ms-c-fixed').textContent  = s.counters.fixed;
+    document.getElementById('ms-c-failed').textContent = s.counters.failed;
+    document.getElementById('ms-c-total').textContent  = s.counters.total;
+    msRows = s.rows || [];
+    msRenderTable();
+    msSetRunning(s.running, s.mode);
+  } catch (_) {}
+}
+
+function msSetRunning(running, mode) {
+  document.getElementById('ms-check').disabled = running;
+  document.getElementById('ms-stop').disabled = !running;
+  document.getElementById('ms-dot').className = 'dot ' + (running ? 'spin' : '');
+  document.getElementById('ms-status').textContent =
+    running ? (mode === 'fix' ? 'Adding MS…' : 'Checking…') : 'Idle';
+  if (running) {
+    document.getElementById('ms-fix-sel').disabled = true;
+    document.getElementById('ms-fix-all').disabled = true;
+  }
+}
+
+async function msStart(payload) {
+  document.getElementById('ms-err').textContent = '';
+  msSince = 0;
+  document.getElementById('ms-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/ms/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) { document.getElementById('ms-err').textContent = d.error || 'Failed to start.'; return; }
+    msPoll();
+  } catch (e) {
+    document.getElementById('ms-err').textContent = e.message;
+  }
+}
+
+function msCheck() {
+  msSelected.clear();
+  msStart({
+    mode: 'check',
+    sellers: document.getElementById('ms-sellers').value,
+    marketplaces: msMarketplaces(),
+  });
+}
+
+function msFixSelected() {
+  const targets = msRows
+    .filter(r => msSelected.has(r.key))
+    .map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
+  if (!targets.length) return;
+  msStart({ mode: 'fix', targets });
+}
+
+function msFixAll() {
+  // Scoped to the visible rows so the text filter and status chips also limit
+  // what gets fixed.
+  const targets = msVisibleRows().filter(msNeedsFix)
+    .map(r => ({ seller_id: r.seller_id, marketplace: r.marketplace }));
+  if (!targets.length) return;
+  msStart({ mode: 'fix', targets });
+}
+
+async function msStop() { await fetch('/api/ms/stop', { method: 'POST' }); }
+
+setInterval(msPoll, 1000);
+msPoll();
+
+// ── Subscriptions ──────────────────────────────────────────────────────────────
+let subsSince = 0;
+let subsLastRefresh = 0;
+
+function subsPill(status) {
+  const s = String(status || '').toUpperCase();
+  const cls = { SENT: 'sent', FETCHING: 'fetching', FETCHED: 'fetched', ERROR: 'error' }[s] || 'sent';
+  const label = { SENT: 'SCHEDULERS SENT', FETCHING: 'REPORTS FETCHING',
+                  FETCHED: 'REPORTS FETCHED', ERROR: 'ERROR' }[s] || s;
+  return `<span class="subs-pill ${cls}">${esc(label)}</span>`;
+}
+
+function subsRenderRows(rows) {
+  const tb = document.getElementById('subs-tbody');
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="7"><span class="token-idle">Logbook is empty.</span></td></tr>`;
+    document.getElementById('subs-summary').textContent = '';
+    return;
+  }
+  tb.innerHTML = rows.map(r => `
+    <tr>
+      <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
+      <td class="ms-name" title="${esc(r.name || '')}">${esc(r.name || '—')}</td>
+      <td>${subsPill(r.status)}${r.error ? ` <span class="token-err">${esc(r.error)}</span>` : ''}</td>
+      <td class="mono">${r.pending > 0 ? `${r.pending} pending / ${r.total}` : (r.total > 0 ? `${r.total} done` : '—')}</td>
+      <td class="mono">${r.age_hours}h ago</td>
+      <td class="mono">${r.expires_in_hours > 0 ? r.expires_in_hours + 'h' : 'expired'}</td>
+      <td><button class="btn btn-sm btn-ghost" onclick="subsRemove('${esc(r.seller_id)}')" title="Remove from logbook">✕</button></td>
+    </tr>`).join('');
+
+  const ready = rows.filter(r => r.ready);
+  const el = document.getElementById('subs-summary');
+  el.innerHTML = ready.length
+    ? `<span style="color:#4ade80">${ready.length} ready to send on</span> · ${rows.length} tracked`
+    : `${rows.length} tracked`;
+}
+
+async function subsPoll() {
+  try {
+    const r = await fetch('/api/subs/state?since=' + subsSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('subs-log').appendChild(div);
+      subsSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('subs-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    subsRenderRows(s.rows || []);
+    document.getElementById('subs-add').disabled = s.running;
+    document.getElementById('subs-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('subs-status').textContent = s.running ? 'Sending…' : 'Idle';
+
+    // Re-check backfill progress periodically while anything is outstanding.
+    const auto = document.getElementById('subs-auto').checked;
+    const pending = (s.rows || []).some(r => r.status === 'SENT' || r.status === 'FETCHING');
+    if (auto && pending && !s.running && Date.now() - subsLastRefresh > 60000) {
+      subsLastRefresh = Date.now();
+      fetch('/api/subs/refresh', { method: 'POST' });
+    }
+  } catch (_) {}
+}
+
+async function subsPreview() {
+  const err = document.getElementById('subs-err');
+  const box = document.getElementById('subs-payload');
+  err.textContent = '';
+  box.classList.add('hidden');
+  try {
+    const r = await fetch('/api/subs/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('subs-sellers').value,
+        lookback_days: document.getElementById('subs-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Preview failed.'; return; }
+    box.textContent = JSON.stringify(d.payload, null, 2);
+    box.classList.remove('hidden');
+    if (d.no_rows && d.no_rows.length) {
+      err.textContent = 'No scheduler rows for: ' + d.no_rows.join(', ') +
+        ' (already backfilled, or seller not found)';
+    }
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function subsAdd() {
+  const err = document.getElementById('subs-err');
+  err.textContent = '';
+  subsSince = 0;
+  document.getElementById('subs-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/subs/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('subs-sellers').value,
+        lookback_days: document.getElementById('subs-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    subsPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function subsRefresh() {
+  subsLastRefresh = Date.now();
+  await fetch('/api/subs/refresh', { method: 'POST' });
+  subsPoll();
+}
+
+async function subsRemove(sellerId) {
+  await fetch('/api/subs/remove', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seller_id: sellerId }),
+  });
+  subsPoll();
+}
+
+setInterval(subsPoll, 2000);
+subsPoll();
+
+// ── Upgrader ───────────────────────────────────────────────────────────────────
+let upgSince = 0;
+
+function upgToggles() {
+  [['upg-ms', 'upg-ms-off', 'upg-ms-on'], ['upg-subs', 'upg-subs-off', 'upg-subs-on']]
+    .forEach(([box, offEl, onEl]) => {
+      const on = document.getElementById(box).checked;
+      document.getElementById(offEl).classList.toggle('rep-sw-active', !on);
+      document.getElementById(onEl).classList.toggle('rep-sw-active', on);
+    });
+  document.getElementById('upg-lookback-wrap').style.opacity =
+    document.getElementById('upg-subs').checked ? '1' : '.35';
+}
+
+// Streams status per combination — what actually happened, not just whether
+// the marketplace could support it.
+function upgStreamsCell(c) {
+  const s = c.streams_status || '';
+  const d = c.streams_detail ? ` <span class="upg-detail">${esc(c.streams_detail)}</span>` : '';
+  if (!c.streams_supported) return '<span class="ms-pill na">NOT SUPPORTED</span>';
+  switch (s) {
+    case 'ADDED':    return `<span class="ms-pill act">ADDED</span>${d}`;
+    case 'ACTIVE':   return `<span class="ms-pill act">ALREADY ACTIVE</span>`;
+    case 'FAILED':   return `<span class="ms-pill miss">FAILED</span>${d}`;
+    case 'CHECKING': return '<span class="ms-pill pend">CHECKING…</span>';
+    case 'OFF':      return '<span class="ms-pill na">OFF</span>';
+    default:         return '<span class="ms-pill pend">SUPPORTED</span>';
+  }
+}
+
+function upgSubsCell(c) {
+  switch (c.subs_status || '') {
+    case 'SENT':    return '<span class="ms-pill act">SENT</span>';
+    case 'FAILED':  return '<span class="ms-pill miss">FAILED</span>';
+    case 'NO ROWS': return '<span class="ms-pill na">NO ROWS</span>';
+    case 'OFF':     return '<span class="ms-pill na">OFF</span>';
+    default:        return '<span class="ms-pill pend">PENDING</span>';
+  }
+}
+
+function upgSchedCell(c) {
+  const total = c.sched_total || 0;
+  const sent = c.sched_sent || 0;
+  if (!total) return '<span class="ms-pill na">SKIPPED</span>';
+  if (c.sched_status === 'FAILED') return `<span class="ms-pill miss">0/${total}</span>`;
+  if (c.sched_status === 'SENT')   return `<span class="ms-pill act">${sent}/${total}</span>`;
+  return `<span class="ms-pill pend">0/${total}</span>`;
+}
+
+function upgRenderCombos(combos) {
+  const tb = document.getElementById('upg-tbody');
+  if (!combos || !combos.length) {
+    tb.innerHTML = `<tr><td colspan="6"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>`;
+    return;
+  }
+  tb.innerHTML = combos.map(c => `
+    <tr>
+      <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(c.selling_partner_id)}')">${esc(c.selling_partner_id)}</span></td>
+      <td>${esc(c.region_name || '—')}</td>
+      <td>${esc(c.marketplace_name || '—')}</td>
+      <td>${upgStreamsCell(c)}</td>
+      <td>${upgSubsCell(c)}</td>
+      <td>${upgSchedCell(c)}</td>
+    </tr>`).join('');
+}
+
+async function upgPoll() {
+  try {
+    const r = await fetch('/api/upg/state?since=' + upgSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('upg-log').appendChild(div);
+      upgSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('upg-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('upg-c-sellers').textContent = s.counters.sellers;
+    document.getElementById('upg-c-combos').textContent  = s.counters.combos;
+    document.getElementById('upg-c-rows').textContent    = s.counters.ad_rows;
+    document.getElementById('upg-c-ms').textContent      = s.counters.ms_added;
+    document.getElementById('upg-c-failed').textContent  = s.counters.failed;
+    if (s.combos && s.combos.length) upgRenderCombos(s.combos);
+    document.getElementById('upg-go').disabled   = s.running;
+    document.getElementById('upg-stop').disabled = !s.running;
+    document.getElementById('upg-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('upg-status').textContent = s.running ? 'Upgrading…' : 'Idle';
+  } catch (_) {}
+}
+
+async function upgPreview() {
+  const err = document.getElementById('upg-err');
+  const box = document.getElementById('upg-payload');
+  err.textContent = '';
+  box.classList.add('hidden');
+  try {
+    const r = await fetch('/api/upg/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellers: document.getElementById('upg-sellers').value }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Preview failed.'; return; }
+    upgRenderCombos(d.combos);
+    box.textContent =
+      `${d.combos.length} combination(s) × ${d.report_types} report types = ${d.row_count} scheduler rows\n\n` +
+      `Sample:\n` + JSON.stringify(d.sample, null, 2);
+    box.classList.remove('hidden');
+    const notes = [];
+    if (d.no_profile && d.no_profile.length) notes.push('No advertising profile: ' + d.no_profile.join(', '));
+    if (d.skipped && d.skipped.length) notes.push('Missing region/marketplace: ' + [...new Set(d.skipped)].join(', '));
+    err.textContent = notes.join(' · ');
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function upgGo() {
+  const err = document.getElementById('upg-err');
+  err.textContent = '';
+  upgSince = 0;
+  document.getElementById('upg-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/upg/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('upg-sellers').value,
+        marketing_streams: document.getElementById('upg-ms').checked,
+        subscriptions: document.getElementById('upg-subs').checked,
+        lookback_days: document.getElementById('upg-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    upgPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function upgStop() { await fetch('/api/upg/stop', { method: 'POST' }); }
+
+upgToggles();
+setInterval(upgPoll, 1500);
+upgPoll();
+
+// ── Remover (destructive) ──────────────────────────────────────────────────────
+let rmSince = 0;
+
+function rmSafetyChanged() {
+  const on = document.getElementById('rm-safety').checked;
+  document.getElementById('rm-sw-off').classList.toggle('rep-sw-active', !on);
+  document.getElementById('rm-sw-on').classList.toggle('rep-sw-active', on);
+}
+
+async function rmPoll() {
+  try {
+    const r = await fetch('/api/remove/state?since=' + rmSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('rm-log').appendChild(div);
+      rmSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('rm-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('rm-c-progress').textContent = `${s.counters.deleted}/${s.counters.total}`;
+    document.getElementById('rm-c-failed').textContent   = s.counters.failed;
+    document.getElementById('rm-c-total').textContent    = s.counters.total;
+    document.getElementById('rm-go').disabled   = s.running;
+    document.getElementById('rm-stop').disabled = !s.running;
+    document.getElementById('rm-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('rm-status').textContent = s.running ? 'Deleting…' : 'Idle';
+  } catch (_) {}
+}
+
+async function rmGo() {
+  const err = document.getElementById('rm-err');
+  err.textContent = '';
+  const raw = document.getElementById('rm-sellers').value;
+  const ids = raw.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+  const unique = [...new Set(ids)];
+  if (!unique.length) { err.textContent = 'No seller IDs provided.'; return; }
+
+  if (document.getElementById('rm-safety').checked) {
+    const preview = unique.slice(0, 10).join(', ') + (unique.length > 10 ? `, … (+${unique.length - 10} more)` : '');
+    if (!confirm(
+      `PERMANENTLY DELETE ${unique.length} seller(s) from MRP?\n\n${preview}\n\n` +
+      `This cannot be undone.`)) return;
+  }
+
+  rmSince = 0;
+  document.getElementById('rm-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/remove/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellers: raw }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    rmPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function rmStop() { await fetch('/api/remove/stop', { method: 'POST' }); }
+
+setInterval(rmPoll, 1000);
+rmPoll();
+</script>
+</body>
+</html>
