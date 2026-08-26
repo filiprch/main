@@ -1552,7 +1552,43 @@ def _upg_fetch_combos(seller_ids: list) -> list:
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_UPG_COMBOS_QUERY, {"ids": ids})
-            return [dict(r) for r in cur.fetchall()]
+            rows = [dict(r) for r in cur.fetchall()]
+
+    return _upg_annotate(rows)
+
+
+def _upg_annotate(rows: list) -> list:
+    """Attach the per-row result fields the UI tracks. Safe to call twice."""
+    supported = set(MS_MARKETPLACES.values())
+    for c in rows:
+        if "key" in c:
+            continue
+        usable = bool(c.get("region_name") and c.get("marketplace_name"))
+        c["key"] = f"{c.get('selling_partner_id')}|{c.get('marketplace_id')}"
+        c["streams_supported"] = c.get("marketplace_id") in supported
+        c["sched_total"] = len(UPGRADER_REPORT_TYPES) if usable else 0
+        c["sched_sent"] = 0
+        c["sched_status"] = "PENDING" if usable else "SKIPPED"
+        c["streams_status"] = "" if c["streams_supported"] else "UNSUPPORTED"
+        c["streams_detail"] = ""
+        c["subs_status"] = ""
+    return rows
+
+
+def _upg_set(keys, **fields) -> None:
+    """Update result fields on the matching combination rows."""
+    keys = {keys} if isinstance(keys, str) else set(keys)
+    with _upg_lock:
+        for c in _upg_state["combos"]:
+            if c.get("key") in keys:
+                c.update(fields)
+
+
+def _upg_set_by_seller(seller_id: str, **fields) -> None:
+    with _upg_lock:
+        for c in _upg_state["combos"]:
+            if str(c.get("selling_partner_id")) == str(seller_id):
+                c.update(fields)
 
 
 def _upg_build_payload(combos: list) -> tuple:
@@ -1600,7 +1636,7 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
 
         # ── 1. Advertising schedulers for every seller/region/marketplace ──
         try:
-            combos = _upg_fetch_combos(seller_ids)
+            combos = _upg_annotate(_upg_fetch_combos(seller_ids))
         except Exception as exc:
             _upg_log("error", f"Combination lookup failed — {exc}")
             with _upg_lock:
@@ -1617,6 +1653,13 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
             f"{c['selling_partner_id']}/{c['region_name']}/{c['marketplace_name']}" for c in combos[:6]
         ) + ("…" if len(combos) > 6 else ""))
 
+        # Mark what the toggles have switched off, so an empty cell never reads
+        # as work still pending.
+        if not do_ms:
+            _upg_set([c["key"] for c in combos if c.get("streams_supported")], streams_status="OFF")
+        if not do_subs:
+            _upg_set([c["key"] for c in combos], subs_status="OFF")
+
         payload, skipped = _upg_build_payload(combos)
         if skipped:
             _upg_log("warn", f"Skipped {len(skipped)} combination(s) missing region/marketplace: "
@@ -1624,20 +1667,25 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
         if payload:
             _upg_log("info", f"Sending {len(payload)} advertising scheduler row(s) "
                              f"({len(UPGRADER_REPORT_TYPES)} report types × {len(combos) - len(skipped)} combination(s))")
+            sent_keys = [c["key"] for c in combos if c.get("sched_total")]
             try:
                 resp = _subs_send(token, payload)
                 if 200 <= resp.status_code < 300:
                     body = (resp.text or "").strip().replace("\n", " ")[:160]
                     _upg_log("ok", f"Advertising schedulers → {resp.status_code} {body}")
+                    _upg_set(sent_keys, sched_sent=len(UPGRADER_REPORT_TYPES),
+                             sched_status="SENT")
                     with _upg_lock:
                         _upg_state["counters"]["ad_rows"] = len(payload)
                 else:
                     body = (resp.text or "").strip().replace("\n", " ")[:200]
                     _upg_log("error", f"Advertising schedulers → {resp.status_code} {body}")
+                    _upg_set(sent_keys, sched_status="FAILED")
                     with _upg_lock:
                         _upg_state["counters"]["failed"] += 1
             except Exception as exc:
                 _upg_log("error", f"Advertising schedulers failed — {exc}")
+                _upg_set(sent_keys, sched_status="FAILED")
                 with _upg_lock:
                     _upg_state["counters"]["failed"] += 1
 
@@ -1646,6 +1694,9 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
             _upg_log("info", f"Subscriptions: building backfill payload (lookback {lookback} days)")
             try:
                 subs_payload, counts = _subs_build_payload(seller_ids, lookback)
+                for sid in {str(s) for s in seller_ids}:
+                    if sid not in counts:
+                        _upg_set_by_seller(sid, subs_status="NO ROWS")
                 if not subs_payload:
                     _upg_log("warn", "Subscriptions: queries returned no rows — nothing to schedule.")
                 else:
@@ -1654,6 +1705,8 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
                     body = (resp.text or "").strip().replace("\n", " ")[:160]
                     _upg_log("ok" if ok else "error",
                              f"Subscriptions → {resp.status_code} {body}")
+                    for sid in counts:
+                        _upg_set_by_seller(sid, subs_status="SENT" if ok else "FAILED")
                     if ok:
                         with _upg_lock:
                             _upg_state["counters"]["subs"] = len(subs_payload)
@@ -1689,32 +1742,39 @@ def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
         # ── 3. Marketing Streams, only where the marketplace supports them ──
         if do_ms and not _upg_stop_event.is_set():
             supported = {v: k for k, v in MS_MARKETPLACES.items()}
-            targets = [(str(c["selling_partner_id"]), c["marketplace_id"], c["marketplace_name"])
-                       for c in combos if c.get("marketplace_id") in supported]
+            targets = [c for c in combos if c.get("marketplace_id") in supported]
             if not targets:
                 _upg_log("warn", "Marketing Streams: none of these marketplaces support streams "
                                  f"(supported: {', '.join(MS_MARKETPLACES)}) — skipped.")
             else:
                 _upg_log("info", f"Marketing Streams: {len(targets)} eligible seller/marketplace pair(s)")
                 cache = {}
-                for sid, mp_id, mp_name in targets:
+                for c in targets:
+                    sid = str(c["selling_partner_id"])
+                    mp_id, mp_name, key = c["marketplace_id"], c["marketplace_name"], c["key"]
                     if _upg_stop_event.is_set():
                         _upg_log("warn", "Stopped by user.")
                         break
+                    _upg_set(key, streams_status="CHECKING")
                     try:
                         res = _upg_ms_ensure(sid, mp_id, cache)
                         if not res["ok"]:
                             _upg_log("error", f"MS {sid} ({mp_name}): {res['error']}")
+                            _upg_set(key, streams_status="FAILED", streams_detail=res["error"])
                             with _upg_lock:
                                 _upg_state["counters"]["failed"] += 1
                         elif res["added"]:
+                            short = ", ".join(d.replace("sp-", "") for d in res["added"])
                             _upg_log("ok", f"MS {sid} ({mp_name}): added {', '.join(res['added'])}")
+                            _upg_set(key, streams_status="ADDED", streams_detail=short)
                             with _upg_lock:
                                 _upg_state["counters"]["ms_added"] += 1
                         else:
                             _upg_log("info", f"MS {sid} ({mp_name}): already active")
+                            _upg_set(key, streams_status="ACTIVE", streams_detail="traffic, conversion")
                     except Exception as exc:
                         _upg_log("error", f"MS {sid} ({mp_name}): {exc}")
+                        _upg_set(key, streams_status="FAILED", streams_detail=str(exc)[:120])
                         with _upg_lock:
                             _upg_state["counters"]["failed"] += 1
                     time.sleep(0.15)

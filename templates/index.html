@@ -311,6 +311,7 @@
     .rm-title { color: #f87171 !important; }
     .rm-warn { color: #f87171; font-weight: 600; }
     .rm-counters { grid-template-columns: repeat(3, 1fr); }
+    .upg-detail { color: #64748b; font-size: .7rem; margin-left: .25rem; }
 
     /* ══ FEATURE: copy seller by click ═══════════════════════════════════════
        Click a seller ID in the Marketing Streams table to copy it.
@@ -703,10 +704,11 @@
     <div class="table-wrap">
       <table class="ms-table">
         <thead>
-          <tr><th>Seller ID</th><th>Region</th><th>Marketplace</th><th>Streams</th></tr>
+          <tr><th>Seller ID</th><th>Region</th><th>Marketplace</th>
+              <th>Streams</th><th>Subscriptions</th><th>Schedulers</th></tr>
         </thead>
         <tbody id="upg-tbody">
-          <tr><td colspan="4"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>
+          <tr><td colspan="6"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -2019,8 +2021,6 @@ subsPoll();
 
 // ── Upgrader ───────────────────────────────────────────────────────────────────
 let upgSince = 0;
-// Marketplaces where Marketing Streams can be added (mirrors MS_MARKETPLACES).
-const UPG_MS_MARKETPLACES = ['United States', 'USA', 'US', 'Canada', 'CA'];
 
 function upgToggles() {
   [['upg-ms', 'upg-ms-off', 'upg-ms-on'], ['upg-subs', 'upg-subs-off', 'upg-subs-on']]
@@ -2033,24 +2033,56 @@ function upgToggles() {
     document.getElementById('upg-subs').checked ? '1' : '.35';
 }
 
+// Streams status per combination — what actually happened, not just whether
+// the marketplace could support it.
+function upgStreamsCell(c) {
+  const s = c.streams_status || '';
+  const d = c.streams_detail ? ` <span class="upg-detail">${esc(c.streams_detail)}</span>` : '';
+  if (!c.streams_supported) return '<span class="ms-pill na">NOT SUPPORTED</span>';
+  switch (s) {
+    case 'ADDED':    return `<span class="ms-pill act">ADDED</span>${d}`;
+    case 'ACTIVE':   return `<span class="ms-pill act">ALREADY ACTIVE</span>`;
+    case 'FAILED':   return `<span class="ms-pill miss">FAILED</span>${d}`;
+    case 'CHECKING': return '<span class="ms-pill pend">CHECKING…</span>';
+    case 'OFF':      return '<span class="ms-pill na">OFF</span>';
+    default:         return '<span class="ms-pill pend">SUPPORTED</span>';
+  }
+}
+
+function upgSubsCell(c) {
+  switch (c.subs_status || '') {
+    case 'SENT':    return '<span class="ms-pill act">SENT</span>';
+    case 'FAILED':  return '<span class="ms-pill miss">FAILED</span>';
+    case 'NO ROWS': return '<span class="ms-pill na">NO ROWS</span>';
+    case 'OFF':     return '<span class="ms-pill na">OFF</span>';
+    default:        return '<span class="ms-pill pend">PENDING</span>';
+  }
+}
+
+function upgSchedCell(c) {
+  const total = c.sched_total || 0;
+  const sent = c.sched_sent || 0;
+  if (!total) return '<span class="ms-pill na">SKIPPED</span>';
+  if (c.sched_status === 'FAILED') return `<span class="ms-pill miss">0/${total}</span>`;
+  if (c.sched_status === 'SENT')   return `<span class="ms-pill act">${sent}/${total}</span>`;
+  return `<span class="ms-pill pend">0/${total}</span>`;
+}
+
 function upgRenderCombos(combos) {
   const tb = document.getElementById('upg-tbody');
   if (!combos || !combos.length) {
-    tb.innerHTML = `<tr><td colspan="4"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>`;
+    tb.innerHTML = `<tr><td colspan="6"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>`;
     return;
   }
-  tb.innerHTML = combos.map(c => {
-    const mp = c.marketplace_name || '';
-    const streams = UPG_MS_MARKETPLACES.includes(mp)
-      ? '<span class="ms-pill act">SUPPORTED</span>'
-      : '<span class="ms-pill na">—</span>';
-    return `<tr>
+  tb.innerHTML = combos.map(c => `
+    <tr>
       <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(c.selling_partner_id)}')">${esc(c.selling_partner_id)}</span></td>
       <td>${esc(c.region_name || '—')}</td>
-      <td>${esc(mp || '—')}</td>
-      <td>${streams}</td>
-    </tr>`;
-  }).join('');
+      <td>${esc(c.marketplace_name || '—')}</td>
+      <td>${upgStreamsCell(c)}</td>
+      <td>${upgSubsCell(c)}</td>
+      <td>${upgSchedCell(c)}</td>
+    </tr>`).join('');
 }
 
 async function upgPoll() {
