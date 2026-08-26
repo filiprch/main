@@ -1472,6 +1472,340 @@ def remove_state():
         })
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Upgrader — CORE → Advanced: add the advertising schedulers that were never
+# activated, optionally with Marketing Streams and Subscriptions.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Every advertising report type an Advanced account should have scheduled.
+UPGRADER_REPORT_TYPES = [
+    "AD_GROUP_SPONSORED_PRODUCTS",
+    "AD_GROUP_SPONSORED_BRANDS",
+    "AD_GROUP_SPONSORED_VIDEO",
+    "AD_GROUP_SPONSORED_DISPLAY",
+    "PRODUCT_AD_SPONSORED_PRODUCTS",
+    "PRODUCT_AD_SPONSORED_DISPLAY",
+    "ASIN_SPONSORED_PRODUCTS",
+    "ASIN_SPONSORED_DISPLAY",
+    "SEARCH_TERM_SPONSORED_PRODUCTS",
+    "SEARCH_TERM_SPONSORED_BRANDS_KEYWORDS",
+    "SEARCH_TERM_SPONSORED_VIDEO_KEYWORDS",
+    "PURCHASED_PRODUCT_SPONSORED_BRANDS",
+    "LISTING_DETAILS",
+    "SPONSORED_PRODUCTS",
+    "SPONSORED_VIDEO_CAMPAIGN",
+    "V4_SPONSORED_BRANDS_CAMPAIGNS",
+    "SPONSORED_PRODUCTS_CAMPAIGNS",
+    "SPONSORED_BRANDS",
+    "SPONSORED_DISPLAY",
+    "SPONSORED_VIDEO",
+    "SPONSORED_PRODUCTS_PRODUCT_ADS",
+    "SPONSORED_PORTFOLIOS",
+    "SPONSORED_BRAND_CAMPAIGN",
+]
+
+# marketplace_id is needed to drive the Marketing Streams step, so it is
+# selected alongside the seller/region/marketplace combination.
+_UPG_COMBOS_QUERY = """
+    SELECT ap.amazon_selling_partner_id AS selling_partner_id,
+           ar.name                      AS region_name,
+           am.name                      AS marketplace_name,
+           am.id                        AS marketplace_id
+    FROM advertising_profile ap
+    LEFT JOIN amazon_marketplace am ON ap.account_info_marketplace_id = am.id
+    LEFT JOIN amazon_region ar      ON am.amazon_region_id = ar.id
+    WHERE ap.amazon_selling_partner_id = ANY (%(ids)s)
+    ORDER BY 1, 2, 3
+"""
+
+_upg_lock = threading.Lock()
+_upg_stop_event = threading.Event()
+_upg_state = {
+    "running": False,
+    "logs": [],
+    "combos": [],
+    "counters": {"sellers": 0, "combos": 0, "ad_rows": 0, "ms_added": 0,
+                 "subs": 0, "failed": 0},
+}
+
+
+def _upg_log(level: str, msg: str) -> None:
+    with _upg_lock:
+        _upg_state["logs"].append({
+            "i": len(_upg_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "msg": msg,
+        })
+
+
+def _upg_fetch_combos(seller_ids: list) -> list:
+    """Every (seller, region, marketplace) the seller has an ad profile in."""
+    ids = []
+    for s in seller_ids:
+        try:
+            ids.append(int(s))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(_UPG_COMBOS_QUERY, {"ids": ids})
+            return [dict(r) for r in cur.fetchall()]
+
+
+def _upg_build_payload(combos: list) -> tuple:
+    """One scheduler row per (combination × report type)."""
+    payload, skipped = [], []
+    for c in combos:
+        sid = c.get("selling_partner_id")
+        region = c.get("region_name")
+        marketplace = c.get("marketplace_name")
+        if not region or not marketplace:
+            skipped.append(str(sid))
+            continue
+        for rt in UPGRADER_REPORT_TYPES:
+            payload.append({
+                "sellerId": int(sid),
+                "marketplaceName": marketplace,
+                "reportType": rt,
+                "regionName": region,
+            })
+    return payload, skipped
+
+
+def _upg_ms_ensure(seller_id: str, marketplace_id: str, cache: dict) -> dict:
+    """Check the seller's stream subscriptions and add whatever is missing."""
+    found = _ms_fetch_profiles([seller_id], marketplace_id)
+    info = found.get(str(seller_id))
+    if not info:
+        return {"ok": False, "error": "no advertising profile/token for this marketplace"}
+    token = _ads_access_token(info["token"], cache)
+    statuses = _ms_get_subscriptions(token, info["profile_id"])
+    missing = [d for d in MS_DATASETS if statuses.get(d) != "ACTIVE"]
+    added = []
+    for ds in missing:
+        _ms_subscribe(token, info["profile_id"], ds)
+        added.append(ds)
+    return {"ok": True, "added": added, "already": [d for d in MS_DATASETS if d not in missing]}
+
+
+def _upg_worker(seller_ids: list, do_ms: bool, do_subs: bool,
+                lookback: int, token: str) -> None:
+    try:
+        _upg_log("info", f"Upgrader started for {len(seller_ids)} seller(s) — "
+                         f"Marketing Streams {'ON' if do_ms else 'OFF'}, "
+                         f"Subscriptions {'ON' if do_subs else 'OFF'}")
+
+        # ── 1. Advertising schedulers for every seller/region/marketplace ──
+        try:
+            combos = _upg_fetch_combos(seller_ids)
+        except Exception as exc:
+            _upg_log("error", f"Combination lookup failed — {exc}")
+            with _upg_lock:
+                _upg_state["counters"]["failed"] += 1
+            return
+        with _upg_lock:
+            _upg_state["combos"] = combos
+            _upg_state["counters"]["sellers"] = len({str(c["selling_partner_id"]) for c in combos})
+            _upg_state["counters"]["combos"] = len(combos)
+        if not combos:
+            _upg_log("warn", "No advertising profiles found for these sellers — nothing to upgrade.")
+            return
+        _upg_log("info", f"{len(combos)} combination(s) found: " + "; ".join(
+            f"{c['selling_partner_id']}/{c['region_name']}/{c['marketplace_name']}" for c in combos[:6]
+        ) + ("…" if len(combos) > 6 else ""))
+
+        payload, skipped = _upg_build_payload(combos)
+        if skipped:
+            _upg_log("warn", f"Skipped {len(skipped)} combination(s) missing region/marketplace: "
+                             f"{', '.join(sorted(set(skipped)))}")
+        if payload:
+            _upg_log("info", f"Sending {len(payload)} advertising scheduler row(s) "
+                             f"({len(UPGRADER_REPORT_TYPES)} report types × {len(combos) - len(skipped)} combination(s))")
+            try:
+                resp = _subs_send(token, payload)
+                if 200 <= resp.status_code < 300:
+                    body = (resp.text or "").strip().replace("\n", " ")[:160]
+                    _upg_log("ok", f"Advertising schedulers → {resp.status_code} {body}")
+                    with _upg_lock:
+                        _upg_state["counters"]["ad_rows"] = len(payload)
+                else:
+                    body = (resp.text or "").strip().replace("\n", " ")[:200]
+                    _upg_log("error", f"Advertising schedulers → {resp.status_code} {body}")
+                    with _upg_lock:
+                        _upg_state["counters"]["failed"] += 1
+            except Exception as exc:
+                _upg_log("error", f"Advertising schedulers failed — {exc}")
+                with _upg_lock:
+                    _upg_state["counters"]["failed"] += 1
+
+        # ── 2. Subscriptions (analytics backfill schedulers) ──
+        if do_subs and not _upg_stop_event.is_set():
+            _upg_log("info", f"Subscriptions: building backfill payload (lookback {lookback} days)")
+            try:
+                subs_payload, counts = _subs_build_payload(seller_ids, lookback)
+                if not subs_payload:
+                    _upg_log("warn", "Subscriptions: queries returned no rows — nothing to schedule.")
+                else:
+                    resp = _subs_send(token, subs_payload)
+                    ok = 200 <= resp.status_code < 300
+                    body = (resp.text or "").strip().replace("\n", " ")[:160]
+                    _upg_log("ok" if ok else "error",
+                             f"Subscriptions → {resp.status_code} {body}")
+                    if ok:
+                        with _upg_lock:
+                            _upg_state["counters"]["subs"] = len(subs_payload)
+                        # Track them in the same 48h logbook the Subscriptions card uses.
+                        names = _ms_fetch_seller_info(seller_ids)
+                        now = datetime.datetime.now().isoformat()
+                        _subs_init()
+                        with _subs_db() as conn:
+                            for sid in {str(s) for s in seller_ids}:
+                                if sid not in counts:
+                                    continue
+                                conn.execute(
+                                    "INSERT INTO subscription_log (seller_id, name, status, "
+                                    "added_at, updated_at, scheduler_rows, total, pending, "
+                                    "seen_pending, error, payload) VALUES (?,?,?,?,?,?,0,0,0,NULL,?) "
+                                    "ON CONFLICT(seller_id) DO UPDATE SET status=excluded.status, "
+                                    "added_at=excluded.added_at, updated_at=excluded.updated_at, "
+                                    "scheduler_rows=excluded.scheduler_rows, seen_pending=0, "
+                                    "error=NULL, payload=excluded.payload",
+                                    (sid, (names.get(sid) or {}).get("name", ""), "SENT", now, now,
+                                     counts.get(sid, 0),
+                                     json.dumps([p for p in subs_payload if str(p["sellerId"]) == sid])),
+                                )
+                        _upg_log("info", "Subscriptions logged — track them in the Subscriptions card.")
+                    else:
+                        with _upg_lock:
+                            _upg_state["counters"]["failed"] += 1
+            except Exception as exc:
+                _upg_log("error", f"Subscriptions failed — {exc}")
+                with _upg_lock:
+                    _upg_state["counters"]["failed"] += 1
+
+        # ── 3. Marketing Streams, only where the marketplace supports them ──
+        if do_ms and not _upg_stop_event.is_set():
+            supported = {v: k for k, v in MS_MARKETPLACES.items()}
+            targets = [(str(c["selling_partner_id"]), c["marketplace_id"], c["marketplace_name"])
+                       for c in combos if c.get("marketplace_id") in supported]
+            if not targets:
+                _upg_log("warn", "Marketing Streams: none of these marketplaces support streams "
+                                 f"(supported: {', '.join(MS_MARKETPLACES)}) — skipped.")
+            else:
+                _upg_log("info", f"Marketing Streams: {len(targets)} eligible seller/marketplace pair(s)")
+                cache = {}
+                for sid, mp_id, mp_name in targets:
+                    if _upg_stop_event.is_set():
+                        _upg_log("warn", "Stopped by user.")
+                        break
+                    try:
+                        res = _upg_ms_ensure(sid, mp_id, cache)
+                        if not res["ok"]:
+                            _upg_log("error", f"MS {sid} ({mp_name}): {res['error']}")
+                            with _upg_lock:
+                                _upg_state["counters"]["failed"] += 1
+                        elif res["added"]:
+                            _upg_log("ok", f"MS {sid} ({mp_name}): added {', '.join(res['added'])}")
+                            with _upg_lock:
+                                _upg_state["counters"]["ms_added"] += 1
+                        else:
+                            _upg_log("info", f"MS {sid} ({mp_name}): already active")
+                    except Exception as exc:
+                        _upg_log("error", f"MS {sid} ({mp_name}): {exc}")
+                        with _upg_lock:
+                            _upg_state["counters"]["failed"] += 1
+                    time.sleep(0.15)
+
+        c = _upg_state["counters"]
+        _upg_log("info", f"Finished. {c['ad_rows']} ad scheduler row(s), {c['subs']} subscription "
+                         f"row(s), {c['ms_added']} stream(s) added, {c['failed']} failure(s).")
+    finally:
+        with _upg_lock:
+            _upg_state["running"] = False
+
+
+@app.route("/api/upg/preview", methods=["POST"])
+def upg_preview():
+    payload_in = request.get_json(silent=True) or {}
+    seller_ids = _parse_seller_ids(payload_in.get("sellers") or "")
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    try:
+        combos = _upg_fetch_combos(seller_ids)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    payload, skipped = _upg_build_payload(combos)
+    missing = [s for s in seller_ids
+               if s not in {str(c["selling_partner_id"]) for c in combos}]
+    return jsonify({
+        "ok": True, "combos": combos, "skipped": skipped, "no_profile": missing,
+        "report_types": len(UPGRADER_REPORT_TYPES),
+        "row_count": len(payload), "sample": payload[:6],
+    })
+
+
+@app.route("/api/upg/start", methods=["POST"])
+def upg_start():
+    with _upg_lock:
+        if _upg_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+    payload_in = request.get_json(silent=True) or {}
+    seller_ids = _parse_seller_ids(payload_in.get("sellers") or "")
+    do_ms = bool(payload_in.get("marketing_streams"))
+    do_subs = bool(payload_in.get("subscriptions"))
+    lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
+    if not seller_ids:
+        return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+    if do_ms and not ADS_CLIENT_ID:
+        return jsonify({"ok": False, "error": (
+            "Marketing Streams is on but ADS_CLIENT_ID is not set in .env."
+        )}), 400
+    try:
+        token = REPORTS_ACCESS_TOKEN if REPORTS_ACCESS_TOKEN else reports_api_login()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    _upg_stop_event.clear()
+    with _upg_lock:
+        _upg_state["logs"] = []
+        _upg_state["combos"] = []
+        _upg_state["counters"] = {"sellers": 0, "combos": 0, "ad_rows": 0,
+                                  "ms_added": 0, "subs": 0, "failed": 0}
+        _upg_state["running"] = True
+    threading.Thread(target=_upg_worker,
+                     args=(seller_ids, do_ms, do_subs, lookback, token), daemon=True).start()
+    return jsonify({"ok": True, "count": len(seller_ids)})
+
+
+@app.route("/api/upg/stop", methods=["POST"])
+def upg_stop():
+    _upg_stop_event.set()
+    _upg_log("warn", "Stop requested...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/upg/state")
+def upg_state():
+    since = request.args.get("since", default=0, type=int)
+    with _upg_lock:
+        return jsonify({
+            "running": _upg_state["running"],
+            "counters": _upg_state["counters"],
+            "combos": _upg_state["combos"],
+            "logs": [e for e in _upg_state["logs"] if e["i"] >= since],
+            "next": len(_upg_state["logs"]),
+        })
+
+
 def _config_summary() -> None:
     """Print which card is configured, so missing .env values surface at boot."""
     def state(*names):

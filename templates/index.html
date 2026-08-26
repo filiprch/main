@@ -630,6 +630,91 @@
 </div><!-- /card: subscriptions -->
 
 <!-- ══════════════════════════════════════════════════════════
+     CARD: Upgrader
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-upgrader">
+  <div class="card-hdr" onclick="toggleCard('upgrader')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#7c3aed22;color:#a78bfa;border-color:#7c3aed44">UPGRADER</span>
+      <div>
+        <div class="card-title">Upgrader</div>
+        <div class="card-desc">CORE → Advanced: add the advertising schedulers that were never activated, per seller/region/marketplace</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-upgrader">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-upgrader">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <label class="rep-label" for="upg-sellers">Seller ID list (space, comma or newline separated)</label>
+        <textarea id="upg-sellers" class="ms-ta" spellcheck="false" placeholder="37277337656"></textarea>
+
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="Find and add Marketing Streams in the marketplaces that support them">
+            <span style="color:#475569">Marketing Streams</span>
+            <span class="rep-sw-side" id="upg-ms-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="upg-ms" checked onchange="upgToggles()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="upg-ms-on">ON</span>
+          </div>
+        </div>
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="Also add the analytics subscription (backfill) schedulers">
+            <span style="color:#475569">Subscriptions</span>
+            <span class="rep-sw-side" id="upg-subs-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="upg-subs" checked onchange="upgToggles()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side rep-sw-active" id="upg-subs-on">ON</span>
+          </div>
+          <span id="upg-lookback-wrap">
+            <span style="color:#475569;font-size:.78rem">lookback</span>
+            <input type="number" id="upg-lookback" class="ms-filter-input" style="width:80px" value="546" min="1">
+            <span style="color:#475569;font-size:.78rem">days</span>
+          </span>
+        </div>
+
+        <div class="ms-controls">
+          <button class="btn btn-ghost" id="upg-preview" onclick="upgPreview()">Preview</button>
+          <button class="btn btn-primary" id="upg-go" onclick="upgGo()">Run Upgrade</button>
+          <button class="btn btn-red" id="upg-stop" onclick="upgStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="upg-dot"></span><span id="upg-status">Idle</span></span>
+        </div>
+        <div id="upg-err" class="ms-err"></div>
+        <pre id="upg-payload" class="subs-payload hidden"></pre>
+      </div>
+
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="upg-c-sellers">0</div><div class="rep-k">Sellers</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-combos">0</div><div class="rep-k">Combos</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-rows">0</div><div class="rep-k">Ad rows</div></div>
+          <div class="rep-stat"><div class="rep-n" id="upg-c-ms" style="color:#2dd4bf">0</div><div class="rep-k">MS added</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="upg-c-failed">0</div><div class="rep-k">Failed</div></div>
+        </div>
+        <div id="upg-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr><th>Seller ID</th><th>Region</th><th>Marketplace</th><th>Streams</th></tr>
+        </thead>
+        <tbody id="upg-tbody">
+          <tr><td colspan="4"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div><!-- /card-body: upgrader -->
+</div><!-- /card: upgrader -->
+
+<!-- ══════════════════════════════════════════════════════════
      CARD: Remover  (destructive — deletes sellers from MRP)
      ══════════════════════════════════════════════════════════ -->
 <div class="card rm-card" id="card-remover">
@@ -1931,6 +2016,122 @@ async function subsRemove(sellerId) {
 
 setInterval(subsPoll, 2000);
 subsPoll();
+
+// ── Upgrader ───────────────────────────────────────────────────────────────────
+let upgSince = 0;
+// Marketplaces where Marketing Streams can be added (mirrors MS_MARKETPLACES).
+const UPG_MS_MARKETPLACES = ['United States', 'USA', 'US', 'Canada', 'CA'];
+
+function upgToggles() {
+  [['upg-ms', 'upg-ms-off', 'upg-ms-on'], ['upg-subs', 'upg-subs-off', 'upg-subs-on']]
+    .forEach(([box, offEl, onEl]) => {
+      const on = document.getElementById(box).checked;
+      document.getElementById(offEl).classList.toggle('rep-sw-active', !on);
+      document.getElementById(onEl).classList.toggle('rep-sw-active', on);
+    });
+  document.getElementById('upg-lookback-wrap').style.opacity =
+    document.getElementById('upg-subs').checked ? '1' : '.35';
+}
+
+function upgRenderCombos(combos) {
+  const tb = document.getElementById('upg-tbody');
+  if (!combos || !combos.length) {
+    tb.innerHTML = `<tr><td colspan="4"><span class="token-idle">Paste seller IDs and press Preview.</span></td></tr>`;
+    return;
+  }
+  tb.innerHTML = combos.map(c => {
+    const mp = c.marketplace_name || '';
+    const streams = UPG_MS_MARKETPLACES.includes(mp)
+      ? '<span class="ms-pill act">SUPPORTED</span>'
+      : '<span class="ms-pill na">—</span>';
+    return `<tr>
+      <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(c.selling_partner_id)}')">${esc(c.selling_partner_id)}</span></td>
+      <td>${esc(c.region_name || '—')}</td>
+      <td>${esc(mp || '—')}</td>
+      <td>${streams}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function upgPoll() {
+  try {
+    const r = await fetch('/api/upg/state?since=' + upgSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('upg-log').appendChild(div);
+      upgSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('upg-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    document.getElementById('upg-c-sellers').textContent = s.counters.sellers;
+    document.getElementById('upg-c-combos').textContent  = s.counters.combos;
+    document.getElementById('upg-c-rows').textContent    = s.counters.ad_rows;
+    document.getElementById('upg-c-ms').textContent      = s.counters.ms_added;
+    document.getElementById('upg-c-failed').textContent  = s.counters.failed;
+    if (s.combos && s.combos.length) upgRenderCombos(s.combos);
+    document.getElementById('upg-go').disabled   = s.running;
+    document.getElementById('upg-stop').disabled = !s.running;
+    document.getElementById('upg-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('upg-status').textContent = s.running ? 'Upgrading…' : 'Idle';
+  } catch (_) {}
+}
+
+async function upgPreview() {
+  const err = document.getElementById('upg-err');
+  const box = document.getElementById('upg-payload');
+  err.textContent = '';
+  box.classList.add('hidden');
+  try {
+    const r = await fetch('/api/upg/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellers: document.getElementById('upg-sellers').value }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Preview failed.'; return; }
+    upgRenderCombos(d.combos);
+    box.textContent =
+      `${d.combos.length} combination(s) × ${d.report_types} report types = ${d.row_count} scheduler rows\n\n` +
+      `Sample:\n` + JSON.stringify(d.sample, null, 2);
+    box.classList.remove('hidden');
+    const notes = [];
+    if (d.no_profile && d.no_profile.length) notes.push('No advertising profile: ' + d.no_profile.join(', '));
+    if (d.skipped && d.skipped.length) notes.push('Missing region/marketplace: ' + [...new Set(d.skipped)].join(', '));
+    err.textContent = notes.join(' · ');
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function upgGo() {
+  const err = document.getElementById('upg-err');
+  err.textContent = '';
+  upgSince = 0;
+  document.getElementById('upg-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/upg/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sellers: document.getElementById('upg-sellers').value,
+        marketing_streams: document.getElementById('upg-ms').checked,
+        subscriptions: document.getElementById('upg-subs').checked,
+        lookback_days: document.getElementById('upg-lookback').value,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    upgPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function upgStop() { await fetch('/api/upg/stop', { method: 'POST' }); }
+
+upgToggles();
+setInterval(upgPoll, 1500);
+upgPoll();
 
 // ── Remover (destructive) ──────────────────────────────────────────────────────
 let rmSince = 0;
