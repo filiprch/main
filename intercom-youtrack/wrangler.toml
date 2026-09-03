@@ -21,6 +21,10 @@ INTERCOM_TEST_CONTACT_EMAILS = ""
 # Admin the internal note is posted as. Empty = whoever owns INTERCOM_TOKEN.
 INTERCOM_NOTE_ADMIN_ID = ""
 
+# Fin resolution states that mean "handed to humans". Add to this list if the
+# skip log ever reports a state that should have created a ticket.
+INTERCOM_HANDOFF_STATES = "escalated,routed_to_team"
+
 # Bold first line of the internal note. Clear this when testing is over.
 INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 

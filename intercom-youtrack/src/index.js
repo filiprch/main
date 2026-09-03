@@ -97,7 +97,7 @@ function handoffState(conversation, env) {
 
   const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
   const toTeam = Boolean(teamAssignee);
-  const escalated = isEscalated(conversation);
+  const escalated = isEscalated(conversation, env);
 
   return { create: toHuman || toTeam || escalated, assignee, teamAssignee, escalated };
 }
@@ -358,15 +358,34 @@ function extractContact(conversation) {
   return { id: first.id, email: first.email || '', name: first.name || '' };
 }
 
-/** Fin records escalation as state, not as an assignment or an event. */
-function isEscalated(conversation) {
-  const fromAgent = String(conversation.ai_agent?.resolution_state || '');
+/**
+ * Fin records a handoff as state, not as an assignment or an event — and it
+ * uses more than one word for it depending on how the handoff came about:
+ *
+ *   escalated       the customer asked for a human
+ *   routed_to_team  Fin decided by itself to pass the conversation on
+ *
+ * Both mean the same thing to us. The list is configurable because this
+ * vocabulary is Intercom's to change, and a state we do not recognise is
+ * silently treated as "still with Fin" — so when the skip log shows an
+ * unfamiliar state, add it here rather than rewriting the check.
+ */
+const DEFAULT_HANDOFF_STATES = 'escalated,routed_to_team';
+
+function isEscalated(conversation, env) {
+  const states = (env.INTERCOM_HANDOFF_STATES || DEFAULT_HANDOFF_STATES)
+    .split(',')
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+
+  const fromAgent = String(
+    conversation.ai_agent?.resolution_state || ''
+  ).toLowerCase();
   const fromAttrs = String(
     conversation.custom_attributes?.['Fin AI Agent resolution state'] || ''
-  );
-  return (
-    fromAgent.toLowerCase() === 'escalated' || fromAttrs.toLowerCase() === 'escalated'
-  );
+  ).toLowerCase();
+
+  return states.includes(fromAgent) || states.includes(fromAttrs);
 }
 
 /**
