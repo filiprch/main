@@ -1,43 +1,84 @@
 /**
  * Intercom → YouTrack connector (Cloudflare Worker)
  *
- * Flow:
- *   1. Receive an Intercom webhook POST.
- *   2. Verify the X-Hub-Signature (HMAC-SHA1 of the raw body with the app's
- *      client secret) — rejects forged requests.
- *   3. Trigger = HANDOFF TO HUMANS, which happens in two different ways:
- *        a) Fin escalates. Intercom fires NO assignment event for this — it
- *           only sets "Fin AI Agent resolution state" to Escalated and leaves
- *           the conversation unassigned. So we listen to topics that do fire
- *           during a conversation and read that state.
- *        b) Someone is assigned — a named teammate, or a team inbox.
- *      Either counts. Assignment to Fin or another operator bot does not.
- *   4. Create a YouTrack CS ticket from the CUSTOMER's first message. The
- *      conversation `source` is Fin's greeting on website chat, so it is not
- *      the customer and must not be used for the summary or the sender.
- *   5. Add an INTERNAL NOTE to the conversation naming the ticket. Never a
- *      reply — the customer is never messaged by this worker.
+ * WHAT MAKES A TICKET
+ *
+ * Fin hands a conversation to humans. Intercom fires no event for this — it
+ * sets "Fin AI Agent resolution state" and leaves the conversation unassigned
+ * — so we watch the topics that DO fire (Fin's own replies come through
+ * `conversation.operator.replied`, because Fin is an Operator and not a
+ * teammate) and read that state.
+ *
+ * WHY THE TICKET IS NOT CREATED IMMEDIATELY
+ *
+ * Customers open with "hello" and go hunting for a screenshot only once Fin
+ * has already given up. A ticket cut at the moment of handoff is therefore
+ * almost empty. Instead the handoff arms a timer: DEBOUNCE_SECONDS after the
+ * customer's LAST message, a scheduled pass builds the ticket from everything
+ * they said. Each new message pushes the timer back.
+ *
+ * Cloudflare Workers cannot sleep for minutes, so the timer lives in KV and a
+ * cron pass sweeps it once a minute. Real delay lands between DEBOUNCE_SECONDS
+ * and DEBOUNCE_SECONDS + 60.
+ *
+ * WHAT THE TICKET CONTAINS
+ *
+ * Only the customer's words. Fin's replies are excluded — they turned the
+ * description into a wall of text nobody would read — and are represented by
+ * the titles of the articles Fin tried, which Intercom hands us for free in
+ * ai_agent.content_sources. Attachments are re-uploaded into YouTrack rather
+ * than linked, so they outlive Intercom's URLs. Anything the customer says
+ * after the ticket exists arrives as a comment.
+ *
+ * Nothing here is ever visible to the customer: the only thing written back to
+ * Intercom is an internal note.
  *
  * Secrets / vars:
- *   INTERCOM_CLIENT_SECRET    (secret)  used to verify X-Hub-Signature
- *   INTERCOM_TOKEN            (secret)  Intercom access token (for contact lookup)
- *   YOUTRACK_TOKEN           (secret)  YouTrack permanent token
- *   YOUTRACK_BASE_URL        (var)     https://myrealprofit.youtrack.cloud
- *   YOUTRACK_PROJECT_ID      (var)     CS
- *   INTERCOM_APP_ID          (var)     used to build the conversation deep-link
- *   INTERCOM_EXCLUDE_ADMIN_IDS (var)   comma-separated admin IDs to treat as
- *                                      bots (e.g. Fin) — assignments to these
- *                                      do NOT create a ticket
- *   INTERCOM_TEST_CONTACT_EMAILS (var) test mode: only these contacts create
- *                                      tickets. Empty = every escalation.
- *   INTERCOM_NOTE_ADMIN_ID     (var)   admin the internal note is posted as.
- *                                      Empty = the INTERCOM_TOKEN owner.
- *   INTERCOM_NOTE_PREFIX       (var)   bold first line of the note, e.g.
- *                                      "TESTING HELPDESK". Empty = no prefix.
- *   DEDUPE                   (KV, opt) dedupe by conversation id
+ *   INTERCOM_CLIENT_SECRET     (secret) verifies X-Hub-Signature
+ *   INTERCOM_TOKEN             (secret) Intercom access token
+ *   YOUTRACK_TOKEN             (secret) YouTrack permanent token
+ *   YOUTRACK_BASE_URL          (var)    https://myrealprofit.youtrack.cloud
+ *   YOUTRACK_PROJECT_ID        (var)    internal project id, e.g. 0-18
+ *   INTERCOM_APP_ID            (var)    for conversation deep-links
+ *   INTERCOM_EXCLUDE_ADMIN_IDS (var)    operator bot ids (Fin)
+ *   INTERCOM_HANDOFF_STATES    (var)    states meaning "handed to humans"
+ *   INTERCOM_DEBOUNCE_SECONDS  (var)    quiet period before creating
+ *   INTERCOM_NOTE_ADMIN_ID     (var)    admin the internal note posts as
+ *   INTERCOM_NOTE_PREFIX       (var)    bold first line of the note
+ *   DEDUPE                     (KV)     REQUIRED — timers and ticket ids
  */
 
-import { createYouTrackIssue, updateYouTrackIssue } from './youtrack.js';
+import {
+  createYouTrackIssue,
+  addYouTrackComment,
+  attachToYouTrackIssue,
+} from './youtrack.js';
+
+const HANDLED_TOPICS = [
+  'conversation.operator.replied',
+  'conversation.admin.assigned',
+  'conversation.admin.replied',
+  'conversation.user.replied',
+];
+
+/** Topics that can land before Fin has finished deciding. */
+const TOPICS_WORTH_RECHECKING = [
+  'conversation.user.replied',
+  'conversation.admin.replied',
+];
+
+const CONTACT_AUTHOR_TYPES = ['user', 'lead', 'contact'];
+const DEFAULT_HANDOFF_STATES = 'escalated,routed_to_team';
+const DEFAULT_DEBOUNCE_SECONDS = 180;
+const RECHECK_MS = 8000;
+const MAX_CREATE_ATTEMPTS = 5;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// KV key shapes, all in the DEDUPE namespace.
+const kTicket = (id) => `intercom:${id}`; // conversation -> ticket id
+const kPending = (id) => `pending:${id}`; // conversation -> { dueAt, attempts }
+const kSeen = (id) => `seen:${id}`; // conversation -> last part id in the ticket
 
 export default {
   async fetch(request, env, ctx) {
@@ -46,13 +87,7 @@ export default {
     }
 
     const rawBody = await request.text();
-
-    const verified = await verifyIntercomSignature(
-      request,
-      rawBody,
-      env.INTERCOM_CLIENT_SECRET
-    );
-    if (!verified) {
+    if (!(await verifyIntercomSignature(request, rawBody, env.INTERCOM_CLIENT_SECRET))) {
       return new Response('Invalid signature', { status: 401 });
     }
 
@@ -63,30 +98,317 @@ export default {
       return new Response('Bad JSON', { status: 400 });
     }
 
-    // Intercom sends a `ping` topic when you test the webhook in the dashboard.
-    if (payload.topic === 'ping') {
-      return new Response('pong', { status: 200 });
-    }
+    if (payload.topic === 'ping') return new Response('pong', { status: 200 });
 
     ctx.waitUntil(
       handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e))
     );
     return new Response('', { status: 200 });
   },
+
+  /** Cron sweep: create the tickets whose quiet period has elapsed. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sweepPending(env).catch((e) => console.error('sweep error:', e)));
+  },
 };
 
-/** How long to wait before re-reading a conversation that is not yet flagged. */
-const ESCALATION_RECHECK_MS = 8000;
+// --------------------------------------------------------------------------
+// Webhook
+// --------------------------------------------------------------------------
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function handleEvent(payload, env) {
+  if (!HANDLED_TOPICS.includes(payload.topic)) return;
+
+  const item = payload.data?.item;
+  if (!item?.id) return;
+  if (!env.DEDUPE) {
+    console.error('DEDUPE KV is not bound — cannot schedule or dedupe');
+    return;
+  }
+
+  // A ticket already exists. Everything the customer says from here is a
+  // comment on it; anything else is ignored.
+  const ticketId = await env.DEDUPE.get(kTicket(item.id));
+  if (ticketId) {
+    if (payload.topic === 'conversation.user.replied') {
+      try {
+        await commentNewMessages(env, item.id, ticketId);
+      } catch (e) {
+        console.error(`comment on ${ticketId} failed:`, e);
+      }
+    }
+    return;
+  }
+
+  let conversation =
+    (env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id))) || item;
+  let handoff = handoffState(conversation, env);
+
+  // Fin sets the state a beat after the message that causes it, and its own
+  // replies arrive on operator.replied where the state is already settled —
+  // so only customer-side topics are worth a second look.
+  if (!handoff.create && TOPICS_WORTH_RECHECKING.includes(payload.topic)) {
+    await sleep(RECHECK_MS);
+    const fresh =
+      env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id));
+    if (fresh) {
+      conversation = fresh;
+      handoff = handoffState(conversation, env);
+    }
+  }
+
+  if (!handoff.create) {
+    console.log(
+      `skip ${item.id}: admin=${handoff.assignee ?? 'none'} ` +
+        `team=${handoff.teamAssignee ?? 'none'} ` +
+        `state=${conversation.ai_agent?.resolution_state ?? 'unknown'}`
+    );
+    return;
+  }
+
+  // Handed over. Arm (or push back) the quiet period. Every customer message
+  // lands here again and moves the deadline, which is the reset.
+  const seconds = Number(env.INTERCOM_DEBOUNCE_SECONDS) || DEFAULT_DEBOUNCE_SECONDS;
+  const dueAt = Date.now() + seconds * 1000;
+  await env.DEDUPE.put(
+    kPending(item.id),
+    JSON.stringify({ dueAt, attempts: 0 }),
+    { expirationTtl: 60 * 60 * 24 }
+  );
+  console.log(`armed ${item.id}: ticket due in ${seconds}s`);
+}
+
+// --------------------------------------------------------------------------
+// Cron sweep
+// --------------------------------------------------------------------------
+
+async function sweepPending(env) {
+  if (!env.DEDUPE) return;
+
+  const { keys } = await env.DEDUPE.list({ prefix: 'pending:' });
+  const now = Date.now();
+
+  for (const key of keys) {
+    const raw = await env.DEDUPE.get(key.name);
+    if (!raw) continue;
+
+    let state;
+    try {
+      state = JSON.parse(raw);
+    } catch {
+      await env.DEDUPE.delete(key.name);
+      continue;
+    }
+
+    if (state.dueAt > now) continue; // customer is still typing
+
+    const conversationId = key.name.slice('pending:'.length);
+    try {
+      await createTicketFor(env, conversationId);
+      await env.DEDUPE.delete(key.name);
+    } catch (e) {
+      const attempts = (state.attempts || 0) + 1;
+      console.error(`create for ${conversationId} failed (attempt ${attempts}):`, e);
+      if (attempts >= MAX_CREATE_ATTEMPTS) {
+        console.error(`giving up on ${conversationId} after ${attempts} attempts`);
+        await env.DEDUPE.delete(key.name);
+      } else {
+        // Back off a minute rather than hammering a broken dependency.
+        await env.DEDUPE.put(
+          key.name,
+          JSON.stringify({ dueAt: now + 60_000, attempts }),
+          { expirationTtl: 60 * 60 * 24 }
+        );
+      }
+    }
+  }
+}
+
+async function createTicketFor(env, conversationId) {
+  // Another pass may have got there first.
+  if (await env.DEDUPE.get(kTicket(conversationId))) return;
+
+  const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
+  if (!conversation) throw new Error('could not fetch conversation');
+
+  const contact = extractContact(conversation);
+  let email = contact.email;
+  if (!email && contact.id) {
+    email = await fetchContactEmail(env.INTERCOM_TOKEN, contact.id);
+  }
+
+  const said = customerMessages(conversation);
+  const attachments = said.flatMap((m) => m.attachments);
+
+  const issue = await createYouTrackIssue({
+    baseUrl: env.YOUTRACK_BASE_URL,
+    token: env.YOUTRACK_TOKEN,
+    projectId: env.YOUTRACK_PROJECT_ID || 'CS',
+    summary: pickSummary(said, conversation),
+    description: buildDescription({
+      sender: contact.name || email || 'Intercom contact',
+      email,
+      link: conversationLink(env.INTERCOM_APP_ID, conversationId),
+      escalatedReason:
+        conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
+      createdAt: conversation.created_at,
+      said,
+      attachments,
+      finTried: finArticles(conversation),
+    }),
+    channel: 'Intercom',
+    type: 'Task',
+    replied: 'Not Replied',
+    customerEmail: email || undefined,
+  });
+
+  // Claim the conversation before anything that can fail, so a later retry
+  // cannot produce a second ticket.
+  await env.DEDUPE.put(kTicket(conversationId), issue.idReadable, {
+    expirationTtl: 60 * 60 * 24 * 30,
+  });
+  const lastPart = said.length ? said[said.length - 1].id : '';
+  await env.DEDUPE.put(kSeen(conversationId), String(lastPart), {
+    expirationTtl: 60 * 60 * 24 * 30,
+  });
+
+  console.log(
+    `created ${issue.idReadable} for ${conversationId}` +
+      ` (${said.length} customer messages, ${attachments.length} attachments)`
+  );
+
+  for (const a of attachments) {
+    try {
+      await attachToYouTrackIssue({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId: issue.idReadable,
+        name: a.name,
+        url: a.url,
+        authHeader: `Bearer ${env.INTERCOM_TOKEN}`,
+      });
+    } catch (e) {
+      console.error(`attachment "${a.name}" failed:`, e);
+    }
+  }
+
+  try {
+    await postInternalNote(env, conversationId, issue.idReadable);
+  } catch (e) {
+    console.error('postInternalNote failed:', e);
+  }
+}
+
+/** Everything the customer has said since the ticket was written. */
+async function commentNewMessages(env, conversationId, ticketId) {
+  const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
+  if (!conversation) return;
+
+  const seen = await env.DEDUPE.get(kSeen(conversationId));
+  const said = customerMessages(conversation);
+
+  const cut = said.findIndex((m) => String(m.id) === String(seen));
+  const fresh = cut === -1 ? said : said.slice(cut + 1);
+  if (!fresh.length) return;
+
+  const lines = ['**New from the customer in Intercom**', ''];
+  for (const m of fresh) lines.push(m.text || '_(attachment only)_', '');
+
+  await addYouTrackComment({
+    baseUrl: env.YOUTRACK_BASE_URL,
+    token: env.YOUTRACK_TOKEN,
+    issueId: ticketId,
+    text: lines.join('\n').trim(),
+  });
+
+  for (const a of fresh.flatMap((m) => m.attachments)) {
+    try {
+      await attachToYouTrackIssue({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId: ticketId,
+        name: a.name,
+        url: a.url,
+        authHeader: `Bearer ${env.INTERCOM_TOKEN}`,
+      });
+    } catch (e) {
+      console.error(`late attachment "${a.name}" failed:`, e);
+    }
+  }
+
+  await env.DEDUPE.put(kSeen(conversationId), String(fresh[fresh.length - 1].id), {
+    expirationTtl: 60 * 60 * 24 * 30,
+  });
+  console.log(`commented ${fresh.length} new message(s) on ${ticketId}`);
+}
+
+// --------------------------------------------------------------------------
+// Reading the conversation
+// --------------------------------------------------------------------------
 
 /**
- * Should this conversation produce a ticket, and why?
+ * Only what the customer wrote.
  *
- * Two routes to the same answer: Fin flagged it Escalated, or a human owns it
- * — a named teammate, or a team inbox. Assignment to Fin or another operator
- * bot does not count.
+ * `source` is the conversation's first message and on website chat that is
+ * Fin's greeting, so it counts only when its author is genuinely a contact.
  */
+function customerMessages(conversation) {
+  const out = [];
+
+  const src = conversation.source || {};
+  if (CONTACT_AUTHOR_TYPES.includes(src.author?.type) && (src.body || src.attachments?.length)) {
+    out.push({
+      id: `source-${conversation.id}`,
+      text: htmlToText(src.body || ''),
+      at: conversation.created_at,
+      attachments: src.attachments || [],
+    });
+  }
+
+  for (const part of conversation.conversation_parts?.conversation_parts || []) {
+    if (part.part_type !== 'comment') continue;
+    if (!CONTACT_AUTHOR_TYPES.includes(part.author?.type)) continue;
+    const text = htmlToText(part.body || '');
+    const attachments = part.attachments || [];
+    if (!text && !attachments.length) continue;
+    out.push({ id: part.id, text, at: part.created_at, attachments });
+  }
+
+  return out;
+}
+
+/** The customer's longest message — "hello" makes a poor ticket title. */
+function pickSummary(said, conversation) {
+  const subject = (conversation.source?.subject || '').trim();
+  if (subject) return summarize(subject);
+
+  const withText = said.filter((m) => m.text);
+  if (!withText.length) return summarize(`Conversation ${conversation.id}`);
+
+  const longest = withText.reduce((a, b) => (b.text.length > a.text.length ? b : a));
+  return summarize(longest.text);
+}
+
+/** What Fin tried, as the titles of the articles it drew on. */
+function finArticles(conversation) {
+  const sources = conversation.ai_agent?.content_sources?.content_sources || [];
+  return [...new Set(sources.map((s) => s.title).filter(Boolean))];
+}
+
+function isEscalated(conversation, env) {
+  const states = (env.INTERCOM_HANDOFF_STATES || DEFAULT_HANDOFF_STATES)
+    .split(',')
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+
+  const a = String(conversation.ai_agent?.resolution_state || '').toLowerCase();
+  const b = String(
+    conversation.custom_attributes?.['Fin AI Agent resolution state'] || ''
+  ).toLowerCase();
+  return states.includes(a) || states.includes(b);
+}
+
+/** Handed to humans? Either Fin said so, or a person/team owns it. */
 function handoffState(conversation, env) {
   const assignee = conversation.admin_assignee_id;
   const teamAssignee = conversation.team_assignee_id;
@@ -98,236 +420,124 @@ function handoffState(conversation, env) {
   const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
   const toTeam = Boolean(teamAssignee);
   const escalated = isEscalated(conversation, env);
-
   return { create: toHuman || toTeam || escalated, assignee, teamAssignee, escalated };
 }
 
-/**
- * Topics that fire while a conversation is in progress.
- *
- * `conversation.operator.replied` is the important one. Fin is the Operator,
- * not a teammate, so its messages do NOT fire conversation.admin.replied
- * ("Reply from your teammates") — that omission is why escalations were
- * invisible. Fin sets the escalation flag and then speaks, so this event
- * arrives with the state already in place.
- */
-const HANDLED_TOPICS = [
-  'conversation.operator.replied',
-  'conversation.admin.assigned',
-  'conversation.admin.replied',
-  'conversation.user.replied',
-];
-
-/**
- * Topics that can land BEFORE Fin has finished deciding. A customer message
- * arrives, then Fin flags the conversation a beat later, so on these it is
- * worth looking again. On operator.replied the state is already settled and
- * re-reading would only burn an API call and eight seconds.
- */
-const TOPICS_WORTH_RECHECKING = [
-  'conversation.user.replied',
-  'conversation.admin.replied',
-];
-
-async function handleEvent(payload, env) {
-  if (!HANDLED_TOPICS.includes(payload.topic)) return;
-
-  const item = payload.data?.item;
-  if (!item?.id) return;
-
-  // A ticket already exists for this conversation. The customer is still
-  // talking, though, and the first thing they say is often just "hello" — so
-  // rather than ignore the rest, keep the ticket's body in step with the
-  // conversation. Anything other than a customer message is ignored outright.
-  const existingTicket = await processedTicket(env, item.id);
-  if (existingTicket) {
-    if (payload.topic === 'conversation.user.replied') {
-      try {
-        await refreshTicket(env, item.id, existingTicket);
-      } catch (e) {
-        console.error(`refresh of ${existingTicket} failed:`, e);
-      }
-    }
-    return;
+function extractContact(conversation) {
+  const author = conversation.source?.author || {};
+  if (CONTACT_AUTHOR_TYPES.includes(author.type) && (author.email || author.name)) {
+    return { id: author.id, email: author.email || '', name: author.name || '' };
   }
+  const first = conversation.contacts?.contacts?.[0] || {};
+  return { id: first.id, email: first.email || '', name: first.name || '' };
+}
 
-  // Webhook payloads are trimmed and often omit the parts we need — the
-  // customer's own first message above all. Fetch the full conversation.
-  let conversation =
-    (env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id))) ||
-    item;
-
-  let handoff = handoffState(conversation, env);
-  let rechecked = false;
-
-  // Fin sets the escalation flag a beat AFTER the message that causes it, and
-  // its own replies are bot messages that fire no webhook of their own. So the
-  // event we are handling routinely arrives a few seconds before the state we
-  // are looking for, with nothing further coming to tell us. Look once more
-  // before giving up.
-  if (!handoff.create && TOPICS_WORTH_RECHECKING.includes(payload.topic)) {
-    console.log(`${item.id}: not flagged on first read, waiting to re-check`);
-    await sleep(ESCALATION_RECHECK_MS);
-    const fresh =
-      env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id));
-    if (fresh) {
-      conversation = fresh;
-      handoff = handoffState(conversation, env);
-      rechecked = true;
-    }
-  }
-
-  if (!handoff.create) {
-    console.log(
-      `skip ${conversation.id}${rechecked ? ' (after re-check)' : ' (no re-check)'}: ` +
-        `admin=${handoff.assignee ?? 'none'} team=${handoff.teamAssignee ?? 'none'} ` +
-        `state=${conversation.ai_agent?.resolution_state ?? 'unknown'}`
-    );
-    return;
-  }
-
-  console.log(
-    `create for ${conversation.id}: escalated=${handoff.escalated} ` +
-      `rechecked=${rechecked}`
-  );
-
-  // Another delivery for this conversation may have won the race while we
-  // slept. Check again now that we know we want to create.
-  if (await processedTicket(env, conversation.id)) return;
-
-  const contact = extractContact(conversation);
-  // Email may be absent in the webhook payload — look it up if we have a token.
-  let email = contact.email;
-  if (!email && contact.id && env.INTERCOM_TOKEN) {
-    email = await fetchContactEmail(env.INTERCOM_TOKEN, contact.id);
-  }
-
-  // Test mode. While the integration is being trialled, only escalations from
-  // these contacts create tickets. Empty = every escalation counts, which is
-  // the production behaviour.
-  const testContacts = (env.INTERCOM_TEST_CONTACT_EMAILS || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (testContacts.length && !testContacts.includes((email || '').toLowerCase())) {
-    console.log(
-      `skip ${conversation.id}: ${email || 'unknown contact'} is not on the test list`
-    );
-    return;
-  }
-
-
-  const subject = (conversation.source?.subject || '').trim();
-  const summary = summarize(
-    subject || pickSummary(conversation) || `Conversation ${conversation.id}`
-  );
-
-  const description = buildDescription({
-    sender: contact.name || email || 'Intercom contact',
-    email,
-    createdAt: conversation.created_at,
-    link: conversationLink(env.INTERCOM_APP_ID, conversation.id),
-    subject,
-    transcript: buildTranscript(conversation),
-    attachments: allAttachments(conversation),
-    escalatedReason:
-      conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
-  });
-
-  const issue = await createYouTrackIssue({
-    baseUrl: env.YOUTRACK_BASE_URL,
-    token: env.YOUTRACK_TOKEN,
-    projectId: env.YOUTRACK_PROJECT_ID || 'CS',
-    summary,
-    description,
-    channel: 'Intercom',
-    type: 'Task',
-    replied: 'Not Replied',
-    customerEmail: email || undefined,
-  });
-
-  await markProcessed(env, conversation.id, issue.idReadable);
-
-  // Best effort: a failed note must never lose the ticket we just created.
-  // handoff.assignee, not a bare `assignee` — the local went away when the
-  // guard moved into handoffState(). Wrapped in try/catch rather than .catch()
-  // so a synchronous throw while building the arguments cannot escape either.
+async function fetchConversation(token, id) {
+  if (!token) return null;
   try {
-    await postInternalNote(
-      env, conversation.id, issue.idReadable, handoff.assignee
-    );
+    const res = await intercomGet(token, `/conversations/${id}`);
+    if (!res.ok) {
+      console.error(`conversation fetch failed (${res.status})`);
+      return null;
+    }
+    return await res.json();
   } catch (e) {
-    console.error('postInternalNote failed:', e);
+    console.error('conversation fetch threw:', e);
+    return null;
   }
 }
 
-/**
- * Rewrite an existing ticket from the current state of the conversation.
- *
- * Customers routinely open with "hello" and explain themselves afterwards, so
- * a ticket built only from what existed at handoff is thin. Rather than delay
- * creation — which would delay the SLA clock too — the ticket is created at
- * handoff and its body kept current as the customer keeps typing.
- */
-async function refreshTicket(env, conversationId, ticketId) {
-  // Older entries stored a bare marker rather than a ticket id.
-  if (!/^[A-Za-z]+-\d+$/.test(ticketId)) return;
-
-  const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
-  if (!conversation) return;
-
-  const contact = extractContact(conversation);
-  let email = contact.email;
-  if (!email && contact.id && env.INTERCOM_TOKEN) {
-    email = await fetchContactEmail(env.INTERCOM_TOKEN, contact.id);
+async function fetchContactEmail(token, contactId) {
+  if (!token) return '';
+  try {
+    const res = await intercomGet(token, `/contacts/${contactId}`);
+    if (!res.ok) return '';
+    return (await res.json()).email || '';
+  } catch (e) {
+    console.error('contact lookup failed:', e);
+    return '';
   }
+}
 
-  const description = buildDescription({
-    sender: contact.name || email || 'Intercom contact',
-    email,
-    createdAt: conversation.created_at,
-    link: conversationLink(env.INTERCOM_APP_ID, conversationId),
-    subject: (conversation.source?.subject || '').trim(),
-    transcript: buildTranscript(conversation),
-    attachments: allAttachments(conversation),
-    escalatedReason:
-      conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
+async function fetchTokenOwnerAdminId(token) {
+  try {
+    const res = await intercomGet(token, '/me');
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.id ? String(data.id) : '';
+  } catch (e) {
+    console.error('admin lookup failed:', e);
+    return '';
+  }
+}
+
+function intercomGet(token, path) {
+  return fetch(`https://api.intercom.io${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+      'Intercom-Version': '2.11',
+    },
   });
+}
 
-  await updateYouTrackIssue({
-    baseUrl: env.YOUTRACK_BASE_URL,
-    token: env.YOUTRACK_TOKEN,
-    issueId: ticketId,
-    description,
-  });
-
-  console.log(`refreshed ${ticketId} from conversation ${conversationId}`);
+function conversationLink(appId, conversationId) {
+  if (!appId) return '';
+  return `https://app.intercom.com/a/inbox/${appId}/inbox/conversation/${conversationId}`;
 }
 
 // --------------------------------------------------------------------------
-// Internal note
+// The ticket body
+// --------------------------------------------------------------------------
+
+function buildDescription({
+  sender, email, link, escalatedReason, createdAt, said, attachments, finTried,
+}) {
+  const who = email && email !== sender ? `${sender} <${email}>` : sender;
+  const lines = [
+    `**Customer:** ${who}`,
+    `**Started:** ${formatUtc(createdAt)} UTC`,
+  ];
+  if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
+  if (link) lines.push(`**Intercom:** [open the conversation](${link})`);
+
+  lines.push('', '### What the customer said', '');
+  if (said.length) {
+    for (const m of said) lines.push(m.text || '_(attachment only)_', '');
+  } else {
+    lines.push('_(nothing — the customer asked for a person without explaining)_', '');
+  }
+
+  if (attachments.length) {
+    lines.push('### Attachments', '');
+    for (const a of attachments) lines.push(`- ${a.name || 'attachment'}`);
+    lines.push('');
+  }
+
+  if (finTried.length) {
+    lines.push('### Fin already tried', '');
+    for (const t of finTried) lines.push(`- ${t}`);
+    lines.push('', '_The customer still asked for a person._');
+  }
+
+  return lines.join('\n').trim();
+}
+
+// --------------------------------------------------------------------------
+// Internal note back to Intercom
 // --------------------------------------------------------------------------
 
 /**
- * Add an INTERNAL NOTE to the Intercom conversation naming the ticket.
- *
  * message_type is hardcoded to 'note' and must stay that way. The same
- * endpoint sends a customer-visible reply when message_type is 'comment', so
- * this one field is the whole difference between an internal annotation and
- * messaging the customer. Nothing this worker writes should ever be visible to
- * a customer — do not make this configurable.
+ * endpoint sends a customer-visible reply when it is 'comment', so this one
+ * field is the whole difference between annotating a conversation and
+ * messaging a client. Do not make it configurable.
  */
-async function postInternalNote(env, conversationId, ticketId, assigneeId) {
-  if (!env.INTERCOM_TOKEN) {
-    console.error('no INTERCOM_TOKEN — cannot post the note');
-    return;
-  }
+async function postInternalNote(env, conversationId, ticketId) {
+  if (!env.INTERCOM_TOKEN) return;
 
   const adminId =
-    env.INTERCOM_NOTE_ADMIN_ID ||
-    (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN)) ||
-    String(assigneeId || '');
-
+    env.INTERCOM_NOTE_ADMIN_ID || (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN));
   if (!adminId) {
     console.error('no admin id available — skipping the note');
     return;
@@ -339,8 +549,7 @@ async function postInternalNote(env, conversationId, ticketId, assigneeId) {
     (prefix ? `<b>${prefix}</b><br><br>` : '') +
     `YouTrack ticket <a href="${base}/tickets/${ticketId}">${ticketId}</a>` +
     ' has been created for this conversation.<br><br>' +
-    '<i>Internal note — the customer cannot see this, and no reply was sent' +
-    ' to them.</i>';
+    '<i>Internal note — the customer cannot see this, and no reply was sent to them.</i>';
 
   const res = await fetch(
     `https://api.intercom.io/conversations/${conversationId}/reply`,
@@ -353,7 +562,7 @@ async function postInternalNote(env, conversationId, ticketId, assigneeId) {
         'Intercom-Version': '2.11',
       },
       body: JSON.stringify({
-        message_type: 'note', // never 'comment' — see the note above
+        message_type: 'note', // never 'comment' — see above
         type: 'admin',
         admin_id: String(adminId),
         body,
@@ -361,237 +570,21 @@ async function postInternalNote(env, conversationId, ticketId, assigneeId) {
     }
   );
 
-  if (!res.ok) {
-    throw new Error(`note rejected (${res.status}): ${await res.text()}`);
-  }
-
-  console.log(`note added to conversation ${conversationId} for ${ticketId}`);
-}
-
-/** The admin who owns INTERCOM_TOKEN — the note is attributed to them. */
-async function fetchTokenOwnerAdminId(token) {
-  try {
-    const res = await fetch('https://api.intercom.io/me', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Intercom-Version': '2.11',
-      },
-    });
-    if (!res.ok) return '';
-    const data = await res.json();
-    return data.id ? String(data.id) : '';
-  } catch (e) {
-    console.error('admin lookup failed:', e);
-    return '';
-  }
+  if (!res.ok) throw new Error(`note rejected (${res.status}): ${await res.text()}`);
+  console.log(`note added to ${conversationId} for ${ticketId}`);
 }
 
 // --------------------------------------------------------------------------
-// Intercom helpers
+// Formatting and crypto
 // --------------------------------------------------------------------------
 
-/**
- * Intercom signs the raw request body with HMAC-SHA1 using the app's client
- * secret and sends it as `X-Hub-Signature: sha1=<hex>`.
- */
-async function verifyIntercomSignature(request, rawBody, clientSecret) {
-  const header = request.headers.get('x-hub-signature');
-  if (!header || !clientSecret) return false;
-  const expected = `sha1=${await hmacHex('SHA-1', clientSecret, rawBody)}`;
-  return timingSafeEqual(expected, header);
-}
-
-const CONTACT_AUTHOR_TYPES = ['user', 'lead', 'contact'];
-
-/**
- * Find the customer on the conversation.
- *
- * `source` is the conversation's FIRST message, and on website chat that is
- * Fin's greeting — so source.author is the operator, not the customer. Trust
- * the author only when it is actually a contact; otherwise take the contacts
- * list, which is the customer either way.
- */
-function extractContact(conversation) {
-  const author = conversation.source?.author || {};
-  if (CONTACT_AUTHOR_TYPES.includes(author.type) && (author.email || author.name)) {
-    return { id: author.id, email: author.email || '', name: author.name || '' };
-  }
-  const first = conversation.contacts?.contacts?.[0] || {};
-  return { id: first.id, email: first.email || '', name: first.name || '' };
-}
-
-/**
- * Fin records a handoff as state, not as an assignment or an event — and it
- * uses more than one word for it depending on how the handoff came about:
- *
- *   escalated       the customer asked for a human
- *   routed_to_team  Fin decided by itself to pass the conversation on
- *
- * Both mean the same thing to us. The list is configurable because this
- * vocabulary is Intercom's to change, and a state we do not recognise is
- * silently treated as "still with Fin" — so when the skip log shows an
- * unfamiliar state, add it here rather than rewriting the check.
- */
-const DEFAULT_HANDOFF_STATES = 'escalated,routed_to_team';
-
-function isEscalated(conversation, env) {
-  const states = (env.INTERCOM_HANDOFF_STATES || DEFAULT_HANDOFF_STATES)
-    .split(',')
-    .map((x) => x.trim().toLowerCase())
-    .filter(Boolean);
-
-  const fromAgent = String(
-    conversation.ai_agent?.resolution_state || ''
-  ).toLowerCase();
-  const fromAttrs = String(
-    conversation.custom_attributes?.['Fin AI Agent resolution state'] || ''
-  ).toLowerCase();
-
-  return states.includes(fromAgent) || states.includes(fromAttrs);
-}
-
-/** Every message in the conversation, oldest first, with who said it. */
-function messages(conversation) {
-  const out = [];
-
-  const src = conversation.source || {};
-  if (src.body) {
-    out.push({
-      who: CONTACT_AUTHOR_TYPES.includes(src.author?.type) ? 'customer' : 'fin',
-      text: htmlToText(src.body),
-      at: conversation.created_at,
-      attachments: src.attachments || [],
-    });
-  }
-
-  for (const part of conversation.conversation_parts?.conversation_parts || []) {
-    if (part.part_type !== 'comment') continue;
-    const text = htmlToText(part.body || '');
-    const attachments = part.attachments || [];
-    if (!text && !attachments.length) continue;
-    out.push({
-      who: CONTACT_AUTHOR_TYPES.includes(part.author?.type) ? 'customer' : 'fin',
-      text,
-      at: part.created_at,
-      attachments,
-    });
-  }
-
-  return out;
-}
-
-/**
- * What the ticket should be called.
- *
- * The customer's FIRST message is often just "hello" or "human", so using it
- * made the summary useless. The longest message they sent is nearly always
- * the one that actually states the problem.
- */
-function pickSummary(conversation) {
-  const mine = messages(conversation).filter((m) => m.who === 'customer' && m.text);
-  if (!mine.length) return '';
-  return mine.reduce((best, m) => (m.text.length > best.text.length ? m : best)).text;
-}
-
-/** The whole exchange, so the agent can see what Fin already said. */
-function buildTranscript(conversation) {
-  const lines = [];
-  for (const m of messages(conversation)) {
-    const label = m.who === 'customer' ? 'Customer' : 'Fin';
-    lines.push(`**${label}** · ${formatUtc(m.at)} UTC`, '', m.text || '_(no text)_', '');
-    for (const a of m.attachments) {
-      lines.push(`  📎 [${a.name || 'attachment'}](${a.url})`);
-    }
-    if (m.attachments.length) lines.push('');
-  }
-  return lines.join('\n').trim();
-}
-
-function allAttachments(conversation) {
-  return messages(conversation).flatMap((m) => m.attachments);
-}
-
-async function fetchConversation(token, id) {
-  try {
-    const res = await fetch(`https://api.intercom.io/conversations/${id}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Intercom-Version': '2.11',
-      },
-    });
-    if (!res.ok) {
-      console.error(`conversation fetch failed (${res.status}) — using payload`);
-      return null;
-    }
-    return await res.json();
-  } catch (e) {
-    console.error('conversation fetch threw:', e);
-    return null;
-  }
-}
-
-async function fetchContactEmail(token, contactId) {
-  try {
-    const res = await fetch(`https://api.intercom.io/contacts/${contactId}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Intercom-Version': '2.11',
-      },
-    });
-    if (!res.ok) return '';
-    const data = await res.json();
-    return data.email || '';
-  } catch (e) {
-    console.error('contact lookup failed:', e);
-    return '';
-  }
-}
-
-function conversationLink(appId, conversationId) {
-  if (!appId) return '';
-  return `https://app.intercom.com/a/inbox/${appId}/inbox/conversation/${conversationId}`;
-}
-
-// --------------------------------------------------------------------------
-// Formatting
-// --------------------------------------------------------------------------
-
-function buildDescription({
-  sender, email, createdAt, link, subject, transcript, attachments, escalatedReason,
-}) {
-  // Don't print "name <email>" when the name IS the email.
-  const who = email && email !== sender ? `${sender} <${email}>` : sender;
-  const lines = [
-    '**Source:** Intercom',
-    `**Sender:** ${who}`,
-    `**Received:** ${formatUtc(createdAt)} UTC`,
-  ];
-  if (link) lines.push(`**Conversation:** ${link}`);
-  if (subject) lines.push(`**Subject:** ${subject}`);
-  if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
-
-  if (attachments?.length) {
-    lines.push('', '**Attachments:**', '');
-    for (const a of attachments) {
-      lines.push(`- [${a.name || 'attachment'}](${a.url})`);
-    }
-  }
-
-  lines.push('', '---', '', '**Conversation:**', '', transcript || '_(no messages)_');
-  return lines.join('\n');
-}
-
-/** Intercom timestamps are unix seconds. */
 function formatUtc(seconds) {
-  const ms = seconds ? Number(seconds) * 1000 : Date.now();
-  const d = new Date(ms);
+  const d = new Date(seconds ? Number(seconds) * 1000 : Date.now());
   const p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(
-    d.getUTCHours()
-  )}:${p(d.getUTCMinutes())}`;
+  return (
+    `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ` +
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`
+  );
 }
 
 function htmlToText(html) {
@@ -603,39 +596,22 @@ function htmlToText(html) {
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
 function summarize(text) {
-  const firstLine = text.split('\n')[0].trim() || text.trim();
-  return firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine;
+  const first = text.split('\n')[0].trim() || text.trim();
+  return first.length > 140 ? `${first.slice(0, 137)}…` : first;
 }
 
-// --------------------------------------------------------------------------
-// Dedupe + crypto utilities
-// --------------------------------------------------------------------------
-
-const seenConversations = new Map();
-
-/** The ticket this conversation already produced, or null. Read-only. */
-async function processedTicket(env, conversationId) {
-  if (!conversationId) return null;
-  if (env.DEDUPE) return await env.DEDUPE.get(`intercom:${conversationId}`);
-  return seenConversations.get(conversationId) || null;
-}
-
-/** Record the ticket id. Called only after creation actually succeeded. */
-async function markProcessed(env, conversationId, ticketId) {
-  if (!conversationId) return;
-  if (env.DEDUPE) {
-    await env.DEDUPE.put(`intercom:${conversationId}`, ticketId, {
-      expirationTtl: 60 * 60 * 24 * 30,
-    });
-    return;
-  }
-  seenConversations.set(conversationId, ticketId);
-  if (seenConversations.size > 1000) seenConversations.clear();
+async function verifyIntercomSignature(request, rawBody, clientSecret) {
+  const header = request.headers.get('x-hub-signature');
+  if (!header || !clientSecret) return false;
+  const expected = `sha1=${await hmacHex('SHA-1', clientSecret, rawBody)}`;
+  return timingSafeEqual(expected, header);
 }
 
 async function hmacHex(hash, secret, message) {

@@ -25,6 +25,10 @@ INTERCOM_NOTE_ADMIN_ID = ""
 # skip log ever reports a state that should have created a ticket.
 INTERCOM_HANDOFF_STATES = "escalated,routed_to_team"
 
+# Quiet period after the customer's last message before the ticket is written.
+# The cron sweeps once a minute, so the real delay is this plus up to 60s.
+INTERCOM_DEBOUNCE_SECONDS = "180"
+
 # Bold first line of the internal note. Clear this when testing is over.
 INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 
@@ -34,3 +38,8 @@ INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 [[kv_namespaces]]
 binding = "DEDUPE"
 id = "b01eac0c21874f45811a49c44cb98fe0"
+
+# Sweeps the pending timers. A Worker cannot sleep for minutes, so the wait
+# lives in KV and this pass picks up whatever has come due.
+[triggers]
+crons = ["* * * * *"]

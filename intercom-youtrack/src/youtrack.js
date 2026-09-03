@@ -82,21 +82,13 @@ function enumField(name, valueName) {
 }
 
 /**
- * Replace an existing issue's description.
+ * Add a comment to an issue.
  *
- * Used to keep a ticket in step with a conversation that is still going: the
- * ticket is created the moment Fin hands over, so the SLA clock starts when
- * the customer asked for help rather than when they stopped typing, and the
- * body is rewritten as more of the conversation arrives.
- *
- * YouTrack updates issues with POST, not PATCH.
+ * Used for what the customer says AFTER the ticket exists. Comments preserve
+ * chronology, whereas rewriting the description quietly edits history.
  */
-export async function updateYouTrackIssue({ baseUrl, token, issueId, summary, description }) {
-  const body = {};
-  if (summary) body.summary = summary;
-  if (description) body.description = description;
-
-  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}?fields=id,idReadable`;
+export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments?fields=id`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -104,11 +96,41 @@ export async function updateYouTrackIssue({ baseUrl, token, issueId, summary, de
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ text }),
   });
-
   if (!res.ok) {
-    throw new Error(`YouTrack update failed (${res.status}): ${await res.text()}`);
+    throw new Error(`YouTrack comment failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/**
+ * Copy a file into YouTrack as a real attachment.
+ *
+ * The file is fetched from wherever it lives and re-uploaded, rather than
+ * linked, so it survives the source URL expiring and is readable by agents who
+ * have no seat on the system it came from.
+ *
+ * Content-Type is deliberately NOT set — FormData must choose its own
+ * multipart boundary, and setting the header by hand breaks the upload.
+ */
+export async function attachToYouTrackIssue({ baseUrl, token, issueId, name, url, authHeader }) {
+  const src = await fetch(url, authHeader ? { headers: { Authorization: authHeader } } : {});
+  if (!src.ok) {
+    throw new Error(`could not download ${name} (${src.status})`);
+  }
+
+  const form = new FormData();
+  form.append('file', await src.blob(), name || 'attachment');
+
+  const dest = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/attachments?fields=id,name`;
+  const res = await fetch(dest, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack attach failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
 }
