@@ -102,11 +102,31 @@ function handoffState(conversation, env) {
   return { create: toHuman || toTeam || escalated, assignee, teamAssignee, escalated };
 }
 
-/** Topics that reliably fire while a conversation is in progress. */
+/**
+ * Topics that fire while a conversation is in progress.
+ *
+ * `conversation.operator.replied` is the important one. Fin is the Operator,
+ * not a teammate, so its messages do NOT fire conversation.admin.replied
+ * ("Reply from your teammates") — that omission is why escalations were
+ * invisible. Fin sets the escalation flag and then speaks, so this event
+ * arrives with the state already in place.
+ */
 const HANDLED_TOPICS = [
+  'conversation.operator.replied',
   'conversation.admin.assigned',
   'conversation.admin.replied',
   'conversation.user.replied',
+];
+
+/**
+ * Topics that can land BEFORE Fin has finished deciding. A customer message
+ * arrives, then Fin flags the conversation a beat later, so on these it is
+ * worth looking again. On operator.replied the state is already settled and
+ * re-reading would only burn an API call and eight seconds.
+ */
+const TOPICS_WORTH_RECHECKING = [
+  'conversation.user.replied',
+  'conversation.admin.replied',
 ];
 
 async function handleEvent(payload, env) {
@@ -134,7 +154,7 @@ async function handleEvent(payload, env) {
   // event we are handling routinely arrives a few seconds before the state we
   // are looking for, with nothing further coming to tell us. Look once more
   // before giving up.
-  if (!handoff.create) {
+  if (!handoff.create && TOPICS_WORTH_RECHECKING.includes(payload.topic)) {
     console.log(`${item.id}: not flagged on first read, waiting to re-check`);
     await sleep(ESCALATION_RECHECK_MS);
     const fresh =
