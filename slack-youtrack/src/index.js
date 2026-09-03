@@ -12,7 +12,7 @@
  *
  * Secrets / vars (set via `wrangler secret put` or wrangler.toml [vars]):
  *   SLACK_SIGNING_SECRET   (secret)  Slack app signing secret
- *   SLACK_BOT_TOKEN        (secret)  xoxb-… bot token
+ *   SLACK_BOT_TOKEN        (secret)  xoxb-… bot token (needs users:read.email)
  *   YOUTRACK_TOKEN         (secret)  YouTrack permanent token
  *   YOUTRACK_BASE_URL      (var)     https://myrealprofit.youtrack.cloud
  *   YOUTRACK_PROJECT_ID    (var)     CS  (shortName or internal id)
@@ -91,15 +91,16 @@ async function handleEvent(payload, env) {
   const text = (event.text || '').trim();
   if (!text) return; // nothing meaningful to file
 
-  // Gather display name, channel name, and a permalink for the header.
-  const [userName, channelName, permalink] = await Promise.all([
-    getUserName(env.SLACK_BOT_TOKEN, event.user),
+  // Gather sender identity, channel name, and a permalink for the header.
+  const [user, channelName, permalink] = await Promise.all([
+    getUser(env.SLACK_BOT_TOKEN, event.user),
     getChannelName(env.SLACK_BOT_TOKEN, event.channel),
     getPermalink(env.SLACK_BOT_TOKEN, event.channel, event.ts),
   ]);
 
   const description = buildDescription({
-    sender: userName,
+    sender: user.name,
+    email: user.email,
     channelName,
     permalink,
     ts: event.ts,
@@ -115,7 +116,10 @@ async function handleEvent(payload, env) {
     channel: 'Slack',
     type: 'Task',
     replied: 'Not Replied',
-    // Customer Email intentionally left empty for Slack tickets.
+    // Requires the users:read.email bot scope. Left empty for guests and
+    // Slack Connect users who expose no address; the auto-tag-and-route
+    // workflow then falls back to the reporter.
+    customerEmail: user.email || undefined,
   });
 
   const ticketId = issue.idReadable || issue.id;
@@ -140,11 +144,14 @@ async function verifySlackSignature(request, rawBody, signingSecret) {
   return timingSafeEqual(expected, signature);
 }
 
-async function getUserName(token, userId) {
-  if (!userId) return 'Unknown user';
+async function getUser(token, userId) {
+  if (!userId) return { name: 'Unknown user', email: '' };
   const data = await slackGet(token, 'users.info', { user: userId });
   const p = data?.user?.profile || {};
-  return p.display_name || p.real_name || data?.user?.name || userId;
+  return {
+    name: p.display_name || p.real_name || data?.user?.name || userId,
+    email: p.email || '',
+  };
 }
 
 async function getChannelName(token, channelId) {
@@ -191,14 +198,14 @@ async function slackGet(token, method, params) {
 // Formatting
 // --------------------------------------------------------------------------
 
-function buildDescription({ sender, channelName, permalink, ts, text }) {
+function buildDescription({ sender, email, channelName, permalink, ts, text }) {
   const lines = [
-    'Source: Slack',
-    `Sender: ${sender} (${channelName})`,
-    `Received: ${formatUtc(ts)} UTC`,
+    '**Source:** Slack',
+    `**Sender:** ${sender}${email ? ` <${email}>` : ''} (${channelName})`,
+    `**Received:** ${formatUtc(ts)} UTC`,
   ];
-  if (permalink) lines.push(`Thread: ${permalink}`);
-  lines.push('', 'Full message:', '', text);
+  if (permalink) lines.push(`**Thread:** ${permalink}`);
+  lines.push('', '**Full message:**', '', text);
   return lines.join('\n');
 }
 
