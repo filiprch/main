@@ -101,7 +101,15 @@ export default {
     if (payload.topic === 'ping') return new Response('pong', { status: 200 });
 
     ctx.waitUntil(
-      handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e))
+      Promise.all([
+        handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e)),
+        // Sweep opportunistically too, not only on the cron. Webhooks arrive
+        // constantly while people are talking, so this alone gets most tickets
+        // out on time and the integration keeps working if the cron trigger is
+        // ever missing. The cron remains the safety net for the quiet stretch
+        // after the last message, when no webhook is coming.
+        sweepPending(env).catch((e) => console.error('sweep error:', e)),
+      ])
     );
     return new Response('', { status: 200 });
   },
@@ -187,7 +195,9 @@ async function sweepPending(env) {
 
   const { keys } = await env.DEDUPE.list({ prefix: 'pending:' });
   const now = Date.now();
+  if (!keys.length) return;
 
+  const due = [];
   for (const key of keys) {
     const raw = await env.DEDUPE.get(key.name);
     if (!raw) continue;
@@ -203,6 +213,7 @@ async function sweepPending(env) {
     if (state.dueAt > now) continue; // customer is still typing
 
     const conversationId = key.name.slice('pending:'.length);
+    due.push(conversationId);
     try {
       await createTicketFor(env, conversationId);
       await env.DEDUPE.delete(key.name);
@@ -222,6 +233,8 @@ async function sweepPending(env) {
       }
     }
   }
+
+  console.log(`sweep: ${keys.length} pending, ${due.length} due${due.length ? ` (${due.join(', ')})` : ''}`);
 }
 
 async function createTicketFor(env, conversationId) {
