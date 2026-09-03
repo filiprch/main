@@ -9,6 +9,8 @@
  *      is assigned to a human teammate (topic `conversation.admin.assigned`),
  *      excluding assignments to Fin / operator bots.
  *   4. Create a YouTrack CS ticket with the contact's email.
+ *   5. Add an INTERNAL NOTE to the conversation naming the ticket. Never a
+ *      reply — the customer is never messaged by this worker.
  *
  * Secrets / vars:
  *   INTERCOM_CLIENT_SECRET    (secret)  used to verify X-Hub-Signature
@@ -20,6 +22,10 @@
  *   INTERCOM_EXCLUDE_ADMIN_IDS (var)   comma-separated admin IDs to treat as
  *                                      bots (e.g. Fin) — assignments to these
  *                                      do NOT create a ticket
+ *   INTERCOM_TEST_CONTACT_EMAILS (var) test mode: only these contacts create
+ *                                      tickets. Empty = every escalation.
+ *   INTERCOM_NOTE_ADMIN_ID     (var)   admin the internal note is posted as.
+ *                                      Empty = the INTERCOM_TOKEN owner.
  *   DEDUPE                   (KV, opt) dedupe by conversation id
  */
 
@@ -77,15 +83,30 @@ async function handleEvent(payload, env) {
   if (!assignee) return; // unassigned / assigned to a team only — not a human
   if (excluded.includes(String(assignee))) return; // assigned to Fin/operator
 
-  // Dedupe: one ticket per conversation even if reassigned later.
-  if (await alreadyProcessed(env, conversation.id)) return;
-
   const contact = extractContact(conversation);
   // Email may be absent in the webhook payload — look it up if we have a token.
   let email = contact.email;
   if (!email && contact.id && env.INTERCOM_TOKEN) {
     email = await fetchContactEmail(env.INTERCOM_TOKEN, contact.id);
   }
+
+  // Test mode. While the integration is being trialled, only escalations from
+  // these contacts create tickets. Empty = every escalation counts, which is
+  // the production behaviour.
+  const testContacts = (env.INTERCOM_TEST_CONTACT_EMAILS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (testContacts.length && !testContacts.includes((email || '').toLowerCase())) {
+    console.log(
+      `skip ${conversation.id}: ${email || 'unknown contact'} is not on the test list`
+    );
+    return;
+  }
+
+  // Dedupe: one ticket per conversation even if reassigned later. Checked after
+  // the filters so a skipped conversation is not recorded as handled.
+  if (await alreadyProcessed(env, conversation.id)) return;
 
   const firstMessage = htmlToText(conversation.source?.body || '');
   const subject = (conversation.source?.subject || '').trim();
@@ -100,7 +121,7 @@ async function handleEvent(payload, env) {
     message: firstMessage,
   });
 
-  await createYouTrackIssue({
+  const issue = await createYouTrackIssue({
     baseUrl: env.YOUTRACK_BASE_URL,
     token: env.YOUTRACK_TOKEN,
     projectId: env.YOUTRACK_PROJECT_ID || 'CS',
@@ -111,6 +132,90 @@ async function handleEvent(payload, env) {
     replied: 'Not Replied',
     customerEmail: email || undefined,
   });
+
+  // Best effort: a failed note must never lose the ticket we just created.
+  await postInternalNote(env, conversation.id, issue.idReadable, assignee).catch(
+    (e) => console.error('postInternalNote failed:', e)
+  );
+}
+
+// --------------------------------------------------------------------------
+// Internal note
+// --------------------------------------------------------------------------
+
+/**
+ * Add an INTERNAL NOTE to the Intercom conversation naming the ticket.
+ *
+ * message_type is hardcoded to 'note' and must stay that way. The same
+ * endpoint sends a customer-visible reply when message_type is 'comment', so
+ * this one field is the whole difference between an internal annotation and
+ * messaging the customer. Nothing this worker writes should ever be visible to
+ * a customer — do not make this configurable.
+ */
+async function postInternalNote(env, conversationId, ticketId, assigneeId) {
+  if (!env.INTERCOM_TOKEN) {
+    console.error('no INTERCOM_TOKEN — cannot post the note');
+    return;
+  }
+
+  const adminId =
+    env.INTERCOM_NOTE_ADMIN_ID ||
+    (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN)) ||
+    String(assigneeId || '');
+
+  if (!adminId) {
+    console.error('no admin id available — skipping the note');
+    return;
+  }
+
+  const base = (env.YOUTRACK_BASE_URL || '').replace(/\/$/, '');
+  const body =
+    `YouTrack ticket <a href="${base}/tickets/${ticketId}">${ticketId}</a>` +
+    ' has been created for this conversation.';
+
+  const res = await fetch(
+    `https://api.intercom.io/conversations/${conversationId}/reply`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.INTERCOM_TOKEN}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Intercom-Version': '2.11',
+      },
+      body: JSON.stringify({
+        message_type: 'note', // never 'comment' — see the note above
+        type: 'admin',
+        admin_id: String(adminId),
+        body,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(`note rejected (${res.status}): ${await res.text()}`);
+  }
+
+  console.log(`note added to conversation ${conversationId} for ${ticketId}`);
+}
+
+/** The admin who owns INTERCOM_TOKEN — the note is attributed to them. */
+async function fetchTokenOwnerAdminId(token) {
+  try {
+    const res = await fetch('https://api.intercom.io/me', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Intercom-Version': '2.11',
+      },
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.id ? String(data.id) : '';
+  } catch (e) {
+    console.error('admin lookup failed:', e);
+    return '';
+  }
 }
 
 // --------------------------------------------------------------------------
