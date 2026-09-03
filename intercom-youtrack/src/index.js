@@ -5,11 +5,16 @@
  *   1. Receive an Intercom webhook POST.
  *   2. Verify the X-Hub-Signature (HMAC-SHA1 of the raw body with the app's
  *      client secret) — rejects forged requests.
- *   3. Trigger = HANDOFF TO HUMANS. Topic `conversation.admin.assigned`,
- *      which fires both when a named teammate is assigned and when the
- *      conversation lands in a team inbox. Either counts; assignment to Fin
- *      or another operator bot does not.
- *   4. Create a YouTrack CS ticket with the contact's email.
+ *   3. Trigger = HANDOFF TO HUMANS, which happens in two different ways:
+ *        a) Fin escalates. Intercom fires NO assignment event for this — it
+ *           only sets "Fin AI Agent resolution state" to Escalated and leaves
+ *           the conversation unassigned. So we listen to topics that do fire
+ *           during a conversation and read that state.
+ *        b) Someone is assigned — a named teammate, or a team inbox.
+ *      Either counts. Assignment to Fin or another operator bot does not.
+ *   4. Create a YouTrack CS ticket from the CUSTOMER's first message. The
+ *      conversation `source` is Fin's greeting on website chat, so it is not
+ *      the customer and must not be used for the summary or the sender.
  *   5. Add an INTERNAL NOTE to the conversation naming the ticket. Never a
  *      reply — the customer is never messaged by this worker.
  *
@@ -70,12 +75,29 @@ export default {
   },
 };
 
-async function handleEvent(payload, env) {
-  // We only act on human escalation.
-  if (payload.topic !== 'conversation.admin.assigned') return;
+/** Topics that reliably fire while a conversation is in progress. */
+const HANDLED_TOPICS = [
+  'conversation.admin.assigned',
+  'conversation.admin.replied',
+  'conversation.user.replied',
+];
 
-  const conversation = payload.data?.item;
-  if (!conversation) return;
+async function handleEvent(payload, env) {
+  if (!HANDLED_TOPICS.includes(payload.topic)) return;
+
+  const item = payload.data?.item;
+  if (!item?.id) return;
+
+  // Cheapest possible exit: if this conversation already has a ticket, stop
+  // before spending an API call. These topics fire on every message, so most
+  // deliveries land here.
+  if (await isProcessed(env, item.id)) return;
+
+  // Webhook payloads are trimmed and often omit the parts we need — the
+  // customer's own first message above all. Fetch the full conversation.
+  const conversation =
+    (env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id))) ||
+    item;
 
   // conversation.admin.assigned fires for BOTH kinds of assignment:
   //   - to a named teammate  -> admin_assignee_id set
@@ -94,10 +116,11 @@ async function handleEvent(payload, env) {
 
   const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
   const toTeam = Boolean(teamAssignee);
-  if (!toHuman && !toTeam) {
+  const escalated = isEscalated(conversation);
+  if (!toHuman && !toTeam && !escalated) {
     console.log(
-      `skip ${conversation.id}: admin=${assignee ?? 'none'} team=none` +
-        ' (still with Fin, or unassigned)'
+      `skip ${conversation.id}: admin=${assignee ?? 'none'} ` +
+        `team=${teamAssignee ?? 'none'} not escalated — still with Fin`
     );
     return;
   }
@@ -123,11 +146,8 @@ async function handleEvent(payload, env) {
     return;
   }
 
-  // Dedupe: one ticket per conversation even if reassigned later. Checked after
-  // the filters so a skipped conversation is not recorded as handled.
-  if (await alreadyProcessed(env, conversation.id)) return;
 
-  const firstMessage = htmlToText(conversation.source?.body || '');
+  const firstMessage = firstCustomerMessage(conversation);
   const subject = (conversation.source?.subject || '').trim();
   const summary = summarize(subject || firstMessage || `Conversation ${conversation.id}`);
 
@@ -138,6 +158,8 @@ async function handleEvent(payload, env) {
     link: conversationLink(env.INTERCOM_APP_ID, conversation.id),
     subject,
     message: firstMessage,
+    escalatedReason:
+      conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
   });
 
   const issue = await createYouTrackIssue({
@@ -151,6 +173,8 @@ async function handleEvent(payload, env) {
     replied: 'Not Replied',
     customerEmail: email || undefined,
   });
+
+  await markProcessed(env, conversation.id);
 
   // Best effort: a failed note must never lose the ticket we just created.
   await postInternalNote(env, conversation.id, issue.idReadable, assignee).catch(
@@ -275,6 +299,60 @@ function extractContact(conversation) {
   return { id: first.id, email: first.email || '', name: first.name || '' };
 }
 
+/** Fin records escalation as state, not as an assignment or an event. */
+function isEscalated(conversation) {
+  const fromAgent = String(conversation.ai_agent?.resolution_state || '');
+  const fromAttrs = String(
+    conversation.custom_attributes?.['Fin AI Agent resolution state'] || ''
+  );
+  return (
+    fromAgent.toLowerCase() === 'escalated' || fromAttrs.toLowerCase() === 'escalated'
+  );
+}
+
+/**
+ * The customer's own first message.
+ *
+ * `conversation.source` is whatever opened the conversation, and on website
+ * chat that is Fin's greeting — using it made every ticket's summary read
+ * "Hi there! You're speaking with Fin AI Agent...", which is useless for
+ * triage. Walk the parts and take the first one actually written by a person.
+ */
+function firstCustomerMessage(conversation) {
+  const parts = conversation.conversation_parts?.conversation_parts || [];
+  for (const part of parts) {
+    if (part.part_type !== 'comment') continue;
+    if (!CONTACT_AUTHOR_TYPES.includes(part.author?.type)) continue;
+    const text = htmlToText(part.body || '');
+    if (text) return text;
+  }
+  const author = conversation.source?.author || {};
+  if (CONTACT_AUTHOR_TYPES.includes(author.type)) {
+    return htmlToText(conversation.source?.body || '');
+  }
+  return '';
+}
+
+async function fetchConversation(token, id) {
+  try {
+    const res = await fetch(`https://api.intercom.io/conversations/${id}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Intercom-Version': '2.11',
+      },
+    });
+    if (!res.ok) {
+      console.error(`conversation fetch failed (${res.status}) — using payload`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    console.error('conversation fetch threw:', e);
+    return null;
+  }
+}
+
 async function fetchContactEmail(token, contactId) {
   try {
     const res = await fetch(`https://api.intercom.io/contacts/${contactId}`, {
@@ -302,15 +380,20 @@ function conversationLink(appId, conversationId) {
 // Formatting
 // --------------------------------------------------------------------------
 
-function buildDescription({ sender, email, createdAt, link, subject, message }) {
+function buildDescription({
+  sender, email, createdAt, link, subject, message, escalatedReason,
+}) {
+  // Don't print "name <email>" when the name IS the email.
+  const who = email && email !== sender ? `${sender} <${email}>` : sender;
   const lines = [
-    'Source: Intercom',
-    `Sender: ${sender}${email ? ` <${email}>` : ''}`,
-    `Received: ${formatUtc(createdAt)} UTC`,
+    '**Source:** Intercom',
+    `**Sender:** ${who}`,
+    `**Received:** ${formatUtc(createdAt)} UTC`,
   ];
-  if (link) lines.push(`Conversation: ${link}`);
-  if (subject) lines.push(`Subject: ${subject}`);
-  lines.push('', 'Full message:', '', message || '(no message body)');
+  if (link) lines.push(`**Conversation:** ${link}`);
+  if (subject) lines.push(`**Subject:** ${subject}`);
+  if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
+  lines.push('', '**Full message:**', '', message || '(no message body)');
   return lines.join('\n');
 }
 
@@ -347,18 +430,25 @@ function summarize(text) {
 // --------------------------------------------------------------------------
 
 const seenConversations = new Set();
-async function alreadyProcessed(env, conversationId) {
+
+/** Has this conversation already produced a ticket? Read-only. */
+async function isProcessed(env, conversationId) {
   if (!conversationId) return false;
+  if (env.DEDUPE) return Boolean(await env.DEDUPE.get(`intercom:${conversationId}`));
+  return seenConversations.has(conversationId);
+}
+
+/** Record the ticket. Called only after creation actually succeeded. */
+async function markProcessed(env, conversationId) {
+  if (!conversationId) return;
   if (env.DEDUPE) {
-    const key = `intercom:${conversationId}`;
-    if (await env.DEDUPE.get(key)) return true;
-    await env.DEDUPE.put(key, '1', { expirationTtl: 60 * 60 * 24 });
-    return false;
+    await env.DEDUPE.put(`intercom:${conversationId}`, '1', {
+      expirationTtl: 60 * 60 * 24 * 30,
+    });
+    return;
   }
-  if (seenConversations.has(conversationId)) return true;
   seenConversations.add(conversationId);
   if (seenConversations.size > 1000) seenConversations.clear();
-  return false;
 }
 
 async function hmacHex(hash, secret, message) {
