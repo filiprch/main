@@ -11,9 +11,10 @@ YOUTRACK_PROJECT_ID = "0-18"
 # Find a channel ID via right-click channel → View channel details (bottom).
 CUSTOMER_CHANNEL_IDS = ""
 
-# Optional: a KV namespace for deduping Slack event retries across isolates.
-# Create with: wrangler kv namespace create DEDUPE
-# then uncomment and paste the returned id.
-# [[kv_namespaces]]
-# binding = "DEDUPE"
-# id = "<kv-namespace-id>"
+# Dedupe store for Slack event retries. Slack resends an event when it does
+# not get a 200 within 3 seconds, and the retry can land on a different
+# isolate — where the in-memory fallback knows nothing about it. Keys are
+# written as slack:<event_id> with a 1 hour TTL.
+[[kv_namespaces]]
+binding = "DEDUPE"
+id = "ff85915611ec486facdd423b6f98fb94"
