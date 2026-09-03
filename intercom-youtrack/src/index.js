@@ -5,9 +5,10 @@
  *   1. Receive an Intercom webhook POST.
  *   2. Verify the X-Hub-Signature (HMAC-SHA1 of the raw body with the app's
  *      client secret) — rejects forged requests.
- *   3. Trigger = HUMAN ESCALATION ONLY. We create a ticket when a conversation
- *      is assigned to a human teammate (topic `conversation.admin.assigned`),
- *      excluding assignments to Fin / operator bots.
+ *   3. Trigger = HANDOFF TO HUMANS. Topic `conversation.admin.assigned`,
+ *      which fires both when a named teammate is assigned and when the
+ *      conversation lands in a team inbox. Either counts; assignment to Fin
+ *      or another operator bot does not.
  *   4. Create a YouTrack CS ticket with the contact's email.
  *   5. Add an INTERNAL NOTE to the conversation naming the ticket. Never a
  *      reply — the customer is never messaged by this worker.
@@ -76,23 +77,30 @@ async function handleEvent(payload, env) {
   const conversation = payload.data?.item;
   if (!conversation) return;
 
-  // Identify who it was assigned to. Skip assignments to Fin / operator bots.
+  // conversation.admin.assigned fires for BOTH kinds of assignment:
+  //   - to a named teammate  -> admin_assignee_id set
+  //   - to a team inbox      -> admin_assignee_id null, team_assignee_id set
+  //
+  // The team case is the moment Fin stops handling the conversation and hands
+  // it to humans. That is when the ticket should exist and the SLA clock
+  // should start — not whenever someone eventually opens it, which could be
+  // hours later and would make First Reply measure the wrong thing.
   const assignee = conversation.admin_assignee_id;
+  const teamAssignee = conversation.team_assignee_id;
   const excluded = (env.INTERCOM_EXCLUDE_ADMIN_IDS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!assignee) {
-    // Logged rather than silently dropped: this is the case that fires when a
-    // conversation goes to a team inbox instead of a named teammate, and we
-    // need to see whether Intercom sends us anything at all for it.
+
+  const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
+  const toTeam = Boolean(teamAssignee);
+  if (!toHuman && !toTeam) {
     console.log(
-      `skip ${conversation.id}: no admin assignee ` +
-        `(team_assignee_id=${conversation.team_assignee_id ?? 'none'})`
+      `skip ${conversation.id}: admin=${assignee ?? 'none'} team=none` +
+        ' (still with Fin, or unassigned)'
     );
     return;
   }
-  if (excluded.includes(String(assignee))) return; // assigned to Fin/operator
 
   const contact = extractContact(conversation);
   // Email may be absent in the webhook payload — look it up if we have a token.
@@ -248,10 +256,19 @@ async function verifyIntercomSignature(request, rawBody, clientSecret) {
   return timingSafeEqual(expected, header);
 }
 
+const CONTACT_AUTHOR_TYPES = ['user', 'lead', 'contact'];
+
+/**
+ * Find the customer on the conversation.
+ *
+ * `source` is the conversation's FIRST message, and on website chat that is
+ * Fin's greeting — so source.author is the operator, not the customer. Trust
+ * the author only when it is actually a contact; otherwise take the contacts
+ * list, which is the customer either way.
+ */
 function extractContact(conversation) {
-  // Webhook payloads vary: prefer source.author, fall back to contacts list.
   const author = conversation.source?.author || {};
-  if (author.email || author.name) {
+  if (CONTACT_AUTHOR_TYPES.includes(author.type) && (author.email || author.name)) {
     return { id: author.id, email: author.email || '', name: author.name || '' };
   }
   const first = conversation.contacts?.contacts?.[0] || {};
