@@ -5,7 +5,7 @@ compatibility_date = "2024-09-23"
 # Non-secret configuration. Tokens are set with `wrangler secret put <NAME>`.
 [vars]
 YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
-YOUTRACK_PROJECT_ID = "CS"
+YOUTRACK_PROJECT_ID = "0-18"
 # Intercom workspace (app) id — used to build conversation deep-links.
 INTERCOM_APP_ID = "agc8lkpy"
 # Admin IDs that are bots (e.g. Fin / Operator). Assignments to these do NOT

@@ -1,6 +1,6 @@
 # Helpdesk Webhooks — Slack & Intercom → YouTrack
 
-**Status:** built, pending deployment
+**Status:** Slack channel LIVE and verified (CS-158, 2026-09-03). Intercom untested.
 **Owner:** Filip Seidel
 **Audience:** developers / whoever hosts and maintains these integrations
 
@@ -223,7 +223,13 @@ cd slack-youtrack        # or intercom-youtrack
 npm install
 npx wrangler login       # opens a browser to authorise the Cloudflare account
 
-# set the secrets (prompts for each value, nothing is echoed or committed):
+# DEPLOY FIRST. `wrangler secret put` fails with "This Worker does not exist
+# on your account" until the Worker has been created by a deploy.
+npx wrangler deploy
+
+# then set the secrets (one at a time — the prompt reads a SINGLE value and
+# displays nothing as you paste; pasting several at once sends the extra
+# lines to your shell):
 npx wrangler secret put YOUTRACK_TOKEN
 npx wrangler secret put SLACK_SIGNING_SECRET     # slack only
 npx wrangler secret put SLACK_BOT_TOKEN          # slack only
@@ -233,7 +239,7 @@ npx wrangler secret put INTERCOM_TOKEN           # intercom only
 # set the Slack channel allowlist in slack-youtrack/wrangler.toml first:
 #   CUSTOMER_CHANNEL_IDS = "C0123ABC,C0456DEF"
 
-npx wrangler deploy      # prints the public Worker URL
+npx wrangler deploy      # re-deploy after any config change
 ```
 
 Copy the printed Worker URL — you need it for the wiring step.
@@ -254,9 +260,12 @@ Copy the printed Worker URL — you need it for the wiring step.
 2. **Subscribe to topic:** `conversation.admin.assigned`.
 3. Use **Send test notification** (topic `ping`) → the Worker replies `200`.
 
-### YouTrack project id note
-The code sends `project: { id: "CS" }`. If YouTrack rejects it with
-"project not found", the instance wants the internal id instead:
+### YouTrack project id — RESOLVED
+The API rejects the short name with
+`400 {"error":"bad_request","error_description":"Invalid structure of entity id: CS"}`.
+Our instance requires the **internal id**, which is **`0-18`** — already set in
+both `wrangler.toml` files. This was the single cause of the Slack integration
+silently creating nothing for months. To re-derive it:
 ```bash
 curl -H "Authorization: Bearer $YOUTRACK_TOKEN" \
   "https://myrealprofit.youtrack.cloud/api/admin/projects?fields=id,shortName,name"
@@ -308,9 +317,27 @@ Set `YOUTRACK_PROJECT_ID` in `wrangler.toml` to the returned `id` (e.g. `0-3`).
 
 ## 13. Open decisions / future work
 
-- **Confirm YouTrack enum spellings** against the live instance on the first
-  real ticket: `Channel → Slack/Intercom`, `Replied → Not Replied`,
-  `Type → Task`. A mismatch shows up as a YouTrack 400 in the logs.
+- ~~Confirm YouTrack enum spellings~~ **DONE.** Verified against the live
+  schema: `Channel` accepts Gmail/Intercom/Slack, `Type` accepts Task,
+  `Replied` accepts `Not Replied`. All correct as written.
+- ~~Whether REST-created issues become real helpdesk tickets~~ **DONE — they
+  do.** CS-158 was created by the Slack Worker over `POST /api/issues` and is
+  a full ticket: `Helpdesk` tag, `Customer Support - Helpdesk Team`
+  visibility, SLA `First Reply` timer running, served at `/tickets/CS-158`.
+  Structurally identical to a Gmail-channel ticket. **No online-form or email
+  relay migration is needed.**
+
+### Known defects (as of CS-158)
+
+1. **The `auto-tag-and-route` workflow Gmail-ifies every ticket.** It prepends
+   a `Source: Gmail - find original email` header and a Gmail search link to
+   the description regardless of channel, so a Slack ticket claims to come
+   from Gmail and links to a search that finds nothing. Our Slack header ends
+   up nested inside it. Fix: skip the Gmail header when `Channel != Gmail`.
+2. **`Customer Email` is the token owner, not the customer.** It resolves to
+   whoever owns `YOUTRACK_TOKEN` rather than the person who wrote in Slack.
+   Fix: add the `users:read.email` Slack scope, read `profile.email` in
+   `getUserName`, and pass it as `customerEmail`.
 - **Intercom scope** is currently "human escalation only." If we later want
   *every* new conversation to create a ticket, add the
   `conversation.user.created` topic — the handler is structured for it.
