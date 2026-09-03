@@ -327,17 +327,41 @@ Set `YOUTRACK_PROJECT_ID` in `wrangler.toml` to the returned `id` (e.g. `0-3`).
   Structurally identical to a Gmail-channel ticket. **No online-form or email
   relay migration is needed.**
 
-### Known defects (as of CS-158)
+### Defects found and fixed (CS-158 → CS-160)
 
-1. **The `auto-tag-and-route` workflow Gmail-ifies every ticket.** It prepends
-   a `Source: Gmail - find original email` header and a Gmail search link to
-   the description regardless of channel, so a Slack ticket claims to come
-   from Gmail and links to a search that finds nothing. Our Slack header ends
-   up nested inside it. Fix: skip the Gmail header when `Channel != Gmail`.
-2. **`Customer Email` is the token owner, not the customer.** It resolves to
-   whoever owns `YOUTRACK_TOKEN` rather than the person who wrote in Slack.
-   Fix: add the `users:read.email` Slack scope, read `profile.email` in
-   `getUserName`, and pass it as `customerEmail`.
+1. ~~`auto-tag-and-route` Gmail-ifies every ticket~~ **FIXED in YouTrack.**
+   Its "Build and prepend description header" step now returns early unless
+   `Channel == Gmail`, so only Gmail tickets get the Gmail header and search
+   link. Verified on CS-159.
+2. ~~`Customer Email` is the token owner, not the customer~~ **FIXED in the
+   Worker.** The `users:read.email` bot scope was added and `getUser` now
+   returns `profile.email`, passed through as `customerEmail`. The workflow
+   only writes that field when empty, so it defers to ours. Verified on
+   CS-160.
+
+### Workflow inventory (project CS)
+
+| Workflow | Type | Guard | Notes |
+|---|---|---|---|
+| Auto-tag and Route | on-change | `isReported && (isNew \|\| becomesReported)` | Sets Channel/Replied/Customer Email defaults, Helpdesk tag, Type and Priority heuristics, and the Gmail header (Gmail only). |
+| Gmail — Email | SLA | `Channel == Gmail` | First Reply 4h/8h/24h/48h/72h by Priority. |
+| Slack — Customer | SLA | `Channel == Slack` | First Reply 1h/2h/4h/8h by Priority. Correct since June; had no tickets to act on until CS-158. |
+| Intercom — Live Chat | SLA | `Channel == Intercom` | Same tiers as Slack. Untested. |
+| Process Spam | on-change | `spam` tag added by admin | JetBrains stock. |
+| Helpdesk | app | — | JetBrains built-in. Do not edit. |
+
+### Remaining limitations
+
+- **The ticket reporter is the `YOUTRACK_TOKEN` owner**, not the customer.
+  REST cannot set it. Acceptable for Slack and Intercom, where replies go
+  back to the source thread rather than by email; `Customer Email` carries
+  the real identity. It would matter if these customers ever needed to reply
+  by email.
+- **Guests and Slack Connect users may expose no email.** `Customer Email`
+  then falls back to the reporter via the workflow.
+- **`CUSTOMER_CHANNEL_IDS` is empty**, which means EVERY channel the bot is
+  invited to files tickets, private ones included (`message.groups` is
+  subscribed). Set the allowlist before inviting the bot anywhere real.
 - **Intercom scope** is currently "human escalation only." If we later want
   *every* new conversation to create a ticket, add the
   `conversation.user.created` topic — the handler is structured for it.
