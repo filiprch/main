@@ -26,6 +26,8 @@
  *                                      tickets. Empty = every escalation.
  *   INTERCOM_NOTE_ADMIN_ID     (var)   admin the internal note is posted as.
  *                                      Empty = the INTERCOM_TOKEN owner.
+ *   INTERCOM_NOTE_PREFIX       (var)   bold first line of the note, e.g.
+ *                                      "TESTING HELPDESK". Empty = no prefix.
  *   DEDUPE                   (KV, opt) dedupe by conversation id
  */
 
@@ -169,9 +171,13 @@ async function postInternalNote(env, conversationId, ticketId, assigneeId) {
   }
 
   const base = (env.YOUTRACK_BASE_URL || '').replace(/\/$/, '');
+  const prefix = env.INTERCOM_NOTE_PREFIX || '';
   const body =
+    (prefix ? `<b>${prefix}</b><br><br>` : '') +
     `YouTrack ticket <a href="${base}/tickets/${ticketId}">${ticketId}</a>` +
-    ' has been created for this conversation.';
+    ' has been created for this conversation.<br><br>' +
+    '<i>Internal note — the customer cannot see this, and no reply was sent' +
+    ' to them.</i>';
 
   const res = await fetch(
     `https://api.intercom.io/conversations/${conversationId}/reply`,

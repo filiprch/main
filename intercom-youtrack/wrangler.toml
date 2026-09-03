@@ -15,10 +15,14 @@ INTERCOM_EXCLUDE_ADMIN_IDS = "5286994"
 
 # TEST MODE. Only escalations from these contact emails create tickets.
 # Comma-separated. Leave EMPTY to accept every escalation (production).
-INTERCOM_TEST_CONTACT_EMAILS = ""
+# Set to Filip only for the first verified run — clear it to go live.
+INTERCOM_TEST_CONTACT_EMAILS = "filip@myrealprofit.com"
 
 # Admin the internal note is posted as. Empty = whoever owns INTERCOM_TOKEN.
 INTERCOM_NOTE_ADMIN_ID = ""
+
+# Bold first line of the internal note. Clear this when testing is over.
+INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 
 # Optional KV namespace to dedupe by conversation id across isolates.
 # wrangler kv namespace create DEDUPE
