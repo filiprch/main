@@ -236,9 +236,16 @@ async function handleEvent(payload, env) {
   await markProcessed(env, conversation.id);
 
   // Best effort: a failed note must never lose the ticket we just created.
-  await postInternalNote(env, conversation.id, issue.idReadable, assignee).catch(
-    (e) => console.error('postInternalNote failed:', e)
-  );
+  // handoff.assignee, not a bare `assignee` — the local went away when the
+  // guard moved into handoffState(). Wrapped in try/catch rather than .catch()
+  // so a synchronous throw while building the arguments cannot escape either.
+  try {
+    await postInternalNote(
+      env, conversation.id, issue.idReadable, handoff.assignee
+    );
+  } catch (e) {
+    console.error('postInternalNote failed:', e);
+  }
 }
 
 // --------------------------------------------------------------------------
