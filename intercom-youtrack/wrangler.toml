@@ -13,10 +13,10 @@ INTERCOM_APP_ID = "agc8lkpy"
 # 5286994 = Fin (operator+agc8lkpy@intercom.io, no inbox seat)
 INTERCOM_EXCLUDE_ADMIN_IDS = "5286994"
 
-# TEST MODE. Only escalations from these contact emails create tickets.
-# Comma-separated. Leave EMPTY to accept every escalation (production).
-# Set to Filip only for the first verified run — clear it to go live.
-INTERCOM_TEST_CONTACT_EMAILS = "filip@myrealprofit.com"
+# Optional allowlist of contact emails. Left EMPTY on purpose: most Intercom
+# traffic is anonymous website visitors who have no email until Fin asks for
+# one, so filtering on it would silently drop the majority of escalations.
+INTERCOM_TEST_CONTACT_EMAILS = ""
 
 # Admin the internal note is posted as. Empty = whoever owns INTERCOM_TOKEN.
 INTERCOM_NOTE_ADMIN_ID = ""

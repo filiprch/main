@@ -82,7 +82,16 @@ async function handleEvent(payload, env) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!assignee) return; // unassigned / assigned to a team only — not a human
+  if (!assignee) {
+    // Logged rather than silently dropped: this is the case that fires when a
+    // conversation goes to a team inbox instead of a named teammate, and we
+    // need to see whether Intercom sends us anything at all for it.
+    console.log(
+      `skip ${conversation.id}: no admin assignee ` +
+        `(team_assignee_id=${conversation.team_assignee_id ?? 'none'})`
+    );
+    return;
+  }
   if (excluded.includes(String(assignee))) return; // assigned to Fin/operator
 
   const contact = extractContact(conversation);
