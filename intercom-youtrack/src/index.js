@@ -127,6 +127,7 @@ async function handleEvent(payload, env) {
     item;
 
   let handoff = handoffState(conversation, env);
+  let rechecked = false;
 
   // Fin sets the escalation flag a beat AFTER the message that causes it, and
   // its own replies are bot messages that fire no webhook of their own. So the
@@ -134,22 +135,30 @@ async function handleEvent(payload, env) {
   // are looking for, with nothing further coming to tell us. Look once more
   // before giving up.
   if (!handoff.create) {
+    console.log(`${item.id}: not flagged on first read, waiting to re-check`);
     await sleep(ESCALATION_RECHECK_MS);
     const fresh =
       env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id));
     if (fresh) {
       conversation = fresh;
       handoff = handoffState(conversation, env);
+      rechecked = true;
     }
   }
 
   if (!handoff.create) {
     console.log(
-      `skip ${conversation.id}: admin=${handoff.assignee ?? 'none'} ` +
-        `team=${handoff.teamAssignee ?? 'none'} not escalated — still with Fin`
+      `skip ${conversation.id}${rechecked ? ' (after re-check)' : ' (no re-check)'}: ` +
+        `admin=${handoff.assignee ?? 'none'} team=${handoff.teamAssignee ?? 'none'} ` +
+        `state=${conversation.ai_agent?.resolution_state ?? 'unknown'}`
     );
     return;
   }
+
+  console.log(
+    `create for ${conversation.id}: escalated=${handoff.escalated} ` +
+      `rechecked=${rechecked}`
+  );
 
   // Another delivery for this conversation may have won the race while we
   // slept. Check again now that we know we want to create.
