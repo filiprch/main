@@ -100,6 +100,14 @@ export default {
 
     if (payload.topic === 'ping') return new Response('pong', { status: 200 });
 
+    // Kill switch. Checked after the ping so Intercom's "Send a test request"
+    // still succeeds while the integration is off, and returns 200 so Intercom
+    // does not retry or mark the endpoint unhealthy.
+    if (!isEnabled(env)) {
+      console.log('disabled by ENABLED=false — ignoring event');
+      return new Response('', { status: 200 });
+    }
+
     ctx.waitUntil(
       Promise.all([
         handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e)),
@@ -116,6 +124,10 @@ export default {
 
   /** Cron sweep: create the tickets whose quiet period has elapsed. */
   async scheduled(event, env, ctx) {
+    if (!isEnabled(env)) {
+      console.log('disabled by ENABLED=false — skipping sweep');
+      return;
+    }
     ctx.waitUntil(sweepPending(env).catch((e) => console.error('sweep error:', e)));
   },
 };
@@ -123,6 +135,11 @@ export default {
 // --------------------------------------------------------------------------
 // Webhook
 // --------------------------------------------------------------------------
+
+/** Off unless ENABLED is exactly "false", so a missing value stays on. */
+function isEnabled(env) {
+  return String(env.ENABLED ?? 'true').toLowerCase() !== 'false';
+}
 
 async function handleEvent(payload, env) {
   if (!HANDLED_TOPICS.includes(payload.topic)) return;

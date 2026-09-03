@@ -50,6 +50,16 @@ export default {
       });
     }
 
+    // --- Kill switch ------------------------------------------------------
+    // Checked AFTER the handshake above, so Slack can still verify the
+    // Request URL while the integration is switched off. Returns 200 so Slack
+    // treats the event as delivered rather than retrying it three times and
+    // eventually marking the endpoint unhealthy.
+    if (!isEnabled(env)) {
+      console.log('disabled by ENABLED=false — ignoring event');
+      return new Response('', { status: 200 });
+    }
+
     // --- Everything else: ack fast, process in the background -------------
     if (payload.type === 'event_callback') {
       ctx.waitUntil(handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e)));
@@ -61,6 +71,11 @@ export default {
 /**
  * Decide whether an event should become a ticket, then create it.
  */
+/** Off unless ENABLED is exactly "false", so a missing value stays on. */
+function isEnabled(env) {
+  return String(env.ENABLED ?? 'true').toLowerCase() !== 'false';
+}
+
 async function handleEvent(payload, env) {
   const event = payload.event || {};
 

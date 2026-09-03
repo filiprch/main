@@ -5,6 +5,13 @@ compatibility_date = "2024-09-23"
 # Non-secret configuration. Tokens are NOT stored here — set them with
 # `wrangler secret put <NAME>` (see README).
 [vars]
+# MASTER SWITCH. "false" makes this worker ignore every event and create
+# nothing. Anything else (including a missing value) leaves it running. The
+# two workers have separate config, so this turns off Slack ONLY.
+#   off:  set to "false", then npx wrangler deploy
+#   on:   set to "true",  then npx wrangler deploy
+ENABLED = "true"
+
 YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
 YOUTRACK_PROJECT_ID = "0-18"
 # Comma-separated Slack channel IDs to monitor (customer channels only).
@@ -18,3 +25,10 @@ CUSTOMER_CHANNEL_IDS = ""
 [[kv_namespaces]]
 binding = "DEDUPE"
 id = "ff85915611ec486facdd423b6f98fb94"
+
+# Retained logs, readable in the Cloudflare dashboard under this worker's
+# Observability tab. Without this, logs exist only while `wrangler tail` is
+# attached to somebody's terminal — so an overnight failure leaves no trace.
+[observability]
+enabled = true
+head_sampling_rate = 1
