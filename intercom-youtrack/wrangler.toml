@@ -24,8 +24,9 @@ INTERCOM_NOTE_ADMIN_ID = ""
 # Bold first line of the internal note. Clear this when testing is over.
 INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 
-# Optional KV namespace to dedupe by conversation id across isolates.
-# wrangler kv namespace create DEDUPE
-# [[kv_namespaces]]
-# binding = "DEDUPE"
-# id = "<kv-namespace-id>"
+# Dedupe store, keyed by conversation id, so a reassignment or a webhook
+# retry cannot produce a second ticket for the same conversation. Separate
+# namespace from the Slack worker's despite the shared binding name.
+[[kv_namespaces]]
+binding = "DEDUPE"
+id = "b01eac0c21874f45811a49c44cb98fe0"
