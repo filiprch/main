@@ -75,6 +75,33 @@ export default {
   },
 };
 
+/** How long to wait before re-reading a conversation that is not yet flagged. */
+const ESCALATION_RECHECK_MS = 8000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Should this conversation produce a ticket, and why?
+ *
+ * Two routes to the same answer: Fin flagged it Escalated, or a human owns it
+ * — a named teammate, or a team inbox. Assignment to Fin or another operator
+ * bot does not count.
+ */
+function handoffState(conversation, env) {
+  const assignee = conversation.admin_assignee_id;
+  const teamAssignee = conversation.team_assignee_id;
+  const excluded = (env.INTERCOM_EXCLUDE_ADMIN_IDS || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
+  const toTeam = Boolean(teamAssignee);
+  const escalated = isEscalated(conversation);
+
+  return { create: toHuman || toTeam || escalated, assignee, teamAssignee, escalated };
+}
+
 /** Topics that reliably fire while a conversation is in progress. */
 const HANDLED_TOPICS = [
   'conversation.admin.assigned',
@@ -95,35 +122,38 @@ async function handleEvent(payload, env) {
 
   // Webhook payloads are trimmed and often omit the parts we need — the
   // customer's own first message above all. Fetch the full conversation.
-  const conversation =
+  let conversation =
     (env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id))) ||
     item;
 
-  // conversation.admin.assigned fires for BOTH kinds of assignment:
-  //   - to a named teammate  -> admin_assignee_id set
-  //   - to a team inbox      -> admin_assignee_id null, team_assignee_id set
-  //
-  // The team case is the moment Fin stops handling the conversation and hands
-  // it to humans. That is when the ticket should exist and the SLA clock
-  // should start — not whenever someone eventually opens it, which could be
-  // hours later and would make First Reply measure the wrong thing.
-  const assignee = conversation.admin_assignee_id;
-  const teamAssignee = conversation.team_assignee_id;
-  const excluded = (env.INTERCOM_EXCLUDE_ADMIN_IDS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  let handoff = handoffState(conversation, env);
 
-  const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
-  const toTeam = Boolean(teamAssignee);
-  const escalated = isEscalated(conversation);
-  if (!toHuman && !toTeam && !escalated) {
+  // Fin sets the escalation flag a beat AFTER the message that causes it, and
+  // its own replies are bot messages that fire no webhook of their own. So the
+  // event we are handling routinely arrives a few seconds before the state we
+  // are looking for, with nothing further coming to tell us. Look once more
+  // before giving up.
+  if (!handoff.create) {
+    await sleep(ESCALATION_RECHECK_MS);
+    const fresh =
+      env.INTERCOM_TOKEN && (await fetchConversation(env.INTERCOM_TOKEN, item.id));
+    if (fresh) {
+      conversation = fresh;
+      handoff = handoffState(conversation, env);
+    }
+  }
+
+  if (!handoff.create) {
     console.log(
-      `skip ${conversation.id}: admin=${assignee ?? 'none'} ` +
-        `team=${teamAssignee ?? 'none'} not escalated — still with Fin`
+      `skip ${conversation.id}: admin=${handoff.assignee ?? 'none'} ` +
+        `team=${handoff.teamAssignee ?? 'none'} not escalated — still with Fin`
     );
     return;
   }
+
+  // Another delivery for this conversation may have won the race while we
+  // slept. Check again now that we know we want to create.
+  if (await isProcessed(env, conversation.id)) return;
 
   const contact = extractContact(conversation);
   // Email may be absent in the webhook payload — look it up if we have a token.
