@@ -37,7 +37,7 @@
  *   DEDUPE                   (KV, opt) dedupe by conversation id
  */
 
-import { createYouTrackIssue } from './youtrack.js';
+import { createYouTrackIssue, updateYouTrackIssue } from './youtrack.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -135,10 +135,21 @@ async function handleEvent(payload, env) {
   const item = payload.data?.item;
   if (!item?.id) return;
 
-  // Cheapest possible exit: if this conversation already has a ticket, stop
-  // before spending an API call. These topics fire on every message, so most
-  // deliveries land here.
-  if (await isProcessed(env, item.id)) return;
+  // A ticket already exists for this conversation. The customer is still
+  // talking, though, and the first thing they say is often just "hello" — so
+  // rather than ignore the rest, keep the ticket's body in step with the
+  // conversation. Anything other than a customer message is ignored outright.
+  const existingTicket = await processedTicket(env, item.id);
+  if (existingTicket) {
+    if (payload.topic === 'conversation.user.replied') {
+      try {
+        await refreshTicket(env, item.id, existingTicket);
+      } catch (e) {
+        console.error(`refresh of ${existingTicket} failed:`, e);
+      }
+    }
+    return;
+  }
 
   // Webhook payloads are trimmed and often omit the parts we need — the
   // customer's own first message above all. Fetch the full conversation.
@@ -182,7 +193,7 @@ async function handleEvent(payload, env) {
 
   // Another delivery for this conversation may have won the race while we
   // slept. Check again now that we know we want to create.
-  if (await isProcessed(env, conversation.id)) return;
+  if (await processedTicket(env, conversation.id)) return;
 
   const contact = extractContact(conversation);
   // Email may be absent in the webhook payload — look it up if we have a token.
@@ -206,9 +217,10 @@ async function handleEvent(payload, env) {
   }
 
 
-  const firstMessage = firstCustomerMessage(conversation);
   const subject = (conversation.source?.subject || '').trim();
-  const summary = summarize(subject || firstMessage || `Conversation ${conversation.id}`);
+  const summary = summarize(
+    subject || pickSummary(conversation) || `Conversation ${conversation.id}`
+  );
 
   const description = buildDescription({
     sender: contact.name || email || 'Intercom contact',
@@ -216,7 +228,8 @@ async function handleEvent(payload, env) {
     createdAt: conversation.created_at,
     link: conversationLink(env.INTERCOM_APP_ID, conversation.id),
     subject,
-    message: firstMessage,
+    transcript: buildTranscript(conversation),
+    attachments: allAttachments(conversation),
     escalatedReason:
       conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
   });
@@ -233,7 +246,7 @@ async function handleEvent(payload, env) {
     customerEmail: email || undefined,
   });
 
-  await markProcessed(env, conversation.id);
+  await markProcessed(env, conversation.id, issue.idReadable);
 
   // Best effort: a failed note must never lose the ticket we just created.
   // handoff.assignee, not a bare `assignee` — the local went away when the
@@ -246,6 +259,49 @@ async function handleEvent(payload, env) {
   } catch (e) {
     console.error('postInternalNote failed:', e);
   }
+}
+
+/**
+ * Rewrite an existing ticket from the current state of the conversation.
+ *
+ * Customers routinely open with "hello" and explain themselves afterwards, so
+ * a ticket built only from what existed at handoff is thin. Rather than delay
+ * creation — which would delay the SLA clock too — the ticket is created at
+ * handoff and its body kept current as the customer keeps typing.
+ */
+async function refreshTicket(env, conversationId, ticketId) {
+  // Older entries stored a bare marker rather than a ticket id.
+  if (!/^[A-Za-z]+-\d+$/.test(ticketId)) return;
+
+  const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
+  if (!conversation) return;
+
+  const contact = extractContact(conversation);
+  let email = contact.email;
+  if (!email && contact.id && env.INTERCOM_TOKEN) {
+    email = await fetchContactEmail(env.INTERCOM_TOKEN, contact.id);
+  }
+
+  const description = buildDescription({
+    sender: contact.name || email || 'Intercom contact',
+    email,
+    createdAt: conversation.created_at,
+    link: conversationLink(env.INTERCOM_APP_ID, conversationId),
+    subject: (conversation.source?.subject || '').trim(),
+    transcript: buildTranscript(conversation),
+    attachments: allAttachments(conversation),
+    escalatedReason:
+      conversation.custom_attributes?.['Fin AI Agent escalated reason'] || '',
+  });
+
+  await updateYouTrackIssue({
+    baseUrl: env.YOUTRACK_BASE_URL,
+    token: env.YOUTRACK_TOKEN,
+    issueId: ticketId,
+    description,
+  });
+
+  console.log(`refreshed ${ticketId} from conversation ${conversationId}`);
 }
 
 // --------------------------------------------------------------------------
@@ -395,27 +451,65 @@ function isEscalated(conversation, env) {
   return states.includes(fromAgent) || states.includes(fromAttrs);
 }
 
-/**
- * The customer's own first message.
- *
- * `conversation.source` is whatever opened the conversation, and on website
- * chat that is Fin's greeting — using it made every ticket's summary read
- * "Hi there! You're speaking with Fin AI Agent...", which is useless for
- * triage. Walk the parts and take the first one actually written by a person.
- */
-function firstCustomerMessage(conversation) {
-  const parts = conversation.conversation_parts?.conversation_parts || [];
-  for (const part of parts) {
+/** Every message in the conversation, oldest first, with who said it. */
+function messages(conversation) {
+  const out = [];
+
+  const src = conversation.source || {};
+  if (src.body) {
+    out.push({
+      who: CONTACT_AUTHOR_TYPES.includes(src.author?.type) ? 'customer' : 'fin',
+      text: htmlToText(src.body),
+      at: conversation.created_at,
+      attachments: src.attachments || [],
+    });
+  }
+
+  for (const part of conversation.conversation_parts?.conversation_parts || []) {
     if (part.part_type !== 'comment') continue;
-    if (!CONTACT_AUTHOR_TYPES.includes(part.author?.type)) continue;
     const text = htmlToText(part.body || '');
-    if (text) return text;
+    const attachments = part.attachments || [];
+    if (!text && !attachments.length) continue;
+    out.push({
+      who: CONTACT_AUTHOR_TYPES.includes(part.author?.type) ? 'customer' : 'fin',
+      text,
+      at: part.created_at,
+      attachments,
+    });
   }
-  const author = conversation.source?.author || {};
-  if (CONTACT_AUTHOR_TYPES.includes(author.type)) {
-    return htmlToText(conversation.source?.body || '');
+
+  return out;
+}
+
+/**
+ * What the ticket should be called.
+ *
+ * The customer's FIRST message is often just "hello" or "human", so using it
+ * made the summary useless. The longest message they sent is nearly always
+ * the one that actually states the problem.
+ */
+function pickSummary(conversation) {
+  const mine = messages(conversation).filter((m) => m.who === 'customer' && m.text);
+  if (!mine.length) return '';
+  return mine.reduce((best, m) => (m.text.length > best.text.length ? m : best)).text;
+}
+
+/** The whole exchange, so the agent can see what Fin already said. */
+function buildTranscript(conversation) {
+  const lines = [];
+  for (const m of messages(conversation)) {
+    const label = m.who === 'customer' ? 'Customer' : 'Fin';
+    lines.push(`**${label}** · ${formatUtc(m.at)} UTC`, '', m.text || '_(no text)_', '');
+    for (const a of m.attachments) {
+      lines.push(`  📎 [${a.name || 'attachment'}](${a.url})`);
+    }
+    if (m.attachments.length) lines.push('');
   }
-  return '';
+  return lines.join('\n').trim();
+}
+
+function allAttachments(conversation) {
+  return messages(conversation).flatMap((m) => m.attachments);
 }
 
 async function fetchConversation(token, id) {
@@ -466,7 +560,7 @@ function conversationLink(appId, conversationId) {
 // --------------------------------------------------------------------------
 
 function buildDescription({
-  sender, email, createdAt, link, subject, message, escalatedReason,
+  sender, email, createdAt, link, subject, transcript, attachments, escalatedReason,
 }) {
   // Don't print "name <email>" when the name IS the email.
   const who = email && email !== sender ? `${sender} <${email}>` : sender;
@@ -478,7 +572,15 @@ function buildDescription({
   if (link) lines.push(`**Conversation:** ${link}`);
   if (subject) lines.push(`**Subject:** ${subject}`);
   if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
-  lines.push('', '**Full message:**', '', message || '(no message body)');
+
+  if (attachments?.length) {
+    lines.push('', '**Attachments:**', '');
+    for (const a of attachments) {
+      lines.push(`- [${a.name || 'attachment'}](${a.url})`);
+    }
+  }
+
+  lines.push('', '---', '', '**Conversation:**', '', transcript || '_(no messages)_');
   return lines.join('\n');
 }
 
@@ -514,25 +616,25 @@ function summarize(text) {
 // Dedupe + crypto utilities
 // --------------------------------------------------------------------------
 
-const seenConversations = new Set();
+const seenConversations = new Map();
 
-/** Has this conversation already produced a ticket? Read-only. */
-async function isProcessed(env, conversationId) {
-  if (!conversationId) return false;
-  if (env.DEDUPE) return Boolean(await env.DEDUPE.get(`intercom:${conversationId}`));
-  return seenConversations.has(conversationId);
+/** The ticket this conversation already produced, or null. Read-only. */
+async function processedTicket(env, conversationId) {
+  if (!conversationId) return null;
+  if (env.DEDUPE) return await env.DEDUPE.get(`intercom:${conversationId}`);
+  return seenConversations.get(conversationId) || null;
 }
 
-/** Record the ticket. Called only after creation actually succeeded. */
-async function markProcessed(env, conversationId) {
+/** Record the ticket id. Called only after creation actually succeeded. */
+async function markProcessed(env, conversationId, ticketId) {
   if (!conversationId) return;
   if (env.DEDUPE) {
-    await env.DEDUPE.put(`intercom:${conversationId}`, '1', {
+    await env.DEDUPE.put(`intercom:${conversationId}`, ticketId, {
       expirationTtl: 60 * 60 * 24 * 30,
     });
     return;
   }
-  seenConversations.add(conversationId);
+  seenConversations.set(conversationId, ticketId);
   if (seenConversations.size > 1000) seenConversations.clear();
 }
 

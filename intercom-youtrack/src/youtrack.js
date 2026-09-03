@@ -80,3 +80,35 @@ function enumField(name, valueName) {
     value: { name: valueName },
   };
 }
+
+/**
+ * Replace an existing issue's description.
+ *
+ * Used to keep a ticket in step with a conversation that is still going: the
+ * ticket is created the moment Fin hands over, so the SLA clock starts when
+ * the customer asked for help rather than when they stopped typing, and the
+ * body is rewritten as more of the conversation arrives.
+ *
+ * YouTrack updates issues with POST, not PATCH.
+ */
+export async function updateYouTrackIssue({ baseUrl, token, issueId, summary, description }) {
+  const body = {};
+  if (summary) body.summary = summary;
+  if (description) body.description = description;
+
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}?fields=id,idReadable`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    throw new Error(`YouTrack update failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
