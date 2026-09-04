@@ -9,6 +9,10 @@
  * `conversation.operator.replied`, because Fin is an Operator and not a
  * teammate) and read that state.
  *
+ * That state is the ONLY trigger. Assignment is not one: a conversation
+ * assigned to a teammate is one a person is already handling, and counting it
+ * filed a ticket every time an agent replied to a client.
+ *
  * WHY THE TICKET IS NOT CREATED IMMEDIATELY
  *
  * Customers open with "hello" and go hunting for a screenshot only once Fin
@@ -40,7 +44,6 @@
  *   YOUTRACK_BASE_URL          (var)    https://myrealprofit.youtrack.cloud
  *   YOUTRACK_PROJECT_ID        (var)    internal project id, e.g. 0-18
  *   INTERCOM_APP_ID            (var)    for conversation deep-links
- *   INTERCOM_EXCLUDE_ADMIN_IDS (var)    operator bot ids (Fin)
  *   INTERCOM_HANDOFF_STATES    (var)    states meaning "handed to humans"
  *   INTERCOM_DEBOUNCE_SECONDS  (var)    quiet period before creating
  *   INTERCOM_NOTE_ADMIN_ID     (var)    admin the internal note posts as
@@ -54,18 +57,18 @@ import {
   attachToYouTrackIssue,
 } from './youtrack.js';
 
-const HANDLED_TOPICS = [
-  'conversation.operator.replied',
-  'conversation.admin.assigned',
-  'conversation.admin.replied',
-  'conversation.user.replied',
-];
+/**
+ * Only Fin's replies and the customer's own messages.
+ *
+ * conversation.admin.assigned and .replied are deliberately NOT here. A
+ * teammate picking up or answering a conversation is not a handoff — it is a
+ * human already doing the work — and treating it as one filed a ticket every
+ * time Lisa replied to a client.
+ */
+const HANDLED_TOPICS = ['conversation.operator.replied', 'conversation.user.replied'];
 
-/** Topics that can land before Fin has finished deciding. */
-const TOPICS_WORTH_RECHECKING = [
-  'conversation.user.replied',
-  'conversation.admin.replied',
-];
+/** A customer message can land before Fin has finished deciding. */
+const TOPICS_WORTH_RECHECKING = ['conversation.user.replied'];
 
 const CONTACT_AUTHOR_TYPES = ['user', 'lead', 'contact'];
 const DEFAULT_HANDOFF_STATES = 'escalated,routed_to_team';
@@ -111,12 +114,13 @@ export default {
     ctx.waitUntil(
       Promise.all([
         handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e)),
-        // Sweep opportunistically too, not only on the cron. Webhooks arrive
-        // constantly while people are talking, so this alone gets most tickets
-        // out on time and the integration keeps working if the cron trigger is
-        // ever missing. The cron remains the safety net for the quiet stretch
-        // after the last message, when no webhook is coming.
-        sweepPending(env).catch((e) => console.error('sweep error:', e)),
+        // Check THIS conversation's timer only — never the whole queue.
+        // Listing on every webhook raced with itself (several deliveries
+        // arriving together each filed a ticket for the same conversation)
+        // and burned the KV free tier's 1,000 daily list operations.
+        createIfDue(env, payload.data?.item?.id).catch((e) =>
+          console.error('createIfDue error:', e)
+        ),
       ])
     );
     return new Response('', { status: 200 });
@@ -184,9 +188,8 @@ async function handleEvent(payload, env) {
 
   if (!handoff.create) {
     console.log(
-      `skip ${item.id}: admin=${handoff.assignee ?? 'none'} ` +
-        `team=${handoff.teamAssignee ?? 'none'} ` +
-        `state=${conversation.ai_agent?.resolution_state ?? 'unknown'}`
+      `skip ${item.id}: not escalated ` +
+        `(state=${conversation.ai_agent?.resolution_state ?? 'unknown'})`
     );
     return;
   }
@@ -231,27 +234,57 @@ async function sweepPending(env) {
 
     const conversationId = key.name.slice('pending:'.length);
     due.push(conversationId);
-    try {
-      await createTicketFor(env, conversationId);
-      await env.DEDUPE.delete(key.name);
-    } catch (e) {
-      const attempts = (state.attempts || 0) + 1;
-      console.error(`create for ${conversationId} failed (attempt ${attempts}):`, e);
-      if (attempts >= MAX_CREATE_ATTEMPTS) {
-        console.error(`giving up on ${conversationId} after ${attempts} attempts`);
-        await env.DEDUPE.delete(key.name);
-      } else {
-        // Back off a minute rather than hammering a broken dependency.
-        await env.DEDUPE.put(
-          key.name,
-          JSON.stringify({ dueAt: now + 60_000, attempts }),
-          { expirationTtl: 60 * 60 * 24 }
-        );
-      }
-    }
+    await claimAndCreate(env, conversationId, state);
   }
 
   console.log(`sweep: ${keys.length} pending, ${due.length} due${due.length ? ` (${due.join(', ')})` : ''}`);
+}
+
+/** Is this one conversation's quiet period up? Cheap: one KV read. */
+async function createIfDue(env, conversationId) {
+  if (!conversationId || !env.DEDUPE) return;
+  const raw = await env.DEDUPE.get(kPending(conversationId));
+  if (!raw) return;
+
+  let state;
+  try {
+    state = JSON.parse(raw);
+  } catch {
+    await env.DEDUPE.delete(kPending(conversationId));
+    return;
+  }
+  if (state.dueAt > Date.now()) return;
+
+  await claimAndCreate(env, conversationId, state);
+}
+
+/**
+ * Claim the timer, then create.
+ *
+ * The delete comes FIRST and is the claim. Two passes running at once would
+ * otherwise both read the timer, both find no ticket yet, and both file one —
+ * which is exactly what produced three tickets for a single conversation. The
+ * has-a-ticket check inside createTicketFor is the second line of defence.
+ */
+async function claimAndCreate(env, conversationId, state) {
+  await env.DEDUPE.delete(kPending(conversationId));
+  try {
+    await createTicketFor(env, conversationId);
+  } catch (e) {
+    const attempts = (state.attempts || 0) + 1;
+    console.error(`create for ${conversationId} failed (attempt ${attempts}):`, e);
+    if (attempts < MAX_CREATE_ATTEMPTS) {
+      // Put the timer back so a later pass retries, rather than hammering a
+      // dependency that is already unhappy.
+      await env.DEDUPE.put(
+        kPending(conversationId),
+        JSON.stringify({ dueAt: Date.now() + 60_000, attempts }),
+        { expirationTtl: 60 * 60 * 24 }
+      );
+    } else {
+      console.error(`giving up on ${conversationId} after ${attempts} attempts`);
+    }
+  }
 }
 
 async function createTicketFor(env, conversationId) {
@@ -445,19 +478,17 @@ function isEscalated(conversation, env) {
   return states.includes(a) || states.includes(b);
 }
 
-/** Handed to humans? Either Fin said so, or a person/team owns it. */
+/**
+ * Handed to humans?
+ *
+ * Fin's own resolution state is the ONLY signal. Assignment is not: a
+ * conversation assigned to a teammate is one a person is already handling,
+ * and treating that as a handoff meant every reply Lisa sent to a client
+ * created a ticket.
+ */
 function handoffState(conversation, env) {
-  const assignee = conversation.admin_assignee_id;
-  const teamAssignee = conversation.team_assignee_id;
-  const excluded = (env.INTERCOM_EXCLUDE_ADMIN_IDS || '')
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-  const toHuman = Boolean(assignee) && !excluded.includes(String(assignee));
-  const toTeam = Boolean(teamAssignee);
   const escalated = isEscalated(conversation, env);
-  return { create: toHuman || toTeam || escalated, assignee, teamAssignee, escalated };
+  return { create: escalated, escalated };
 }
 
 function extractContact(conversation) {

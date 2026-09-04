@@ -15,10 +15,6 @@ YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
 YOUTRACK_PROJECT_ID = "0-18"
 # Intercom workspace (app) id — used to build conversation deep-links.
 INTERCOM_APP_ID = "agc8lkpy"
-# Admin IDs that are bots (e.g. Fin / Operator). Assignments to these do NOT
-# create a ticket — only assignment to a real human teammate does.
-# 5286994 = Fin (operator+agc8lkpy@intercom.io, no inbox seat)
-INTERCOM_EXCLUDE_ADMIN_IDS = "5286994"
 
 # Optional allowlist of contact emails. Left EMPTY on purpose: most Intercom
 # traffic is anonymous website visitors who have no email until Fin asks for
@@ -46,10 +42,12 @@ INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
 binding = "DEDUPE"
 id = "b01eac0c21874f45811a49c44cb98fe0"
 
-# Sweeps the pending timers. A Worker cannot sleep for minutes, so the wait
-# lives in KV and this pass picks up whatever has come due.
+# Safety net only. Each webhook already checks its own conversation's timer,
+# so this exists for the quiet stretch after a customer's last message, when
+# no webhook is coming. Every minute would spend 1,440 KV list operations a
+# day against a free-tier allowance of 1,000 — on its own, before any traffic.
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/5 * * * *"]
 
 # Retained logs, readable in the Cloudflare dashboard under this worker's
 # Observability tab. Without this, logs exist only while `wrangler tail` is
