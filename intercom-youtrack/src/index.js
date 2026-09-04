@@ -274,7 +274,14 @@ async function createTicketFor(env, conversationId) {
     baseUrl: env.YOUTRACK_BASE_URL,
     token: env.YOUTRACK_TOKEN,
     projectId: env.YOUTRACK_PROJECT_ID || 'CS',
-    summary: pickSummary(said, conversation),
+    summary: buildTitle({
+      source: 'INT',
+      problem: pickSummary(said, conversation),
+      sender: contact.name || email,
+      // Populated only when the contact is linked to a company; website
+      // visitors are usually anonymous, so this is often absent.
+      account: conversation.company?.name || '',
+    }),
     description: buildDescription({
       sender: contact.name || email || 'Intercom contact',
       email,
@@ -630,6 +637,53 @@ function htmlToText(html) {
     .replace(/&quot;/g, '"')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+// --------------------------------------------------------------------------
+// Ticket titles
+// --------------------------------------------------------------------------
+
+/**
+ * Strip everything that makes a title unreadable on a board.
+ *
+ * A pasted link used to swallow the whole title — CS-172 was named after a
+ * Google Sheets URL — so links go first, keeping their label where one exists.
+ * Opening pleasantries go too: "Well, I've shared the list" is one word of
+ * throat-clearing in a field where every character counts.
+ */
+function cleanForTitle(text) {
+  return (text || '')
+    .replace(/<(?:https?:\/\/|mailto:)[^|>]+\|([^>]+)>/g, '$1') // <url|label> -> label
+    .replace(/<(?:https?:\/\/|mailto:)[^>]+>/g, '') // bare <url> -> gone
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\S+@\S+\.\S+/g, '')
+    .replace(
+      /^\s*(?:well|so|ok|okay|hi|hey|hello|good\s+(?:morning|afternoon|evening))\b[\s,.!—-]*/i,
+      ''
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function clip(text, max) {
+  const t = (text || '').trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trim()}…`;
+}
+
+/**
+ * SOURCE: what they want - who asked - which account
+ *
+ * The prefix makes the channel readable at a glance on a mixed board, and the
+ * trailing name and account mean a ticket can be placed without opening it.
+ */
+function buildTitle({ source, problem, sender, account }) {
+  const parts = [clip(cleanForTitle(problem), 70) || 'No message'];
+  if (sender) parts.push(clip(sender, 40));
+  if (account) parts.push(clip(account, 30));
+  return `${source}: ${parts.join(' - ')}`;
 }
 
 function summarize(text) {

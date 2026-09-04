@@ -350,6 +350,72 @@ Set `YOUTRACK_PROJECT_ID` in `wrangler.toml` to the returned `id` (e.g. `0-3`).
 | Process Spam | on-change | `spam` tag added by admin | JetBrains stock. |
 | Helpdesk | app | — | JetBrains built-in. Do not edit. |
 
+### Ticket titles
+
+Every ticket is named `SOURCE: what they want - who asked - which account`:
+
+```
+SLACK: I've shared the list and am looking to connect the dashboard… - Filip Seidel - gigabrain
+INT: P&L shows nothing, looks like a Power BI issue - filip@myrealprofit.com
+MAIL: Custom Category page - Ryszard Chmura
+```
+
+The prefix makes a mixed board readable at a glance and the trailing name and
+account let a ticket be routed without opening it. Links are stripped before
+the title is built (keeping the label where the sender wrote one) after a
+pasted Google Sheets URL swallowed the whole of CS-172's title, and opening
+pleasantries are dropped.
+
+"Account" is the Slack **channel** — which for client channels is the client —
+or the Intercom **company** when the contact is linked to one. Gmail has no
+equivalent, so those titles carry sender only.
+
+The three sources build titles in two places: the Slack and Intercom workers
+each set their own, while Gmail's is assembled by the `auto-tag-and-route`
+workflow, because Gmail is YouTrack's native channel and no worker sees it.
+
+## Possible upgrades
+
+### AI-written problem statements ("Option B")
+
+The middle of the title is currently a cleaned truncation of what the customer
+wrote. It is honest but blunt: "I've shared the list and am looking to
+connect…" where a person would write "connect custom dashboard to
+credentials".
+
+Turning one into the other is summarising, not string handling, so it needs a
+model. The same call could pull out the **seller account named in the message
+body** — "I need access to Heretic, row 31st" — which is the account an agent
+actually cares about and which no structural field carries.
+
+Deferred rather than rejected: it introduces a fourth secret and an external
+dependency that can be slow or down, into a system that had spent a day being
+stabilised, six days before the deadline. The change is contained to
+`buildTitle()` in each worker, with the current deterministic title as the
+fallback whenever the call fails or is slow — so nothing can regress to worse
+than today's behaviour.
+
+Note the groundwork already exists: project CS has an **AI Confidence** field,
+and §13 of this document lists AI triage as Phase 6. This is that phase
+arriving early, scoped to one line of text.
+
+### Others worth considering
+
+- **Slack trigger.** Every first message in a monitored channel currently
+  becomes a ticket, which is wrong for a working client channel. A reaction
+  (a human puts 🎫 on a message) puts a person in the loop and needs no
+  cleverness; the app already subscribes to `reaction_added` and holds the
+  `reactions:read` scope, so the plumbing exists.
+- **Intercom escalation routing.** Escalated conversations are left unassigned
+  with `sla_applied: null`, so nobody owns them and no Intercom-side clock
+  runs. An assignment Workflow would fix that and would also give this
+  integration a real webhook to trigger on, replacing the state polling.
+- **Attachments from Slack.** Intercom attachments are copied into YouTrack;
+  Slack file uploads are not yet.
+- **Narrow the YouTrack token.** It currently carries YouTrack Administration
+  scope, which ticket creation does not need.
+- **Upgrade wrangler.** Both workers are pinned to v3 while v4 is current.
+
 ### Remaining limitations
 
 - **The ticket reporter is the `YOUTRACK_TOKEN` owner**, not the customer.
