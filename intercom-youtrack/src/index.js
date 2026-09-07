@@ -44,6 +44,8 @@
  *   YOUTRACK_BASE_URL          (var)    https://myrealprofit.youtrack.cloud
  *   YOUTRACK_PROJECT_ID        (var)    internal project id, e.g. 0-18
  *   INTERCOM_APP_ID            (var)    for conversation deep-links
+ *   INTERCOM_IGNORE_BEFORE     (var)    never ticket conversations older than this
+ *   INTERCOM_MAX_AGE_HOURS     (var)    skip conversations gone quiet this long
  *   INTERCOM_HANDOFF_STATES    (var)    states meaning "handed to humans"
  *   INTERCOM_DEBOUNCE_SECONDS  (var)    quiet period before creating
  *   INTERCOM_NOTE_ADMIN_ID     (var)    admin the internal note posts as
@@ -75,6 +77,7 @@ const DEFAULT_HANDOFF_STATES = 'escalated,routed_to_team';
 const DEFAULT_DEBOUNCE_SECONDS = 180;
 const RECHECK_MS = 8000;
 const MAX_CREATE_ATTEMPTS = 5;
+const DEFAULT_MAX_AGE_HOURS = 24;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -187,10 +190,7 @@ async function handleEvent(payload, env) {
   }
 
   if (!handoff.create) {
-    console.log(
-      `skip ${item.id}: not escalated ` +
-        `(state=${conversation.ai_agent?.resolution_state ?? 'unknown'})`
-    );
+    console.log(`skip ${item.id}: ${handoff.why}`);
     return;
   }
 
@@ -293,6 +293,15 @@ async function createTicketFor(env, conversationId) {
 
   const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
   if (!conversation) throw new Error('could not fetch conversation');
+
+  // Re-check. Three minutes is long enough for an agent to answer and close
+  // the conversation, and a ticket for something already dealt with is worse
+  // than no ticket at all.
+  const handoff = handoffState(conversation, env);
+  if (!handoff.create) {
+    console.log(`dropping ${conversationId} at creation time: ${handoff.why}`);
+    return;
+  }
 
   const contact = extractContact(conversation);
   let email = contact.email;
@@ -479,16 +488,48 @@ function isEscalated(conversation, env) {
 }
 
 /**
- * Handed to humans?
+ * Should this conversation produce a ticket?
  *
- * Fin's own resolution state is the ONLY signal. Assignment is not: a
- * conversation assigned to a teammate is one a person is already handling,
- * and treating that as a handoff meant every reply Lisa sent to a client
- * created a ticket.
+ * Escalation alone is NOT enough. `resolution_state` is a permanent record of
+ * something that once happened, not a description of what is happening now —
+ * a conversation escalated and resolved last week still reads "escalated"
+ * forever. Fin periodically touches old conversations (rating requests,
+ * auto-unsnooze, auto-close) and every one of those fires a webhook, so
+ * trusting the flag alone filed eleven tickets for client conversations that
+ * had been closed for days.
+ *
+ * Three more things must all hold: the conversation is still open, it began
+ * after this integration did, and somebody has spoken recently.
  */
 function handoffState(conversation, env) {
   const escalated = isEscalated(conversation, env);
-  return { create: escalated, escalated };
+  if (!escalated) return { create: false, escalated, why: 'not escalated' };
+
+  if (conversation.open === false || conversation.state === 'closed') {
+    return { create: false, escalated, why: 'conversation is closed' };
+  }
+
+  // A hard floor. Nothing that predates the integration is ever ticketed, so
+  // no future change of ours can backfill history into the helpdesk.
+  const floor = Date.parse(env.INTERCOM_IGNORE_BEFORE || '');
+  const startedMs = Number(conversation.created_at || 0) * 1000;
+  if (floor && startedMs && startedMs < floor) {
+    return { create: false, escalated, why: `started before ${env.INTERCOM_IGNORE_BEFORE}` };
+  }
+
+  const maxAgeHours = Number(env.INTERCOM_MAX_AGE_HOURS) || DEFAULT_MAX_AGE_HOURS;
+  const lastActivity =
+    Number(
+      conversation.statistics?.last_contact_reply_at ||
+        conversation.updated_at ||
+        conversation.created_at ||
+        0
+    ) * 1000;
+  if (lastActivity && Date.now() - lastActivity > maxAgeHours * 3600 * 1000) {
+    return { create: false, escalated, why: `last activity over ${maxAgeHours}h ago` };
+  }
+
+  return { create: true, escalated, why: 'escalated and live' };
 }
 
 function extractContact(conversation) {

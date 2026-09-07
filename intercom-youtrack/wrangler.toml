@@ -28,6 +28,16 @@ INTERCOM_NOTE_ADMIN_ID = ""
 # skip log ever reports a state that should have created a ticket.
 INTERCOM_HANDOFF_STATES = "escalated,routed_to_team"
 
+# HARD FLOOR. No conversation that started before this date can ever produce a
+# ticket. resolution_state is a permanent record rather than a live status, so
+# without this a Fin batch job touching old conversations backfills years of
+# closed history into the helpdesk — which is exactly what happened on 07 Sep.
+INTERCOM_IGNORE_BEFORE = "2026-09-07T09:00:00Z"
+
+# Skip conversations where nobody has spoken for this long. An escalation from
+# last week is history, not a request for help now.
+INTERCOM_MAX_AGE_HOURS = "24"
+
 # Quiet period after the customer's last message before the ticket is written.
 # The cron sweeps once a minute, so the real delay is this plus up to 60s.
 INTERCOM_DEBOUNCE_SECONDS = "180"
