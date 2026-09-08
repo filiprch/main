@@ -117,13 +117,18 @@ export default {
     ctx.waitUntil(
       Promise.all([
         handleEvent(payload, env).catch((e) => console.error('handleEvent error:', e)),
-        // Check THIS conversation's timer only — never the whole queue.
-        // Listing on every webhook raced with itself (several deliveries
-        // arriving together each filed a ticket for the same conversation)
-        // and burned the KV free tier's 1,000 daily list operations.
+        // This conversation's own timer first — the common case, one KV read.
         createIfDue(env, payload.data?.item?.id).catch((e) =>
           console.error('createIfDue error:', e)
         ),
+        // Then anything else that has come due. A conversation goes quiet by
+        // definition once the customer stops typing, so no further webhook
+        // arrives for it and nothing but a sweep will ever pick it up. The
+        // cron is meant to be that sweep and has never once been observed to
+        // fire, so this cannot depend on it. Safe to run concurrently now:
+        // claimAndCreate deletes the timer before creating, so overlapping
+        // passes cannot both file a ticket the way they did on 04 Sep.
+        sweepPending(env).catch((e) => console.error('sweep error:', e)),
       ])
     );
     return new Response('', { status: 200 });
