@@ -32,7 +32,13 @@ INTERCOM_HANDOFF_STATES = "escalated,routed_to_team"
 # ticket. resolution_state is a permanent record rather than a live status, so
 # without this a Fin batch job touching old conversations backfills years of
 # closed history into the helpdesk — which is exactly what happened on 07 Sep.
-INTERCOM_IGNORE_BEFORE = "2026-09-07T09:00:00Z"
+#
+# Must be in the PAST. Setting it to a future time silently rejects everything,
+# which is how the first version of this line broke the integration it was
+# added to protect. Midnight on the day of the incident keeps the September 1st
+# and 2nd conversations out; anything from that same day was already closed and
+# is caught by the open-conversation check instead.
+INTERCOM_IGNORE_BEFORE = "2026-09-07T00:00:00Z"
 
 # Skip conversations where nobody has spoken for this long. An escalation from
 # last week is history, not a request for help now.
