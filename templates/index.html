@@ -222,6 +222,9 @@
     .sqp-sec-count { font-size: .75rem; color: #64748b; margin-right: auto; }
     .sqp-sec-body { padding: 0 .7rem .7rem; }
     .sqp-trunc { font-size: .72rem; color: #64748b; margin: .2rem 0 .5rem; }
+    .sqp-pager { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; margin: .35rem 0 .5rem; }
+    .sqp-pager-info { font-size: .73rem; color: #64748b; margin: 0 .3rem; }
+    .sqp-pager-info strong { color: #f8fafc; }
     .sqp-list-wrap { max-height: 360px; overflow: auto; border: 1px solid #1e2130; border-radius: 7px; }
     .sqp-list-wrap thead th { position: sticky; top: 0; z-index: 1; }
     a.btn { text-decoration: none; display: inline-block; line-height: 1.5; }
@@ -1621,7 +1624,7 @@ function sqpToggleWeek(wk) {
 }
 
 // Each section loads and toggles on its own, so any combination can be open.
-async function sqpToggleSection(wk, bucket) {
+function sqpToggleSection(wk, bucket) {
   const sid = sqpSecId(wk, bucket);
   const body = document.getElementById(`sqp-body-${sid}`);
   const btn  = document.getElementById(`sqp-btn-${sid}`);
@@ -1634,36 +1637,56 @@ async function sqpToggleSection(wk, bucket) {
   }
   body.classList.remove('hidden');
   btn.textContent = 'Hide List';
-  if (body.dataset.loaded === '1') return;
+  if (body.dataset.loaded !== '1') sqpLoadPage(wk, bucket, 1);
+}
 
+async function sqpLoadPage(wk, bucket, page) {
+  const sid = sqpSecId(wk, bucket);
+  const body = document.getElementById(`sqp-body-${sid}`);
+  if (!body) return;
   body.innerHTML = `<span class="token-idle">Loading…</span>`;
   try {
-    const q = `start_date=${encodeURIComponent(String(wk).slice(0, 10))}&bucket=${bucket}`;
+    const q = `start_date=${encodeURIComponent(String(wk).slice(0, 10))}` +
+              `&bucket=${bucket}&page=${page}`;
     const r = await fetch(`/api/sqp-detail?${q}`);
     const d = await r.json();
     if (!d.ok) { body.innerHTML = `<span class="token-err">${esc(d.error)}</span>`; return; }
-    body.innerHTML = sqpRenderList(d);
+    body.innerHTML = sqpRenderList(d, wk, bucket);
     body.dataset.loaded = '1';
+    body.dataset.page = d.page;
   } catch (e) {
     body.innerHTML = `<span class="token-err">${esc(e.message)}</span>`;
   }
 }
 
-function sqpRenderList(d) {
+function sqpPager(d, wk, bucket) {
+  if (d.pages <= 1) return `<div class="sqp-trunc">${d.total.toLocaleString()} row(s).</div>`;
+  const call = (p) => `sqpLoadPage('${esc(wk)}','${bucket}',${p})`;
+  return `<div class="sqp-pager">
+    <button class="btn btn-sm btn-ghost" ${d.has_prev ? '' : 'disabled'} onclick="${call(1)}">« First</button>
+    <button class="btn btn-sm btn-ghost" ${d.has_prev ? '' : 'disabled'} onclick="${call(d.page - 1)}">‹ Prev</button>
+    <span class="sqp-pager-info">Page <strong>${d.page}</strong> of ${d.pages}
+      · rows ${d.first_row.toLocaleString()}–${d.last_row.toLocaleString()}
+      of ${d.total.toLocaleString()}</span>
+    <button class="btn btn-sm btn-ghost" ${d.has_next ? '' : 'disabled'} onclick="${call(d.page + 1)}">Next ›</button>
+    <button class="btn btn-sm btn-ghost" ${d.has_next ? '' : 'disabled'} onclick="${call(d.pages)}">Last »</button>
+  </div>`;
+}
+
+function sqpRenderList(d, wk, bucket) {
   if (!d.rows.length) return `<span class="token-idle">No rows.</span>`;
-  const note = d.truncated
-    ? `<div class="sqp-trunc">Showing the first ${d.shown.toLocaleString()} of
-       ${d.total.toLocaleString()} rows — use Export CSV for the full list.</div>`
-    : `<div class="sqp-trunc">${d.total.toLocaleString()} row(s).</div>`;
-  return note + `<div class="sqp-list-wrap"><table class="ms-table">
-    <thead><tr><th>Seller ID</th><th>Name</th><th>Region</th><th>Status</th><th>Report ID</th></tr></thead>
-    <tbody>` + d.rows.map(r => `<tr>
+  const pager = sqpPager(d, wk, bucket);
+  return pager + `<div class="sqp-list-wrap"><table class="ms-table">
+    <thead><tr><th>#</th><th>Seller ID</th><th>Name</th><th>Region</th><th>Status</th><th>Report ID</th></tr></thead>
+    <tbody>` + d.rows.map((r, i) => `<tr>
+      <td class="mono" style="color:#475569">${(d.first_row + i).toLocaleString()}</td>
       <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
       <td class="ms-name" title="${esc(r.seller_name)}">${esc(r.seller_name || '—')}</td>
       <td>${esc(r.region_name || '—')}</td>
       <td class="mono">${esc(r.status)}</td>
       <td class="mono">${esc(r.amazon_requested_report_id || '—')}</td>
-    </tr>`).join('') + `</tbody></table></div>`;
+    </tr>`).join('') + `</tbody></table></div>` +
+    (d.pages > 1 ? pager : '');
 }
 
 async function sqpCopyQuery(btn, wk, bucket) {

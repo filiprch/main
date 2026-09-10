@@ -364,7 +364,7 @@ _SQP_BUCKETS = {
 SQP_DETAIL_DISPLAY_LIMIT = 500
 
 
-def _sqp_detail_sql(start_date: str, bucket: str, limit=None) -> str:
+def _sqp_detail_sql(start_date: str, bucket: str, limit=None, offset=None) -> str:
     """Build the drill-down SQL. Values are inlined so it can be pasted into
     pgAdmin as-is; start_date is validated as a date by the caller."""
     _, cond = _SQP_BUCKETS[bucket]
@@ -381,10 +381,14 @@ def _sqp_detail_sql(start_date: str, bucket: str, limit=None) -> str:
         "WHERE ari.report_type = 'SQP_BY_ASIN_CONVERT'\n"
         f"  AND ari.start_date = DATE '{start_date}'\n"
         f"  AND {cond}\n"
-        "ORDER BY ari.amazon_selling_partner_id"
+        # Fully deterministic ordering, so paging never repeats or skips a row.
+        "ORDER BY ari.amazon_selling_partner_id, ari.amazon_region_id,\n"
+        "         ari.amazon_requested_report_id"
     )
     if limit:
-        sql += f"\nLIMIT {limit}"
+        sql += f"\nLIMIT {int(limit)}"
+    if offset:
+        sql += f"\nOFFSET {int(offset)}"
     return sql
 
 
@@ -416,7 +420,9 @@ def sqp_detail():
     if not DB_CONFIG["password"]:
         return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
 
-    limit = request.args.get("limit", default=SQP_DETAIL_DISPLAY_LIMIT, type=int)
+    limit = max(1, min(request.args.get("limit", default=SQP_DETAIL_DISPLAY_LIMIT,
+                                        type=int), 5000))
+    page = max(1, request.args.get("page", default=1, type=int))
     _, cond = _SQP_BUCKETS[bucket]
     try:
         with get_db() as conn:
@@ -427,7 +433,10 @@ def sqp_detail():
                     f"AND ari.start_date = DATE '{start_date}' AND {cond}"
                 )
                 total = cur.fetchone()["n"]
-                cur.execute(_sqp_detail_sql(start_date, bucket, limit))
+                pages = max(1, (total + limit - 1) // limit)
+                page = min(page, pages)          # clamp past-the-end requests
+                offset = (page - 1) * limit
+                cur.execute(_sqp_detail_sql(start_date, bucket, limit, offset))
                 rows = cur.fetchall()
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -439,7 +448,13 @@ def sqp_detail():
         "start_date": start_date,
         "total": total,
         "shown": len(rows),
-        "truncated": total > len(rows),
+        "page": page,
+        "pages": pages,
+        "limit": limit,
+        "first_row": offset + 1 if rows else 0,
+        "last_row": offset + len(rows),
+        "has_prev": page > 1,
+        "has_next": page < pages,
         "sql": _sqp_detail_sql(start_date, bucket),
         "rows": [
             {
