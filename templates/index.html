@@ -375,6 +375,7 @@
   <span class="query-desc">Sellers with <code>SQP_BY_ASIN</code> reports stuck in queue</span>
   <button class="btn btn-primary" id="btn-query" onclick="runQuery()">Check Queue</button>
   <button class="btn btn-teal" id="btn-s23" onclick="runStep23()" disabled>Exchange &amp; Compare</button>
+  <button class="btn btn-red" id="btn-cancel-sel" onclick="cancelSelected()" disabled>Cancel Selected</button>
   <button class="btn btn-green" id="btn-autorun" onclick="autoRun()">⏵ Auto run</button>
   <div class="status-pill">
     <div class="dot" id="dot-query"></div>
@@ -1104,6 +1105,7 @@ function updateSelCount() {
   const n = selectedIds.size;
   document.getElementById('sel-count').innerHTML = `<strong>${n}</strong> selected`;
   document.getElementById('btn-s23').disabled = n === 0;
+  setCancelSelBtn();
   // Keep the header checkbox in sync with the full filtered set across pages.
   const chkAll = document.getElementById('chk-all');
   if (chkAll) {
@@ -1219,8 +1221,9 @@ async function step23ForSeller(spId, row) {
     if (st.detailOpen) refreshDetail(spId, row);
   }));
 
-  const anyStuck = regions.some(r => (st.queue[r]?.stuck||[]).length > 0);
-  if (anyStuck) { openDetail(spId); refreshDetail(spId, row); }
+  // Detail panels stay closed after Exchange & Compare — the row's queue chips
+  // already show the stuck counts, and opening dozens of panels buries them.
+  if (st.detailOpen) refreshDetail(spId, row);
   return true;
 }
 
@@ -1256,6 +1259,8 @@ function setAutoRunBtn() {
   }
   const q = document.getElementById('btn-query');
   if (q) q.disabled = autoRunActive;
+  const cs = document.getElementById('btn-cancel-sel');
+  if (cs && !cancelSelRunning) cs.disabled = autoRunActive || selectedIds.size === 0;
 }
 
 async function autoRun() {
@@ -1430,6 +1435,72 @@ async function cancelAll(spId, regionId) {
     st.waitMsg    = null;
     refreshDetail(spId, row);
     updateCell(spId);
+  }
+}
+
+// ── Cancel the selected sellers ────────────────────────────────────────────────
+// Run after Exchange & Compare: cancels every stuck report of each ticked
+// seller, one seller at a time. Click again while running to stop.
+let cancelSelRunning = false;
+
+function setCancelSelBtn() {
+  const b = document.getElementById('btn-cancel-sel');
+  if (!b) return;
+  b.textContent = cancelSelRunning ? '■ Stop' : 'Cancel Selected';
+  b.className   = 'btn ' + (cancelSelRunning ? 'btn-orange' : 'btn-red');
+  b.disabled    = !cancelSelRunning && (selectedIds.size === 0 || autoRunActive);
+  // Don't let another run start on top of this one.
+  const q = document.getElementById('btn-query');
+  const s23 = document.getElementById('btn-s23');
+  const ar = document.getElementById('btn-autorun');
+  if (cancelSelRunning) {
+    if (q) q.disabled = true;
+    if (s23) s23.disabled = true;
+    if (ar) ar.disabled = true;
+  } else if (!autoRunActive) {
+    if (q) q.disabled = false;
+    if (s23) s23.disabled = selectedIds.size === 0;
+    if (ar) ar.disabled = false;
+  }
+}
+
+async function cancelSelected() {
+  if (cancelSelRunning) {                 // second click → stop
+    cancelSelRunning = false;
+    Object.values(sellerState).forEach(st => { st.shouldStop = true; });
+    setCancelSelBtn();
+    setQS('ok', 'Cancelling stopped');
+    return;
+  }
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+
+  cancelSelRunning = true;
+  setCancelSelBtn();
+  let ran = 0, clean = 0, notChecked = 0;
+  try {
+    for (const spId of ids) {
+      if (!cancelSelRunning) break;
+      const row = allRows.find(r => String(r.amazon_selling_partner_id) === spId);
+      if (!row) continue;
+      const st = initSt(spId);
+      const regions = [1, 2, 3].filter(r => row[`region_${r}_count`] > 0);
+      const checked = regions.some(r => st.queue[r]?.status === 'done');
+      if (!checked) { notChecked++; continue; }   // needs Exchange & Compare first
+      const anyStuck = regions.some(r => (st.queue[r]?.stuck || []).length > 0);
+      if (!anyStuck) { clean++; continue; }
+      ran++;
+      setQS('spin', `Cancelling seller ${ran} of ${ids.length}…`);
+      await cancelAllSeller(spId);
+    }
+    const parts = [`${ran} seller(s) cancelled`];
+    if (clean) parts.push(`${clean} already clean`);
+    if (notChecked) parts.push(`${notChecked} need Exchange & Compare first`);
+    setQS(notChecked ? 'err' : 'ok',
+          (cancelSelRunning ? 'Done — ' : 'Stopped — ') + parts.join(', '));
+  } finally {
+    cancelSelRunning = false;
+    setCancelSelBtn();
   }
 }
 
