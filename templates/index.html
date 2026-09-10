@@ -210,6 +210,22 @@
     .pbar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
     .pbar-pct  { font-size: .72rem; font-weight: 700; min-width: 36px; text-align: right; }
 
+    /* ── Global SQP status drill-down ── */
+    .sqp-week-row { cursor: pointer; }
+    .sqp-caret { color: #475569; font-size: .7rem; margin-right: .3rem; }
+    .sqp-detail-row td { padding: 0 !important; background: #0f1119; }
+    .sqp-detail-inner { padding: .9rem 1rem 1.1rem; border-top: 1px solid #1e2130;
+      display: flex; flex-direction: column; gap: .75rem; }
+    .sqp-sec { border: 1px solid #1e2130; border-radius: 9px; background: #111320; }
+    .sqp-sec-hdr { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+      padding: .55rem .7rem; }
+    .sqp-sec-count { font-size: .75rem; color: #64748b; margin-right: auto; }
+    .sqp-sec-body { padding: 0 .7rem .7rem; }
+    .sqp-trunc { font-size: .72rem; color: #64748b; margin: .2rem 0 .5rem; }
+    .sqp-list-wrap { max-height: 360px; overflow: auto; border: 1px solid #1e2130; border-radius: 7px; }
+    .sqp-list-wrap thead th { position: sticky; top: 0; z-index: 1; }
+    a.btn { text-decoration: none; display: inline-block; line-height: 1.5; }
+
     .hidden { display: none !important; }
 
     /* ── Reports PUT (Batch) card ── */
@@ -1536,9 +1552,11 @@ function renderSqpStatusTable(rows) {
     const denominator = doneN + notDoneN;
     const pct   = denominator > 0 ? Math.round((doneN / denominator) * 100) : 0;
     const color = pct >= 95 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
+    const wk = row.start_date;
+    const id = sqpWeekId(wk);
 
-    html += `<tr>
-      <td class="week-label mono">${esc(row.start_date)}</td>
+    html += `<tr class="sqp-week-row" onclick="sqpToggleWeek('${esc(wk)}')" title="Click for the seller lists">
+      <td class="week-label mono"><span class="sqp-caret" id="sqp-caret-${id}">▶</span> ${esc(wk)}</td>
       <td class="sqp-done">${doneN.toLocaleString()}</td>
       <td class="sqp-notdone">${notDoneN.toLocaleString()}</td>
       <td class="sqp-unable">${unableN.toLocaleString()}</td>
@@ -1551,10 +1569,131 @@ function renderSqpStatusTable(rows) {
           <span class="pbar-pct" style="color:${color}">${pct}%</span>
         </div>
       </td>
+    </tr>
+    <tr class="sqp-detail-row hidden" id="sqp-detail-${id}">
+      <td colspan="6">
+        <div class="sqp-detail-inner">
+          ${['done', 'not_done', 'unable'].map(b =>
+            sqpSectionShell(wk, b, {done: doneN, not_done: notDoneN, unable: unableN}[b])).join('')}
+        </div>
+      </td>
     </tr>`;
   });
 
   return html + `</tbody></table></div>`;
+}
+
+// ── Global SQP status: per-week drill-down ────────────────────────────────────
+const SQP_BUCKET_LABELS = { done: 'DONE', not_done: 'NOT DONE', unable: 'UNABLE' };
+const SQP_BUCKET_TONE   = { done: 'act', not_done: 'miss', unable: 'na' };
+
+// Safe DOM id from a date like '2026-08-23 00:00:00'.
+function sqpWeekId(wk) { return String(wk).replace(/[^0-9]/g, ''); }
+function sqpSecId(wk, bucket) { return `${sqpWeekId(wk)}-${bucket}`; }
+
+function sqpSectionShell(wk, bucket, count) {
+  const sid = sqpSecId(wk, bucket);
+  const q = `start_date=${encodeURIComponent(String(wk).slice(0, 10))}&bucket=${bucket}`;
+  return `
+    <div class="sqp-sec">
+      <div class="sqp-sec-hdr">
+        <span class="ms-pill ${SQP_BUCKET_TONE[bucket]}">${SQP_BUCKET_LABELS[bucket]}</span>
+        <span class="sqp-sec-count">${(count || 0).toLocaleString()} row(s)</span>
+        <button class="btn btn-sm btn-ghost" id="sqp-btn-${sid}"
+                onclick="sqpToggleSection('${esc(wk)}','${bucket}')">Show List</button>
+        <a class="btn btn-sm btn-ghost" href="/api/sqp-detail.csv?${q}"
+           title="Download the full list as CSV (opens in Google Sheets)">⭳ Export CSV</a>
+        <button class="btn btn-sm btn-ghost"
+                onclick="sqpCopyQuery(this,'${esc(wk)}','${bucket}')"
+                title="Copy the SQL used for this list">⧉ Copy query</button>
+      </div>
+      <div class="sqp-sec-body hidden" id="sqp-body-${sid}"></div>
+    </div>`;
+}
+
+function sqpToggleWeek(wk) {
+  const row = document.getElementById(`sqp-detail-${sqpWeekId(wk)}`);
+  const caret = document.getElementById(`sqp-caret-${sqpWeekId(wk)}`);
+  if (!row) return;
+  const open = !row.classList.contains('hidden');
+  row.classList.toggle('hidden', open);
+  if (caret) caret.textContent = open ? '▶' : '▼';
+}
+
+// Each section loads and toggles on its own, so any combination can be open.
+async function sqpToggleSection(wk, bucket) {
+  const sid = sqpSecId(wk, bucket);
+  const body = document.getElementById(`sqp-body-${sid}`);
+  const btn  = document.getElementById(`sqp-btn-${sid}`);
+  if (!body) return;
+
+  if (!body.classList.contains('hidden')) {
+    body.classList.add('hidden');
+    btn.textContent = 'Show List';
+    return;
+  }
+  body.classList.remove('hidden');
+  btn.textContent = 'Hide List';
+  if (body.dataset.loaded === '1') return;
+
+  body.innerHTML = `<span class="token-idle">Loading…</span>`;
+  try {
+    const q = `start_date=${encodeURIComponent(String(wk).slice(0, 10))}&bucket=${bucket}`;
+    const r = await fetch(`/api/sqp-detail?${q}`);
+    const d = await r.json();
+    if (!d.ok) { body.innerHTML = `<span class="token-err">${esc(d.error)}</span>`; return; }
+    body.innerHTML = sqpRenderList(d);
+    body.dataset.loaded = '1';
+  } catch (e) {
+    body.innerHTML = `<span class="token-err">${esc(e.message)}</span>`;
+  }
+}
+
+function sqpRenderList(d) {
+  if (!d.rows.length) return `<span class="token-idle">No rows.</span>`;
+  const note = d.truncated
+    ? `<div class="sqp-trunc">Showing the first ${d.shown.toLocaleString()} of
+       ${d.total.toLocaleString()} rows — use Export CSV for the full list.</div>`
+    : `<div class="sqp-trunc">${d.total.toLocaleString()} row(s).</div>`;
+  return note + `<div class="sqp-list-wrap"><table class="ms-table">
+    <thead><tr><th>Seller ID</th><th>Name</th><th>Region</th><th>Status</th><th>Report ID</th></tr></thead>
+    <tbody>` + d.rows.map(r => `<tr>
+      <td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(r.seller_id)}')">${esc(r.seller_id)}</span></td>
+      <td class="ms-name" title="${esc(r.seller_name)}">${esc(r.seller_name || '—')}</td>
+      <td>${esc(r.region_name || '—')}</td>
+      <td class="mono">${esc(r.status)}</td>
+      <td class="mono">${esc(r.amazon_requested_report_id || '—')}</td>
+    </tr>`).join('') + `</tbody></table></div>`;
+}
+
+async function sqpCopyQuery(btn, wk, bucket) {
+  const original = btn.textContent;
+  try {
+    const q = `start_date=${encodeURIComponent(String(wk).slice(0, 10))}&bucket=${bucket}&limit=1`;
+    const r = await fetch(`/api/sqp-detail?${q}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    await sqpCopyText(d.sql);
+    btn.textContent = 'copied ✓';
+  } catch (e) {
+    btn.textContent = 'copy failed';
+  }
+  setTimeout(() => { btn.textContent = original; }, 1200);
+}
+
+function sqpCopyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  return new Promise(resolve => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+    resolve();
+  });
 }
 
 // ── Card fold/expand ──────────────────────────────────────────────────────────

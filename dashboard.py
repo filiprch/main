@@ -8,6 +8,7 @@ Then open http://localhost:5000
 import datetime
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -17,7 +18,7 @@ import psycopg2
 import psycopg2.extras
 import requests as http_requests
 from datetime import date, timedelta
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -352,6 +353,140 @@ _SQP_GLOBAL_STATUS_QUERY = """
     GROUP BY start_date
     ORDER BY start_date DESC
 """
+
+
+# Per-week drill-down. The three buckets mirror the counts above.
+_SQP_BUCKETS = {
+    "done":     ("DONE",     "ari.status = 'DONE'"),
+    "not_done": ("NOT DONE", "ari.status NOT IN ('DONE','UNABLE_TO_GENERATE')"),
+    "unable":   ("UNABLE",   "ari.status = 'UNABLE_TO_GENERATE'"),
+}
+SQP_DETAIL_DISPLAY_LIMIT = 500
+
+
+def _sqp_detail_sql(start_date: str, bucket: str, limit=None) -> str:
+    """Build the drill-down SQL. Values are inlined so it can be pasted into
+    pgAdmin as-is; start_date is validated as a date by the caller."""
+    _, cond = _SQP_BUCKETS[bucket]
+    sql = (
+        "SELECT ari.amazon_selling_partner_id  AS seller_id,\n"
+        "       asp.name                       AS seller_name,\n"
+        "       ar.name                        AS region_name,\n"
+        "       ari.status                     AS status,\n"
+        "       ari.start_date                 AS start_date,\n"
+        "       ari.amazon_requested_report_id AS amazon_requested_report_id\n"
+        "FROM amazon_report_info ari\n"
+        "LEFT JOIN amazon_selling_partner asp ON asp.id = ari.amazon_selling_partner_id\n"
+        "LEFT JOIN amazon_region ar           ON ar.id  = ari.amazon_region_id\n"
+        "WHERE ari.report_type = 'SQP_BY_ASIN_CONVERT'\n"
+        f"  AND ari.start_date = DATE '{start_date}'\n"
+        f"  AND {cond}\n"
+        "ORDER BY ari.amazon_selling_partner_id"
+    )
+    if limit:
+        sql += f"\nLIMIT {limit}"
+    return sql
+
+
+# Accepts '2026-08-23' or '2026-08-23 00:00:00' (the form the table renders),
+# and nothing else — anything trailing is rejected rather than silently trimmed.
+_SQP_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)?$")
+
+
+def _sqp_detail_params():
+    """Validate and return (start_date, bucket) from the request."""
+    raw = (request.args.get("start_date") or "").strip()
+    bucket = (request.args.get("bucket") or "").strip()
+    if bucket not in _SQP_BUCKETS:
+        raise ValueError(f"Unknown bucket {bucket!r}")
+    m = _SQP_DATE_RE.match(raw)
+    if not m:
+        raise ValueError("start_date must be YYYY-MM-DD")
+    # Re-serialised from a parsed date, so only a clean literal is ever inlined.
+    start_date = str(datetime.date.fromisoformat(m.group(1)))
+    return start_date, bucket
+
+
+@app.route("/api/sqp-detail")
+def sqp_detail():
+    try:
+        start_date, bucket = _sqp_detail_params()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+
+    limit = request.args.get("limit", default=SQP_DETAIL_DISPLAY_LIMIT, type=int)
+    _, cond = _SQP_BUCKETS[bucket]
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM amazon_report_info ari "
+                    "WHERE ari.report_type = 'SQP_BY_ASIN_CONVERT' "
+                    f"AND ari.start_date = DATE '{start_date}' AND {cond}"
+                )
+                total = cur.fetchone()["n"]
+                cur.execute(_sqp_detail_sql(start_date, bucket, limit))
+                rows = cur.fetchall()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({
+        "ok": True,
+        "bucket": bucket,
+        "label": _SQP_BUCKETS[bucket][0],
+        "start_date": start_date,
+        "total": total,
+        "shown": len(rows),
+        "truncated": total > len(rows),
+        "sql": _sqp_detail_sql(start_date, bucket),
+        "rows": [
+            {
+                "seller_id": r["seller_id"],
+                "seller_name": r["seller_name"] or "",
+                "region_name": r["region_name"] or "",
+                "status": r["status"],
+                "start_date": str(r["start_date"]),
+                "amazon_requested_report_id": r["amazon_requested_report_id"] or "",
+            }
+            for r in rows
+        ],
+    })
+
+
+@app.route("/api/sqp-detail.csv")
+def sqp_detail_csv():
+    """Full (untruncated) list as CSV — opens directly in Sheets/Excel."""
+    try:
+        start_date, bucket = _sqp_detail_params()
+    except ValueError as exc:
+        return Response(f"error,{exc}\n", mimetype="text/csv", status=400)
+
+    import csv
+    import io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["seller_id", "seller_name", "region_name", "status",
+                     "start_date", "amazon_requested_report_id"])
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(_sqp_detail_sql(start_date, bucket))
+                for r in cur.fetchall():
+                    writer.writerow([
+                        r["seller_id"], r["seller_name"] or "", r["region_name"] or "",
+                        r["status"], r["start_date"], r["amazon_requested_report_id"] or "",
+                    ])
+    except Exception as exc:
+        return Response(f"error,{exc}\n", mimetype="text/csv", status=500)
+
+    filename = f"sqp_{start_date}_{bucket}.csv"
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.route("/api/sqp-global-status")
