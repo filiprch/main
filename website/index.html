@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wanda Klocek — Opolska porcelana ręcznie malowana | Pracownia w Nysie</title>
+<meta name="description" content="Pracownia Rękodzieła Ludowego i Artystycznego Wanda Klocek w Nysie. Porcelana malowana ręcznie wzorem opolskim, kroszonki, bombki, malowane drewno i len. Zamówienia indywidualne i prezentowe.">
+<meta name="author" content="Wanda Klocek">
+<meta name="theme-color" content="#1b2a4a">
+<link rel="canonical" href="https://wandaklocek.pl/">
+
+<meta property="og:type" content="website">
+<meta property="og:locale" content="pl_PL">
+<meta property="og:site_name" content="Wanda Klocek — Opolska porcelana ręcznie malowana">
+<meta property="og:title" content="Wanda Klocek — Opolska porcelana ręcznie malowana">
+<meta property="og:description" content="Ręcznie malowany wzór opolski na porcelanie, kroszonkach, bombkach, drewnie i lnie. Pracownia rękodzieła ludowego w Nysie.">
+<meta property="og:url" content="https://wandaklocek.pl/">
+<meta property="og:image" content="https://wandaklocek.pl/assets/img/og-image.svg">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">Przejdź do treści</a>
+
+<!-- ================= SVG motif library (Opole floral ornament) ================= -->
+<svg class="svg-defs" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Cornflower / forget-me-not: 5 rounded petals -->
+    <symbol id="m-flower" viewBox="0 0 100 100">
+      <g fill="currentColor" opacity=".92">
+        <ellipse cx="50" cy="24" rx="15" ry="19"/>
+        <ellipse cx="75" cy="42" rx="15" ry="19" transform="rotate(72 75 42)"/>
+        <ellipse cx="65" cy="72" rx="15" ry="19" transform="rotate(144 65 72)"/>
+        <ellipse cx="35" cy="72" rx="15" ry="19" transform="rotate(216 35 72)"/>
+        <ellipse cx="25" cy="42" rx="15" ry="19" transform="rotate(288 25 42)"/>
+      </g>
+      <circle cx="50" cy="50" r="10" fill="#e3a520"/>
+      <circle cx="50" cy="50" r="4" fill="#8a5d10"/>
+    </symbol>
+
+    <!-- Poppy: open cup with dark centre -->
+    <symbol id="m-poppy" viewBox="0 0 100 100">
+      <path fill="currentColor" opacity=".92" d="M50 12c16 0 30 12 30 27 0 6-2 11-6 15 5 4 8 10 8 17 0 9-6 15-14 15-6 0-11-3-14-8-3 5-8 8-14 8-8 0-14-6-14-15 0-7 3-13 8-17-4-4-6-9-6-15 0-15 14-27 30-27z"/>
+      <circle cx="50" cy="52" r="11" fill="#2b1708"/>
+      <path fill="none" stroke="#8a5d10" stroke-width="2.4" stroke-linecap="round"
+            d="M50 52 L50 36M50 52 L38 42M50 52 L62 42M50 52 L36 56M50 52 L64 56"/>
+    </symbol>
+
+    <!-- Leaf sprig -->
+    <symbol id="m-leaf" viewBox="0 0 100 100">
+      <path fill="none" stroke="#3f7d4e" stroke-width="4" stroke-linecap="round" d="M50 96 C50 70 50 40 50 8"/>
+      <g fill="#3f7d4e">
+        <path d="M50 72 C30 68 18 54 20 38 C38 38 50 52 50 72Z"/>
+        <path d="M50 56 C70 52 82 38 80 22 C62 22 50 36 50 56Z"/>
+        <path d="M50 34 C34 30 26 18 28 6 C42 8 50 20 50 34Z"/>
+      </g>
+    </symbol>
+
+    <!-- Bud on a curl -->
+    <symbol id="m-bud" viewBox="0 0 100 100">
+      <path fill="none" stroke="#3f7d4e" stroke-width="4" stroke-linecap="round" d="M50 96 C50 74 30 66 34 46"/>
+      <path fill="none" stroke="#3f7d4e" stroke-width="4" stroke-linecap="round" d="M50 54 C42 50 38 44 38 38"/>
+      <ellipse cx="50" cy="30" rx="16" ry="22" fill="currentColor" opacity=".92"/>
+      <path fill="#e3a520" d="M34 30 C34 18 41 8 50 8 C59 8 66 18 66 30Z"/>
+    </symbol>
+
+    <!-- Kroszonka / egg -->
+    <symbol id="m-egg" viewBox="0 0 100 100">
+      <path fill="currentColor" opacity=".9" d="M50 4c18 0 32 26 32 48 0 25-14 44-32 44S18 77 18 52C18 30 32 4 50 4z"/>
+      <path fill="none" stroke="#faf8f3" stroke-width="2.6" stroke-linecap="round" opacity=".85"
+            d="M22 40h56M20 56h60M24 72h52M50 8v88"/>
+    </symbol>
+
+    <!-- Bauble -->
+    <symbol id="m-bauble" viewBox="0 0 100 100">
+      <path fill="#e3a520" d="M42 14h16v10H42z"/>
+      <path fill="#e3a520" d="M46 6h8v8h-8z"/>
+      <circle cx="50" cy="60" r="36" fill="currentColor" opacity=".9"/>
+      <path fill="none" stroke="#faf8f3" stroke-width="2.6" stroke-linecap="round" opacity=".85"
+            d="M14 60h72M24 40c16 8 36 8 52 0M24 80c16-8 36-8 52 0"/>
+    </symbol>
+
+    <!-- Painted chest -->
+    <symbol id="m-chest" viewBox="0 0 100 100">
+      <path fill="currentColor" opacity=".9" d="M12 40h76v46H12z"/>
+      <path fill="#e3a520" d="M12 40c0-14 17-24 38-24s38 10 38 24z"/>
+      <path fill="none" stroke="#faf8f3" stroke-width="2.6" stroke-linecap="round" opacity=".85"
+            d="M12 56h76M44 58h12v12H44z"/>
+    </symbol>
+
+    <!-- Linen cloth -->
+    <symbol id="m-linen" viewBox="0 0 100 100">
+      <path fill="currentColor" opacity=".9" d="M14 18h72v64H14z"/>
+      <path fill="none" stroke="#faf8f3" stroke-width="2.6" stroke-linecap="round" opacity=".85"
+            d="M26 30h48v40H26zM14 34h72M14 66h72"/>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- ================= Header ================= -->
+<header class="site-header" id="siteHeader">
+  <div class="wrap header__inner">
+    <a class="brand" href="#top">
+      <svg class="brand__mark motif" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-flower"/></svg>
+      <span class="brand__text">
+        <span class="brand__name">Wanda Klocek</span>
+        <span class="brand__sub">Opolska porcelana ręcznie malowana</span>
+      </span>
+    </a>
+
+    <button class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="primaryNav">
+      <span class="nav-toggle__bars" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="nav-toggle__label">Menu</span>
+    </button>
+
+    <nav class="nav" id="primaryNav" aria-label="Menu główne">
+      <ul>
+        <li><a href="#pracownia">Pracownia</a></li>
+        <li><a href="#kolekcje">Kolekcje</a></li>
+        <li><a href="#porcelana">Porcelana</a></li>
+        <li><a href="#wzor">Wzór opolski</a></li>
+        <li><a href="#zamowienia">Zamówienia</a></li>
+        <li><a href="#kontakt">Kontakt</a></li>
+      </ul>
+      <a class="btn btn--sm btn--primary nav__cta" href="tel:+48600569268">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="ico"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.4c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1l-2.2 2.2z"/></svg>
+        600 569 268
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= Hero ================= -->
+<section class="hero" id="top">
+  <div class="hero__ornament" aria-hidden="true">
+    <svg class="motif motif--blue f1" viewBox="0 0 100 100"><use href="#m-flower"/></svg>
+    <svg class="motif motif--red f2" viewBox="0 0 100 100"><use href="#m-poppy"/></svg>
+    <svg class="motif motif--green f3" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+    <svg class="motif motif--blue f4" viewBox="0 0 100 100"><use href="#m-bud"/></svg>
+    <svg class="motif motif--red f5" viewBox="0 0 100 100"><use href="#m-flower"/></svg>
+    <svg class="motif motif--green f6" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+  </div>
+
+  <div class="wrap hero__inner">
+    <p class="eyebrow">Pracownia Rękodzieła Ludowego i Artystycznego · Nysa</p>
+    <h1>Kwiaty malowane<br><em>pędzlem i cierpliwością</em></h1>
+    <p class="lede">
+      Porcelana, kroszonki, bombki, drewno i len — wszystko zdobione ręcznie
+      tradycyjnym wzorem opolskim. Każdy element malowany pojedynczo,
+      bez kalkomanii i bez dwóch identycznych sztuk.
+    </p>
+    <div class="hero__actions">
+      <a class="btn btn--primary" href="#kolekcje">Zobacz kolekcje</a>
+      <a class="btn btn--ghost" href="#zamowienia">Zamów u twórczyni</a>
+    </div>
+  </div>
+
+  <ul class="trustbar wrap" aria-label="Najważniejsze informacje">
+    <li><strong>100% ręcznie</strong><span>malowane pędzlem, sztuka po sztuce</span></li>
+    <li><strong>Zmywarka i mikrofala</strong><span>porcelana do codziennego użytku</span></li>
+    <li><strong>Wzór opolski</strong><span>na krajowej liście niematerialnego dziedzictwa</span></li>
+    <li><strong>Zamówienia indywidualne</strong><span>komplety, prezenty, personalizacja</span></li>
+  </ul>
+</section>
+
+<!-- ================= O pracowni ================= -->
+<section class="section" id="pracownia">
+  <div class="wrap grid grid--split">
+    <div class="reveal">
+      <p class="eyebrow">O pracowni</p>
+      <h2>Twórczyni ludowa z&nbsp;Nysy</h2>
+      <p class="big">
+        Nazywam się Wanda Klocek i od 1992 roku maluję wzór opolski.
+        Zaczęło się od porcelany — dziś ten sam kwiatowy ornament kładę
+        także na kroszonkach, bombkach, malowanych skrzyniach i lnie.
+      </p>
+      <p>
+        Prowadzę Pracownię Rękodzieła Ludowego i Artystycznego w Nysie. Pracuję sama,
+        pędzlem, bez szablonów i kalkomanii. Każde naczynie maluję od pustego,
+        białego czerepu: najpierw kompozycja, potem kolejne warstwy koloru,
+        na końcu wypał, który wtapia farbę w szkliwo i nadaje jej trwałość.
+      </p>
+      <p>
+        Swoje prace pokazuję na wystawach w kraju i za granicą — nie tylko tych
+        poświęconych sztuce ludowej. Najbardziej cieszą mnie jednak te przedmioty,
+        które trafiają do domów i są używane na co dzień.
+      </p>
+      <p class="signature">Wanda&nbsp;Klocek</p>
+    </div>
+
+    <figure class="portrait reveal" data-photo="portret pracowni / twórczyni przy pracy">
+      <div class="portrait__art" aria-hidden="true">
+        <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-flower"/></svg>
+        <svg class="motif motif--red" viewBox="0 0 100 100"><use href="#m-poppy"/></svg>
+        <svg class="motif motif--green" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+        <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-bud"/></svg>
+      </div>
+      <figcaption>Pracownia w Nysie — ul. Gałczyńskiego 49/4</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================= Kolekcje ================= -->
+<section class="section section--tinted" id="kolekcje">
+  <div class="wrap">
+    <header class="section__head reveal">
+      <p class="eyebrow">Kolekcje</p>
+      <h2>Cztery materiały, jeden wzór</h2>
+      <p class="section__lede">
+        Ten sam opolski ornament zachowuje się inaczej na porcelanie, drewnie i tkaninie.
+        Dlatego każdą z tych rzeczy maluję trochę inaczej.
+      </p>
+    </header>
+
+    <div class="cards">
+      <article class="card reveal" data-photo="porcelana — kubki, filiżanki, dzbanki">
+        <div class="card__art card__art--porcelain" aria-hidden="true">
+          <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-flower"/></svg>
+          <svg class="motif motif--red" viewBox="0 0 100 100"><use href="#m-poppy"/></svg>
+          <svg class="motif motif--green" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+        </div>
+        <div class="card__body">
+          <h3>Porcelana</h3>
+          <p>
+            Kubki, filiżanki, dzbanki, talerze, misy i całe serwisy. Wzór wielobarwny
+            albo w odcieniach jednego koloru. Można myć w zmywarce i wstawiać do mikrofali.
+          </p>
+          <a class="link-arrow" href="#porcelana">Więcej o porcelanie</a>
+        </div>
+      </article>
+
+      <article class="card reveal" data-photo="kroszonki i pisanki opolskie">
+        <div class="card__art card__art--eggs" aria-hidden="true">
+          <svg class="motif motif--red" viewBox="0 0 100 100"><use href="#m-egg"/></svg>
+          <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-egg"/></svg>
+          <svg class="motif motif--green" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+        </div>
+        <div class="card__body">
+          <h3>Kroszonki i pisanki</h3>
+          <p>
+            Zdobione jaja wielkanocne — ten sam rodowód, z którego wyrósł cały wzór
+            opolski. Pojedyncze sztuki, kompozycje na stroik i zamówienia na koszyczki.
+          </p>
+          <a class="link-arrow" href="#zamowienia">Zapytaj o dostępność</a>
+        </div>
+      </article>
+
+      <article class="card reveal" data-photo="bombki choinkowe ręcznie malowane">
+        <div class="card__art card__art--baubles" aria-hidden="true">
+          <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-bauble"/></svg>
+          <svg class="motif motif--red" viewBox="0 0 100 100"><use href="#m-bauble"/></svg>
+          <svg class="motif motif--green" viewBox="0 0 100 100"><use href="#m-bud"/></svg>
+        </div>
+        <div class="card__body">
+          <h3>Bombki</h3>
+          <p>
+            Szklane bombki malowane ręcznie wzorem opolskim — zestawy na choinkę,
+            upominki firmowe i świąteczne. Maluję je przez cały rok, nie tylko w grudniu.
+          </p>
+          <a class="link-arrow" href="#zamowienia">Zapytaj o zestaw</a>
+        </div>
+      </article>
+
+      <article class="card reveal" data-photo="malowane drewno i len">
+        <div class="card__art card__art--wood" aria-hidden="true">
+          <svg class="motif motif--red" viewBox="0 0 100 100"><use href="#m-chest"/></svg>
+          <svg class="motif motif--blue" viewBox="0 0 100 100"><use href="#m-linen"/></svg>
+          <svg class="motif motif--green" viewBox="0 0 100 100"><use href="#m-leaf"/></svg>
+        </div>
+        <div class="card__body">
+          <h3>Drewno i len</h3>
+          <p>
+            Malowane skrzynie i kufry, deski i drobne formy w drewnie. Na lnie —
+            serwety, obrusy, torby i elementy odzieży z opolskim kwiatem.
+          </p>
+          <a class="link-arrow" href="#zamowienia">Zapytaj o wycenę</a>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Porcelana ================= -->
+<section class="section" id="porcelana">
+  <div class="wrap">
+    <header class="section__head reveal">
+      <p class="eyebrow">Porcelana</p>
+      <h2>Malowana tak, żeby jej używać</h2>
+      <p class="section__lede">
+        Opolska porcelana nie jest przedmiotem do gabloty. Wzór wypalany jest razem ze szkliwem,
+        więc znosi codzienne mycie, gorącą herbatę i zmywarkę.
+      </p>
+    </header>
+
+    <div class="features">
+      <div class="feature reveal">
+        <svg class="motif motif--blue feature__ico" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-flower"/></svg>
+        <h3>Wielobarwnie lub w jednym kolorze</h3>
+        <p>
+          Klasyczna kompozycja łączy błękit, czerwień, zieleń i żółć. Coraz częściej maluję też
+          wersje monochromatyczne — cały wzór w odcieniach jednej barwy, do nowoczesnych wnętrz.
+        </p>
+      </div>
+      <div class="feature reveal">
+        <svg class="motif motif--green feature__ico" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-leaf"/></svg>
+        <h3>Zmywarka i mikrofala</h3>
+        <p>
+          Farby naszkliwne utrwalam w wypale w wysokiej temperaturze. Dzięki temu każdy element
+          można myć w zmywarce i podgrzewać w kuchence mikrofalowej.
+        </p>
+      </div>
+      <div class="feature reveal">
+        <svg class="motif motif--red feature__ico" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-poppy"/></svg>
+        <h3>Komplety i pojedyncze sztuki</h3>
+        <p>
+          Od jednego kubka po serwis do kawy dla całej rodziny. Komplet maluję w jednej serii,
+          żeby kompozycje do siebie pasowały.
+        </p>
+      </div>
+      <div class="feature reveal">
+        <svg class="motif motif--blue feature__ico" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-bud"/></svg>
+        <h3>Personalizacja</h3>
+        <p>
+          Imię, data, dedykacja, logo — dopisuję je ręcznie i wkomponowuję w ornament.
+          Częsty wybór na wesela, chrzciny, jubileusze i upominki firmowe.
+        </p>
+      </div>
+    </div>
+
+    <p class="note reveal">
+      Ceny zależą od formy naczynia, gęstości wzoru i liczby sztuk.
+      Najprościej: <a href="tel:+48600569268">zadzwoń i opisz, czego szukasz</a> — wycenę podam od ręki.
+    </p>
+  </div>
+</section>
+
+<!-- ================= Wzór opolski ================= -->
+<section class="section section--dark" id="wzor">
+  <div class="wrap">
+    <header class="section__head section__head--center reveal">
+      <p class="eyebrow">Dziedzictwo</p>
+      <h2>Skąd wziął się wzór opolski</h2>
+      <p class="section__lede">
+        To nie jest ozdobnik wymyślony dla turystów. Umiejętność ręcznego malowania
+        wzoru opolskiego została w 2019 roku wpisana na krajową listę
+        niematerialnego dziedzictwa kulturowego.
+      </p>
+    </header>
+
+    <ol class="timeline">
+      <li class="reveal">
+        <span class="timeline__dot" aria-hidden="true"></span>
+        <h3>Najpierw były kroszonki</h3>
+        <p>
+          Kwiatowa ornamentyka wzoru wywodzi się z opolskich kroszonek — wielkanocnych jaj
+          barwionych, a potem drapanych ostrym rylcem. Stamtąd pochodzą charakterystyczne
+          niezapominajki, chabry, maki i stokrotki.
+        </p>
+      </li>
+      <li class="reveal">
+        <span class="timeline__dot" aria-hidden="true"></span>
+        <h3>1963 — wzór trafia na porcelanę</h3>
+        <p>
+          Podczas obrad jury konkursu kroszonkarskiego pojawił się pomysł, by przenieść
+          tradycyjne wzory na trwalszy materiał. Pierwsze próby zdobienia porcelitu
+          z Tułowic wypalono w piecu opolskiej Cepelii — tak narodziła się opolska porcelana.
+        </p>
+      </li>
+      <li class="reveal">
+        <span class="timeline__dot" aria-hidden="true"></span>
+        <h3>Od jednego koloru do bukietu</h3>
+        <p>
+          Początkowo wzór był jednobarwny. Po kilku latach na białym czerepie zaczęły
+          powstawać kompozycje wielobarwne, o coraz bogatszym układzie — takie, jakie
+          znamy dzisiaj.
+        </p>
+      </li>
+      <li class="reveal">
+        <span class="timeline__dot" aria-hidden="true"></span>
+        <h3>Tradycja, która nie zniknęła</h3>
+        <p>
+          Po upadku Cepelii malowanie porcelany na Opolszczyźnie przetrwało w prywatnych
+          pracowniach. Moja jest jedną z nich — i dlatego każdy kubek nadal powstaje
+          pod pędzlem, a nie pod maszyną.
+        </p>
+      </li>
+    </ol>
+
+    <div class="palette reveal" aria-label="Kolory wzoru opolskiego">
+      <span class="swatch" style="--c:#2f5fa8">chaber</span>
+      <span class="swatch" style="--c:#c8352b">mak</span>
+      <span class="swatch" style="--c:#3f7d4e">liść</span>
+      <span class="swatch" style="--c:#e3a520">słonecznik</span>
+      <span class="swatch" style="--c:#f4f1ea">czerep</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Zamówienia ================= -->
+<section class="section" id="zamowienia">
+  <div class="wrap">
+    <header class="section__head reveal">
+      <p class="eyebrow">Zamówienia</p>
+      <h2>Jak zamówić</h2>
+      <p class="section__lede">
+        Nie prowadzę koszyka ani płatności online. Wszystko ustalamy bezpośrednio —
+        dzięki temu wiem dokładnie, co i dla kogo maluję.
+      </p>
+    </header>
+
+    <ol class="steps">
+      <li class="reveal"><span class="steps__n">1</span>
+        <h3>Kontakt</h3>
+        <p>Telefon lub wiadomość na Facebooku. Napisz, co Cię interesuje i na kiedy.</p>
+      </li>
+      <li class="reveal"><span class="steps__n">2</span>
+        <h3>Ustalenia</h3>
+        <p>Wybieramy formę, kolorystykę i gęstość wzoru. Przy prezentach — treść dedykacji.</p>
+      </li>
+      <li class="reveal"><span class="steps__n">3</span>
+        <h3>Malowanie i wypał</h3>
+        <p>Podaję termin realizacji. Większe komplety maluję w jednej serii, to zajmuje kilka dni.</p>
+      </li>
+      <li class="reveal"><span class="steps__n">4</span>
+        <h3>Odbiór lub wysyłka</h3>
+        <p>Odbiór w pracowni w Nysie albo wysyłka kurierem — pakuję tak, żeby dojechało całe.</p>
+      </li>
+    </ol>
+
+    <div class="cta-band reveal">
+      <div>
+        <h3>Szukasz prezentu z Opolszczyzny?</h3>
+        <p>Kubek z imieniem, komplet ślubny albo bombki dla firmy — zadzwoń, doradzę.</p>
+      </div>
+      <a class="btn btn--primary btn--lg" href="tel:+48600569268">Zadzwoń: 600 569 268</a>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Kontakt ================= -->
+<section class="section section--tinted" id="kontakt">
+  <div class="wrap">
+    <header class="section__head reveal">
+      <p class="eyebrow">Kontakt</p>
+      <h2>Pracownia w Nysie</h2>
+    </header>
+
+    <div class="contact">
+      <ul class="contact__list reveal">
+        <li>
+          <span class="contact__label">Pracownia</span>
+          <span class="contact__value">Pracownia Rękodzieła Ludowego<br>i Artystycznego Wanda Klocek</span>
+        </li>
+        <li>
+          <span class="contact__label">Adres</span>
+          <a class="contact__value" href="https://maps.google.com/?q=Ga%C5%82czy%C5%84skiego+49%2F4%2C+48-304+Nysa" target="_blank" rel="noopener">
+            ul. Gałczyńskiego 49/4<br>48-304 Nysa, woj. opolskie
+          </a>
+        </li>
+        <li>
+          <span class="contact__label">Telefon</span>
+          <a class="contact__value contact__value--big" href="tel:+48600569268">+48 600 569 268</a>
+        </li>
+        <li>
+          <span class="contact__label">Facebook</span>
+          <a class="contact__value" href="https://www.facebook.com/opolska.porcelana.recznie.malowana.wannda.klocek/" target="_blank" rel="noopener">
+            Pracownia Wanda Klocek
+          </a>
+        </li>
+        <li>
+          <span class="contact__label">Wizyta</span>
+          <span class="contact__value">Odwiedziny w pracowni prosimy umawiać wcześniej telefonicznie.</span>
+        </li>
+      </ul>
+
+      <div class="contact__aside reveal">
+        <svg class="motif motif--blue contact__motif" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-flower"/></svg>
+        <p class="big">Najszybciej odpowiem na telefon.</p>
+        <p>
+          Jeżeli nie odbieram, prawdopodobnie jestem przy pędzlu albo przy piecu —
+          proszę o SMS, oddzwonię.
+        </p>
+        <a class="btn btn--primary" href="tel:+48600569268">Zadzwoń teraz</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= Footer ================= -->
+<footer class="site-footer">
+  <div class="wrap footer__inner">
+    <div class="footer__brand">
+      <svg class="motif motif--cream" viewBox="0 0 100 100" aria-hidden="true"><use href="#m-flower"/></svg>
+      <p class="footer__name">Wanda Klocek</p>
+      <p class="footer__sub">Opolska porcelana ręcznie malowana</p>
+    </div>
+
+    <nav class="footer__nav" aria-label="Stopka">
+      <ul>
+        <li><a href="#pracownia">Pracownia</a></li>
+        <li><a href="#kolekcje">Kolekcje</a></li>
+        <li><a href="#porcelana">Porcelana</a></li>
+        <li><a href="#wzor">Wzór opolski</a></li>
+        <li><a href="#zamowienia">Zamówienia</a></li>
+        <li><a href="#kontakt">Kontakt</a></li>
+      </ul>
+    </nav>
+
+    <address class="footer__contact">
+      ul. Gałczyńskiego 49/4<br>
+      48-304 Nysa<br>
+      <a href="tel:+48600569268">+48 600 569 268</a><br>
+      <a href="https://www.facebook.com/opolska.porcelana.recznie.malowana.wannda.klocek/" target="_blank" rel="noopener">Facebook</a>
+    </address>
+  </div>
+  <div class="wrap footer__bottom">
+    <p>&copy; <span id="year">2026</span> Pracownia Rękodzieła Ludowego i Artystycznego Wanda Klocek</p>
+    <p>Wszystkie wzory malowane ręcznie w Nysie.</p>
+  </div>
+</footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "LocalBusiness",
+  "name": "Pracownia Rękodzieła Ludowego i Artystycznego Wanda Klocek",
+  "alternateName": "Wanda Klocek — Opolska porcelana ręcznie malowana",
+  "description": "Pracownia rękodzieła ludowego w Nysie. Porcelana malowana ręcznie wzorem opolskim, kroszonki, bombki, malowane drewno i len.",
+  "url": "https://wandaklocek.pl/",
+  "telephone": "+48600569268",
+  "founder": { "@type": "Person", "name": "Wanda Klocek" },
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "ul. Gałczyńskiego 49/4",
+    "postalCode": "48-304",
+    "addressLocality": "Nysa",
+    "addressRegion": "opolskie",
+    "addressCountry": "PL"
+  },
+  "sameAs": [
+    "https://www.facebook.com/opolska.porcelana.recznie.malowana.wannda.klocek/"
+  ],
+  "makesOffer": [
+    { "@type": "Offer", "itemOffered": { "@type": "Product", "name": "Opolska porcelana ręcznie malowana" } },
+    { "@type": "Offer", "itemOffered": { "@type": "Product", "name": "Kroszonki i pisanki opolskie" } },
+    { "@type": "Offer", "itemOffered": { "@type": "Product", "name": "Bombki ręcznie malowane" } },
+    { "@type": "Offer", "itemOffered": { "@type": "Product", "name": "Malowane drewno i len" } }
+  ]
+}
+</script>
+
+<script src="assets/js/main.js" defer></script>
+</body>
+</html>
