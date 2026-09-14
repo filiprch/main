@@ -16,12 +16,40 @@ YOUTRACK_BASE_URL = "https://myrealprofit.youtrack.cloud"
 YOUTRACK_PROJECT_ID = "0-18"
 # Comma-separated Slack channel IDs to monitor (customer channels only).
 # Find a channel ID via right-click channel → View channel details (bottom).
+# LEAVING THIS EMPTY MEANS EVERY CHANNEL THE BOT IS IN. Set it.
 CUSTOMER_CHANNEL_IDS = ""
+
+# WHAT COUNTS AS "file a ticket". Comma list — several can run at once.
+#   all      every new thread (a top-level human message). Today's behaviour.
+#   emoji    someone reacts with SLACK_TRIGGER_EMOJI. The reactor picks the
+#            message that states the problem, which is also the best title.
+#   mention  the message @-mentions the bot.
+#   keyword  the message contains SLACK_TRIGGER_KEYWORD.
+# An empty value files nothing at all — useful for watching the logs first.
+# emoji, mention and keyword also fire on threaded replies; `all` never does.
+SLACK_TRIGGERS = "all"
+
+# Emoji names for `emoji` mode, without colons. Comma list. Skin-tone
+# variants of these count too.
+SLACK_TRIGGER_EMOJI = "ticket"
+
+# Phrase for `keyword` mode. Matched anywhere in the message, case-insensitive,
+# and removed from the ticket title.
+SLACK_TRIGGER_KEYWORD = "!ticket"
+
+# What the bot says in Slack once a ticket exists.
+#   thread     public reply in the thread (customers see it)
+#   ephemeral  visible only to whoever triggered it — test in a live channel
+#              without the customer seeing anything
+#   off        say nothing
+SLACK_CONFIRM = "thread"
 
 # Dedupe store for Slack event retries. Slack resends an event when it does
 # not get a 200 within 3 seconds, and the retry can land on a different
 # isolate — where the in-memory fallback knows nothing about it. Keys are
-# written as slack:<event_id> with a 1 hour TTL.
+# written as slack:<event_id> with a 1 hour TTL. A second key,
+# slack:msg:<channel>:<ts> -> ticket id, keeps one message from being filed
+# twice when more than one trigger mode matches it (30 day TTL).
 [[kv_namespaces]]
 binding = "DEDUPE"
 id = "ff85915611ec486facdd423b6f98fb94"

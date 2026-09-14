@@ -56,11 +56,37 @@ These behaviours were decided with the product owner and are configurable.
 
 | Channel | Trigger | Notes |
 |---------|---------|-------|
-| **Slack** | The **first message of a thread** in a monitored channel | Threaded replies, edits, joins, and bot messages are ignored. Only channels on an allowlist count. |
-| **Intercom** | **Human escalation** — conversation assigned to a human teammate (`conversation.admin.assigned`) | Assignments to Fin / the Operator bot are excluded, so Fin resolving a chat alone does **not** create a ticket. |
+| **Slack** | Selectable — see the table below | Set with `SLACK_TRIGGERS`; more than one mode can run at once. |
+| **Intercom** | **Fin hands off to a human** — `ai_agent.resolution_state` reaches one of `INTERCOM_HANDOFF_STATES`, on a conversation that is still open and recent | Assignment is deliberately *not* a trigger: an agent replying to a chat must not file a second ticket. |
 
-Both are deduplicated so webhook retries never create duplicate tickets
-(Slack by `event_id`, Intercom by conversation id).
+### Slack trigger modes (`SLACK_TRIGGERS`)
+
+| Mode | Fires when | Good for |
+|------|-----------|----------|
+| `all` | Every new thread (a top-level human message) in an allowlisted channel | A dedicated support channel where every thread is a request. The original behaviour. |
+| `emoji` | Someone reacts with one of `SLACK_TRIGGER_EMOJI` | A shared channel where only some messages are requests. The reactor also picks *which* message states the problem, which is the single biggest lever on title quality. |
+| `mention` | The message @-mentions the bot | Customers who know to ask explicitly. |
+| `keyword` | The message contains `SLACK_TRIGGER_KEYWORD` (default `!ticket`) | Internal use; the keyword is stripped from the title. |
+
+`all` only ever fires on a thread parent — a reply continues a conversation
+that already has, or deliberately does not have, a ticket. The other three fire
+on replies too, because someone may only realise halfway down a thread that it
+needs filing. An empty `SLACK_TRIGGERS` files nothing at all, which is a clean
+way to watch the logs against real traffic before committing to a mode.
+
+`SLACK_CONFIRM` controls what the bot says back: `thread` (public reply,
+default), `ephemeral` (visible only to whoever triggered it — lets you test in
+a live customer channel without the customer seeing anything), or `off`.
+
+**`CUSTOMER_CHANNEL_IDS` empty means every channel the bot has been invited
+to.** That is the setting to check first when tickets appear from somewhere
+unexpected.
+
+Everything is deduplicated so webhook retries never create duplicate tickets
+(Slack by `event_id`, Intercom by conversation id). Slack additionally keys
+`slack:msg:<channel>:<ts>` to the ticket id, so a message cannot be filed twice
+when two trigger modes both match it — reacting to a message that already
+auto-filed replies with the existing ticket number instead.
 
 ---
 
