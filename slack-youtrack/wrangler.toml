@@ -45,7 +45,7 @@ CUSTOMER_CHANNEL_IDS = ""
 #
 # `emoji` needs the reactions:read scope and the reaction_added bot event.
 # ===========================================================================
-SLACK_MODE = "always"
+SLACK_MODE = "night+emoji"
 
 # The night window, for `night` and `night+emoji`. Matched against when the
 # customer posted. 20:00 is inside it, 08:00 is outside it.
