@@ -16,9 +16,9 @@
  *   YOUTRACK_BASE_URL      (var)     https://myrealprofit.youtrack.cloud
  *   YOUTRACK_PROJECT_ID    (var)     0-18 (internal id — NOT the shortName)
  *   CUSTOMER_CHANNEL_IDS   (var)     comma-separated allowlist of channel IDs
- *   SLACK_MODE             (var)     always | emoji | emoji-night | off | custom
- *   SLACK_TRIGGERS         (var)     custom mode: all | emoji | mention | keyword
- *   SLACK_ACTIVE_HOURS     (var)     custom mode: "20:00-08:00", or "" for always
+ *   SLACK_MODE             (var)     always | emoji | night | night+emoji | off
+ *   SLACK_TRIGGERS         (var)     custom mode: all | night | emoji | mention | keyword
+ *   SLACK_NIGHT_HOURS      (var)     window for `night`, default "20:00-08:00"
  *   SLACK_HOURS_TZ         (var)     "+02:00" or an IANA zone (Europe/Warsaw)
  *   SLACK_TRIGGER_EMOJI    (var)     emoji names for `emoji` mode (no colons)
  *   SLACK_TRIGGER_KEYWORD  (var)     phrase for `keyword` mode
@@ -33,26 +33,29 @@ const DEFAULT_TRIGGERS = 'all';
 const DEFAULT_EMOJI = 'ticket';
 const DEFAULT_KEYWORD = '!ticket';
 const DEFAULT_TZ = '+02:00';
+const DEFAULT_NIGHT_HOURS = '20:00-08:00';
 const TICKETED_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 /**
- * Named presets, so switching behaviour is one line in wrangler.toml rather
- * than three that have to agree with each other.
+ * Named presets, so switching behaviour is one line in wrangler.toml.
  *
- *   always       every new thread, round the clock. The original behaviour.
- *   emoji        only when someone reacts :ticket:, round the clock.
- *   emoji-night  only when someone reacts :ticket:, and only for messages
- *                that arrived between 20:00 and 08:00.
- *   off          file nothing. The worker still logs what it would have done.
+ *   always       Every new thread, round the clock. The original behaviour.
+ *   emoji        Only when someone reacts :ticket:, round the clock.
+ *   night        Every new thread posted between 20:00 and 08:00 — the hours
+ *                when nobody is watching Slack, so nothing can be handled
+ *                live and everything needs a ticket waiting in the morning.
+ *   night+emoji  Both of the above. A message posted overnight files itself;
+ *                anything else files when someone reacts :ticket: to it.
+ *   off          File nothing. The worker still logs every decision.
  *
- * `custom` (or any unrecognised value) falls through to the individual
- * SLACK_TRIGGERS / SLACK_ACTIVE_HOURS vars.
+ * `custom` (or any unrecognised value) falls through to SLACK_TRIGGERS.
  */
 const MODES = {
-  always: { triggers: 'all', hours: '' },
-  emoji: { triggers: 'emoji', hours: '' },
-  'emoji-night': { triggers: 'emoji', hours: '20:00-08:00' },
-  off: { triggers: '', hours: '' },
+  always: 'all',
+  emoji: 'emoji',
+  night: 'night',
+  'night+emoji': 'night,emoji',
+  off: '',
 };
 
 export default {
@@ -120,19 +123,13 @@ function isEnabled(env) {
  * watch the logs without touching YouTrack.
  */
 function settings(env) {
-  const tz = env.SLACK_HOURS_TZ || DEFAULT_TZ;
   const name = String(env.SLACK_MODE || 'custom').trim().toLowerCase();
   const preset = MODES[name];
-  if (preset) return { name, tz, ...preset };
+  if (preset !== undefined) return { name, triggers: preset };
   if (name !== 'custom') {
     console.error(`unknown SLACK_MODE "${name}" — falling back to SLACK_TRIGGERS`);
   }
-  return {
-    name: 'custom',
-    tz,
-    triggers: env.SLACK_TRIGGERS ?? DEFAULT_TRIGGERS,
-    hours: env.SLACK_ACTIVE_HOURS || '',
-  };
+  return { name: 'custom', triggers: env.SLACK_TRIGGERS ?? DEFAULT_TRIGGERS };
 }
 
 function triggers(env) {
@@ -142,12 +139,15 @@ function triggers(env) {
     .filter(Boolean);
 }
 
+function nightWindow(env) {
+  return {
+    hours: env.SLACK_NIGHT_HOURS || DEFAULT_NIGHT_HOURS,
+    tz: env.SLACK_HOURS_TZ || DEFAULT_TZ,
+  };
+}
+
 /**
- * Is `tsSeconds` inside the configured window?
- *
- * The timestamp checked is the CUSTOMER'S MESSAGE, not the reaction — the
- * question an out-of-hours policy asks is "did this come in overnight", and
- * that stays true whether Lisa reacts at 23:10 or at 08:30 the next morning.
+ * Was `tsSeconds` inside the window?
  *
  * A malformed window or timezone opens the gate rather than closing it: a
  * missed ticket is worse than an extra one, and the error is in the log.
@@ -157,7 +157,7 @@ function withinHours(tsSeconds, window, tz) {
 
   const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(window).trim());
   if (!m) {
-    console.error(`bad SLACK_ACTIVE_HOURS "${window}" — ignoring the window`);
+    console.error(`bad night window "${window}" — treating every hour as in-window`);
     return { ok: true };
   }
   const start = Number(m[1]) * 60 + Number(m[2]);
@@ -191,7 +191,7 @@ function localMinutes(date, tz) {
     const minute = Number(parts.find((x) => x.type === 'minute').value);
     return hour * 60 + minute;
   } catch (e) {
-    console.error(`bad SLACK_HOURS_TZ "${tz}": ${e.message} — ignoring the window`);
+    console.error(`bad SLACK_HOURS_TZ "${tz}": ${e.message} — treating every hour as in-window`);
     return null;
   }
 }
@@ -224,20 +224,12 @@ async function handleEvent(payload, env) {
   else if (event.type === 'reaction_added') trigger = await reactionTrigger(event, env);
   if (!trigger) return;
 
-  const cfg = settings(env);
-  const hours = withinHours(trigger.ts, cfg.hours, cfg.tz);
-  if (!hours.ok) {
-    console.log(
-      `skip ${trigger.channel}/${trigger.ts} — message at ${hours.at} ` +
-        `(${hours.tz}) is outside ${hours.window}, mode=${cfg.name}`
-    );
-    return;
-  }
-
   // Slack retries a delivery up to three times; event_id is stable across them.
   if (await alreadyProcessed(env, payload.event_id)) return;
 
-  console.log(`trigger: ${trigger.why} (${trigger.channel}/${trigger.ts}) mode=${cfg.name}`);
+  console.log(
+    `trigger: ${trigger.why} (${trigger.channel}/${trigger.ts}) mode=${settings(env).name}`
+  );
   await createTicket(env, trigger);
 }
 
@@ -270,6 +262,23 @@ async function messageTrigger(event, env) {
   // conversation that already has (or deliberately has not) a ticket.
   if (modes.includes('all') && isThreadParent) {
     return base(text, 'new thread (mode: all)');
+  }
+
+  // Out of hours nobody is watching Slack, so a new thread cannot be handled
+  // live and files itself. Like `all`, it only fires on a thread parent — a
+  // reply continues a conversation that has already been dealt with one way
+  // or the other. If it does not match we fall through: emoji, mention and
+  // keyword can still pick the message up.
+  if (modes.includes('night') && isThreadParent) {
+    const { hours, tz } = nightWindow(env);
+    const when = withinHours(event.ts, hours, tz);
+    if (when.ok) {
+      return base(text, `out of hours — posted ${when.at} ${when.tz} (mode: night)`);
+    }
+    console.log(
+      `night: ${event.channel}/${event.ts} posted ${when.at} ${when.tz}, ` +
+        `outside ${when.window} — not filing`
+    );
   }
 
   // The explicit modes below work on replies too — someone may only realise
