@@ -59,20 +59,49 @@ These behaviours were decided with the product owner and are configurable.
 | **Slack** | Selectable — see the table below | Set with `SLACK_TRIGGERS`; more than one mode can run at once. |
 | **Intercom** | **Fin hands off to a human** — `ai_agent.resolution_state` reaches one of `INTERCOM_HANDOFF_STATES`, on a conversation that is still open and recent | Assignment is deliberately *not* a trigger: an agent replying to a chat must not file a second ticket. |
 
-### Slack trigger modes (`SLACK_TRIGGERS`)
+### Slack modes (`SLACK_MODE`)
 
-| Mode | Fires when | Good for |
+One line in `wrangler.toml`, then `npx wrangler deploy`.
+
+| `SLACK_MODE` | Files a ticket when | Good for |
 |------|-----------|----------|
-| `all` | Every new thread (a top-level human message) in an allowlisted channel | A dedicated support channel where every thread is a request. The original behaviour. |
-| `emoji` | Someone reacts with one of `SLACK_TRIGGER_EMOJI` | A shared channel where only some messages are requests. The reactor also picks *which* message states the problem, which is the single biggest lever on title quality. |
-| `mention` | The message @-mentions the bot | Customers who know to ask explicitly. |
-| `keyword` | The message contains `SLACK_TRIGGER_KEYWORD` (default `!ticket`) | Internal use; the keyword is stripped from the title. |
+| `always` | Every new thread (a top-level human message) in an allowlisted channel, round the clock | A dedicated support channel where every thread is a request. The original behaviour. |
+| `emoji` | Someone reacts `:ticket:` to a message, round the clock | A shared channel where only some messages are requests. The reactor also picks *which* message states the problem — the single biggest lever on title quality. |
+| `emoji-night` | Someone reacts `:ticket:`, **and** the message arrived between 20:00 and 08:00 | Out-of-hours cover, where the daytime team handles things live in Slack and only overnight requests need a ticket waiting in the morning. |
+| `off` | Never. Decisions are still logged | Watching real traffic without touching YouTrack. |
+
+The window is checked against **the customer's message timestamp, not the
+reaction**. "Did this come in overnight" stays true whether it is reacted to at
+23:10 or at 08:30 the next morning. A message at exactly 08:00 is outside the
+window; 20:00 is inside it.
+
+`SLACK_HOURS_TZ` takes a fixed offset (`+02:00`, the default) or an IANA zone
+(`Europe/Warsaw`). **A fixed offset does not follow daylight saving** — when
+Poland returns to `+01:00` on 25 October 2026 a `+02:00` window starts an hour
+early. `Europe/Warsaw` tracks the change. A malformed window or zone opens the
+gate rather than closing it, and logs the error: a missed ticket is worse than
+an extra one.
+
+### Custom mode (`SLACK_MODE = "custom"`)
+
+Falls through to the individual knobs, which can be combined:
+
+| `SLACK_TRIGGERS` | Fires when |
+|------|-----------|
+| `all` | Every new thread |
+| `emoji` | A reaction matching `SLACK_TRIGGER_EMOJI` |
+| `mention` | The message @-mentions the bot |
+| `keyword` | The message contains `SLACK_TRIGGER_KEYWORD` (default `!ticket`), which is stripped from the title |
+
+It is a comma list, so `"all,emoji"` runs both at once — a way to try a new
+trigger without switching the old one off. `SLACK_ACTIVE_HOURS` applies the
+same time window to whatever is selected.
 
 `all` only ever fires on a thread parent — a reply continues a conversation
 that already has, or deliberately does not have, a ticket. The other three fire
 on replies too, because someone may only realise halfway down a thread that it
-needs filing. An empty `SLACK_TRIGGERS` files nothing at all, which is a clean
-way to watch the logs against real traffic before committing to a mode.
+needs filing. `SLACK_MODE = "off"` (or an empty `SLACK_TRIGGERS`) files nothing at all,
+which is a clean way to watch the logs against real traffic first.
 
 `SLACK_CONFIRM` controls what the bot says back: `thread` (public reply,
 default), `ephemeral` (visible only to whoever triggered it — lets you test in

@@ -16,7 +16,10 @@
  *   YOUTRACK_BASE_URL      (var)     https://myrealprofit.youtrack.cloud
  *   YOUTRACK_PROJECT_ID    (var)     0-18 (internal id — NOT the shortName)
  *   CUSTOMER_CHANNEL_IDS   (var)     comma-separated allowlist of channel IDs
- *   SLACK_TRIGGERS         (var)     comma list: all | emoji | mention | keyword
+ *   SLACK_MODE             (var)     always | emoji | emoji-night | off | custom
+ *   SLACK_TRIGGERS         (var)     custom mode: all | emoji | mention | keyword
+ *   SLACK_ACTIVE_HOURS     (var)     custom mode: "20:00-08:00", or "" for always
+ *   SLACK_HOURS_TZ         (var)     "+02:00" or an IANA zone (Europe/Warsaw)
  *   SLACK_TRIGGER_EMOJI    (var)     emoji names for `emoji` mode (no colons)
  *   SLACK_TRIGGER_KEYWORD  (var)     phrase for `keyword` mode
  *   SLACK_CONFIRM          (var)     thread | ephemeral | off
@@ -29,7 +32,28 @@ import { createYouTrackIssue } from './youtrack.js';
 const DEFAULT_TRIGGERS = 'all';
 const DEFAULT_EMOJI = 'ticket';
 const DEFAULT_KEYWORD = '!ticket';
+const DEFAULT_TZ = '+02:00';
 const TICKETED_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+/**
+ * Named presets, so switching behaviour is one line in wrangler.toml rather
+ * than three that have to agree with each other.
+ *
+ *   always       every new thread, round the clock. The original behaviour.
+ *   emoji        only when someone reacts :ticket:, round the clock.
+ *   emoji-night  only when someone reacts :ticket:, and only for messages
+ *                that arrived between 20:00 and 08:00.
+ *   off          file nothing. The worker still logs what it would have done.
+ *
+ * `custom` (or any unrecognised value) falls through to the individual
+ * SLACK_TRIGGERS / SLACK_ACTIVE_HOURS vars.
+ */
+const MODES = {
+  always: { triggers: 'all', hours: '' },
+  emoji: { triggers: 'emoji', hours: '' },
+  'emoji-night': { triggers: 'emoji', hours: '20:00-08:00' },
+  off: { triggers: '', hours: '' },
+};
 
 export default {
   async fetch(request, env, ctx) {
@@ -95,11 +119,86 @@ function isEnabled(env) {
  * An empty list means nothing is ever filed, which is a legitimate way to
  * watch the logs without touching YouTrack.
  */
+function settings(env) {
+  const tz = env.SLACK_HOURS_TZ || DEFAULT_TZ;
+  const name = String(env.SLACK_MODE || 'custom').trim().toLowerCase();
+  const preset = MODES[name];
+  if (preset) return { name, tz, ...preset };
+  if (name !== 'custom') {
+    console.error(`unknown SLACK_MODE "${name}" — falling back to SLACK_TRIGGERS`);
+  }
+  return {
+    name: 'custom',
+    tz,
+    triggers: env.SLACK_TRIGGERS ?? DEFAULT_TRIGGERS,
+    hours: env.SLACK_ACTIVE_HOURS || '',
+  };
+}
+
 function triggers(env) {
-  return String(env.SLACK_TRIGGERS ?? DEFAULT_TRIGGERS)
+  return String(settings(env).triggers)
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
+}
+
+/**
+ * Is `tsSeconds` inside the configured window?
+ *
+ * The timestamp checked is the CUSTOMER'S MESSAGE, not the reaction — the
+ * question an out-of-hours policy asks is "did this come in overnight", and
+ * that stays true whether Lisa reacts at 23:10 or at 08:30 the next morning.
+ *
+ * A malformed window or timezone opens the gate rather than closing it: a
+ * missed ticket is worse than an extra one, and the error is in the log.
+ */
+function withinHours(tsSeconds, window, tz) {
+  if (!window) return { ok: true };
+
+  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(window).trim());
+  if (!m) {
+    console.error(`bad SLACK_ACTIVE_HOURS "${window}" — ignoring the window`);
+    return { ok: true };
+  }
+  const start = Number(m[1]) * 60 + Number(m[2]);
+  const end = Number(m[3]) * 60 + Number(m[4]);
+
+  const at = localMinutes(new Date(Number(tsSeconds) * 1000), tz);
+  if (at === null) return { ok: true };
+
+  // start > end means the window crosses midnight, which 20:00-08:00 does.
+  const ok = start === end ? true : start < end ? at >= start && at < end : at >= start || at < end;
+  return { ok, at: hhmm(at), window, tz };
+}
+
+/** Minutes past local midnight, for a fixed offset or an IANA zone name. */
+function localMinutes(date, tz) {
+  const offset = /^([+-])(\d{2}):?(\d{2})$/.exec(String(tz).trim());
+  if (offset) {
+    const sign = offset[1] === '-' ? -1 : 1;
+    const minutes = Number(offset[2]) * 60 + Number(offset[3]);
+    const shifted = new Date(date.getTime() + sign * minutes * 60000);
+    return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+    const hour = Number(parts.find((x) => x.type === 'hour').value);
+    const minute = Number(parts.find((x) => x.type === 'minute').value);
+    return hour * 60 + minute;
+  } catch (e) {
+    console.error(`bad SLACK_HOURS_TZ "${tz}": ${e.message} — ignoring the window`);
+    return null;
+  }
+}
+
+function hhmm(minutes) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(Math.floor(minutes / 60))}:${p(minutes % 60)}`;
 }
 
 function channelAllowed(channelId, env) {
@@ -125,10 +224,20 @@ async function handleEvent(payload, env) {
   else if (event.type === 'reaction_added') trigger = await reactionTrigger(event, env);
   if (!trigger) return;
 
+  const cfg = settings(env);
+  const hours = withinHours(trigger.ts, cfg.hours, cfg.tz);
+  if (!hours.ok) {
+    console.log(
+      `skip ${trigger.channel}/${trigger.ts} — message at ${hours.at} ` +
+        `(${hours.tz}) is outside ${hours.window}, mode=${cfg.name}`
+    );
+    return;
+  }
+
   // Slack retries a delivery up to three times; event_id is stable across them.
   if (await alreadyProcessed(env, payload.event_id)) return;
 
-  console.log(`trigger: ${trigger.why} (${trigger.channel}/${trigger.ts})`);
+  console.log(`trigger: ${trigger.why} (${trigger.channel}/${trigger.ts}) mode=${cfg.name}`);
   await createTicket(env, trigger);
 }
 

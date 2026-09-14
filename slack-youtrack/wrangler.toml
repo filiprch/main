@@ -19,23 +19,50 @@ YOUTRACK_PROJECT_ID = "0-18"
 # LEAVING THIS EMPTY MEANS EVERY CHANNEL THE BOT IS IN. Set it.
 CUSTOMER_CHANNEL_IDS = ""
 
-# WHAT COUNTS AS "file a ticket". Comma list — several can run at once.
-#   all      every new thread (a top-level human message). Today's behaviour.
-#   emoji    someone reacts with SLACK_TRIGGER_EMOJI. The reactor picks the
-#            message that states the problem, which is also the best title.
-#   mention  the message @-mentions the bot.
-#   keyword  the message contains SLACK_TRIGGER_KEYWORD.
-# An empty value files nothing at all — useful for watching the logs first.
-# emoji, mention and keyword also fire on threaded replies; `all` never does.
-SLACK_TRIGGERS = "all"
+# ===========================================================================
+# HOW THE BOT DECIDES TO FILE A TICKET
+#
+# Change this ONE line, then `npx wrangler deploy`.
+#
+#   always       Every new thread in an allowlisted channel, round the clock.
+#                This is what it has been doing until now.
+#
+#   emoji        Only when someone reacts :ticket: to a message. Round the
+#                clock. Works on threaded replies too, so you can react to the
+#                message that actually states the problem rather than the
+#                "hi" that opened the thread.
+#
+#   emoji-night  Same as emoji, but only for messages that ARRIVED between
+#                20:00 and 08:00 (see SLACK_HOURS_TZ). Daytime messages are
+#                ignored even if you react to them.
+#
+#   off          File nothing. The worker still logs every decision, so you
+#                can watch real traffic without touching YouTrack.
+#
+# `emoji` needs the reactions:read scope and the reaction_added bot event.
+# ===========================================================================
+SLACK_MODE = "always"
+
+# Timezone for emoji-night. A fixed offset ("+02:00") or an IANA zone name
+# ("Europe/Warsaw"). The offset is literal and will NOT follow daylight
+# saving: on 25 Oct 2026 Poland goes back to +01:00, and a "+02:00" window
+# starts an hour early from then on. "Europe/Warsaw" tracks that for you.
+SLACK_HOURS_TZ = "+02:00"
 
 # Emoji names for `emoji` mode, without colons. Comma list. Skin-tone
 # variants of these count too.
 SLACK_TRIGGER_EMOJI = "ticket"
 
+# --- Only read when SLACK_MODE = "custom" ----------------------------------
+# Comma list of triggers: all | emoji | mention | keyword. Several can run at
+# once, e.g. "all,emoji" to try the new one without switching the old one off.
+SLACK_TRIGGERS = "all"
+# Window messages must fall inside, e.g. "20:00-08:00". Empty = any time.
+SLACK_ACTIVE_HOURS = ""
 # Phrase for `keyword` mode. Matched anywhere in the message, case-insensitive,
 # and removed from the ticket title.
 SLACK_TRIGGER_KEYWORD = "!ticket"
+# ---------------------------------------------------------------------------
 
 # What the bot says in Slack once a ticket exists.
 #   thread     public reply in the thread (customers see it)
