@@ -138,7 +138,16 @@ Files attached anywhere in the thread are **re-uploaded into YouTrack** rather
 than linked — `url_private` needs the bot token and is useless to an agent
 without a Slack seat. Uploads happen after the issue exists and each file is
 attempted independently, so a failed upload can never cost us the ticket.
-Requires the `files:read` bot scope.
+Requires the `files:read` **bot** scope.
+
+> **If a download returns HTTP 403**, the token doing the fetching has no
+> `files:read`. The OAuth & Permissions page has two separate lists — Bot Token
+> Scopes and User Token Scopes — and a scope added to the User list never
+> reaches the bot token, however many times the app is reinstalled. On a 403
+> the worker logs the scopes the deployed token actually carries, which
+> settles it in one line. After fixing the list, reinstall the app **and**
+> re-run `wrangler secret put SLACK_BOT_TOKEN`: a token carries the scopes it
+> was issued with. (This cost us CS-224 through CS-226.)
 
 ## 4. How a ticket is built (field mapping)
 
