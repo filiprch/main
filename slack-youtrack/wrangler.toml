@@ -77,6 +77,31 @@ SLACK_TRIGGER_KEYWORD = "!ticket"
 #   off        say nothing
 SLACK_CONFIRM = "thread"
 
+# ===========================================================================
+# AI-WRITTEN TITLES
+#
+# Off until ANTHROPIC_API_KEY is set (npx wrangler secret put ANTHROPIC_API_KEY).
+# "true" makes the worker ask a model for the problem statement and the account
+# name; anything else keeps the quoted-from-the-customer title we have today.
+#
+# Every failure — no key, timeout, HTTP error, unparseable answer — falls back
+# to that quoted title, so switching this on can lose you nothing but the
+# improvement. A ticket is always created.
+#
+# The model writes the TITLE ONLY. The description stays the customer's own
+# words, because YouTrack will not let a helpdesk ticket be edited after
+# creation and nobody should act on a sentence a model invented.
+# ===========================================================================
+TITLE_AI = "false"
+
+# Model, and how hard it works. `low` suits a one-line extraction and keeps the
+# call in front of ticket creation short.
+TITLE_AI_MODEL = "claude-opus-5"
+TITLE_AI_EFFORT = "low"
+
+# Give up and use the quoted title after this long.
+TITLE_AI_TIMEOUT_MS = "12000"
+
 # Dedupe store for Slack event retries. Slack resends an event when it does
 # not get a 200 within 3 seconds, and the retry can land on a different
 # isolate — where the in-memory fallback knows nothing about it. Keys are

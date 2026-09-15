@@ -461,28 +461,63 @@ workflow, because Gmail is YouTrack's native channel and no worker sees it.
 
 ## Possible upgrades
 
-### AI-written problem statements ("Option B")
+### AI-written problem statements — built, off by default (Slack)
 
-The middle of the title is currently a cleaned truncation of what the customer
-wrote. It is honest but blunt: "I've shared the list and am looking to
-connect…" where a person would write "connect custom dashboard to
-credentials".
+Implemented in `slack-youtrack/src/summarize.js`, switched by `TITLE_AI` and
+**off until an `ANTHROPIC_API_KEY` secret exists**. Intercom and Gmail still use
+the deterministic title.
 
-Turning one into the other is summarising, not string handling, so it needs a
-model. The same call could pull out the **seller account named in the message
-body** — "I need access to Heretic, row 31st" — which is the account an agent
-actually cares about and which no structural field carries.
+The middle of the title used to be a cleaned truncation of what the customer
+wrote — honest but blunt, and often the middle of a sentence:
 
-Deferred rather than rejected: it introduces a fourth secret and an external
-dependency that can be slow or down, into a system that had spent a day being
-stabilised, six days before the deadline. The change is contained to
-`buildTitle()` in each worker, with the current deterministic title as the
-fallback whenever the call fails or is slow — so nothing can regress to worse
-than today's behaviour.
+```
+SLACK: or just the number of accounts that are actually connected? As you… - Filip Seidel - #helpdesk-testing
+```
 
-Note the groundwork already exists: project CS has an **AI Confidence** field,
-and §13 of this document lists AI triage as Phase 6. This is that phase
-arriving early, scoped to one line of text.
+With `TITLE_AI = "true"` a single `claude-opus-5` call reads the thread and
+returns a problem statement and, where the customer named one, the account:
+
+```
+SLACK: Confirm real connected-account count for Gonorth billing - Filip Seidel - Gonorth
+```
+
+Two rules hold this in place, both because **YouTrack will not let a helpdesk
+ticket be retitled after creation** — whatever is written is permanent:
+
+1. **The model writes the title only.** The description stays the customer's
+   verbatim words. Nobody should act on a sentence a model invented, and
+   confining the model to a header bounds the damage a bad one can do.
+2. **The account must appear literally in the thread.** The model proposes,
+   `accountInThread()` verifies it is a substring of what the customer actually
+   typed, and drops it otherwise, falling back to the channel name. Without a
+   list of real seller names to choose from, this is what keeps an invented
+   shop out of a permanent field. It is weaker than a real list — it cannot fix
+   a typo or resolve an alias — so if a seller list ever becomes available,
+   matching against it is a straight upgrade.
+
+Every failure returns null and the caller keeps the quoted title: no key,
+timeout (`TITLE_AI_TIMEOUT_MS`, default 12s), HTTP error, unparseable answer,
+empty problem. Switching this on cannot cost a ticket, only the improvement.
+
+The call uses `thinking: { type: "disabled" }` and `effort: "low"` — it sits
+between the customer writing and the ticket appearing, and a one-line
+extraction does not need deliberation. Each run logs its latency and exact
+token counts.
+
+#### Dry run first
+
+```bash
+export SLACK_BOT_TOKEN=xoxb-…  ANTHROPIC_API_KEY=sk-ant-…
+node scripts/title-dryrun.mjs C0BDDQWPZB4 --limit 20
+```
+
+Replays real threads from a channel and prints today's title beside the one the
+model would write, **creating nothing**, then totals the tokens used and how
+often the account guard fired. Because titles cannot be corrected afterwards,
+the first production run is already permanent — this is the only chance to
+judge the change on real traffic before that. It imports the same builders the
+worker uses rather than copying them, so what it prints is what you would get.
+`--file threads.json` replays pasted threads when reaching Slack is awkward.
 
 ### Others worth considering
 

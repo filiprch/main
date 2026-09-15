@@ -28,6 +28,22 @@
  */
 
 import { createYouTrackIssue, attachToYouTrackIssue } from './youtrack.js';
+import {
+  buildDescription,
+  buildTitle,
+  downloadable,
+  fileName,
+  renderSlack,
+  stripFirst,
+} from './format.js';
+import {
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
+  DEFAULT_TIMEOUT_MS,
+  accountInThread,
+  summarizeThread,
+  transcriptOf,
+} from './summarize.js';
 
 const DEFAULT_TRIGGERS = 'all';
 const DEFAULT_EMOJI = 'ticket';
@@ -380,13 +396,12 @@ async function createTicket(env, trigger) {
     baseUrl: env.YOUTRACK_BASE_URL,
     token: env.YOUTRACK_TOKEN,
     projectId: env.YOUTRACK_PROJECT_ID || 'CS',
-    summary: buildTitle({
-      source: 'SLACK',
-      problem: renderSlack(trigger.problem || trigger.text, names),
+    summary: await buildSummary(env, {
+      trigger,
+      messages,
+      names,
       sender: reporter.name,
-      // The channel IS the client here — #gigabrain, #mrp-amiz — so it is the
-      // most useful "account" we have, and it costs nothing to read.
-      account: channelName,
+      channelName,
     }),
     description: buildDescription({
       sender: reporter.name,
@@ -416,6 +431,67 @@ async function createTicket(env, trigger) {
   // After the ticket exists, so a failing upload cannot cost us the ticket.
   await uploadFiles(env, ticketId, files);
   await confirm(env, trigger, ticketId, false);
+}
+
+/**
+ * The ticket title: written by the model when that is switched on and working,
+ * quoted from the customer when it is not.
+ *
+ * The fallback is not a degraded mode to be embarrassed about — it is what
+ * every ticket got until now. What it must never do is fail to produce a
+ * title, because YouTrack will not let a helpdesk ticket be retitled after
+ * creation, so a missing title is permanent in a way a mediocre one is not.
+ */
+async function buildSummary(env, { trigger, messages, names, sender, channelName }) {
+  const fallback = () =>
+    buildTitle({
+      source: 'SLACK',
+      problem: renderSlack(trigger.problem || trigger.text, names),
+      sender,
+      // The channel IS the client here — #gigabrain, #mrp-amiz — so it is the
+      // most useful "account" we have, and it costs nothing to read.
+      account: channelName,
+    });
+
+  if (String(env.TITLE_AI ?? 'false').toLowerCase() !== 'true') return fallback();
+
+  const transcript = transcriptOf(
+    messages.map((m) => ({ speaker: names?.get(m.user) || m.username || 'Unknown', text: m.text })),
+    (text) => renderSlack(text, names)
+  );
+
+  const started = Date.now();
+  const result = await summarizeThread({
+    apiKey: env.ANTHROPIC_API_KEY,
+    transcript,
+    model: env.TITLE_AI_MODEL || DEFAULT_MODEL,
+    effort: env.TITLE_AI_EFFORT || DEFAULT_EFFORT,
+    timeoutMs: Number(env.TITLE_AI_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+  });
+
+  if (!result) {
+    console.log('title: model gave nothing usable — using the quoted fallback');
+    return fallback();
+  }
+
+  // Only a name the customer actually typed may reach a field nobody can edit.
+  const account = accountInThread(result.account, transcript);
+  if (result.account && !account) {
+    console.log(`title: dropped account "${result.account}" — not present in the thread`);
+  }
+
+  const usage = result.usage || {};
+  console.log(
+    `title: ${Date.now() - started}ms, ${usage.input_tokens ?? '?'} in / ` +
+      `${usage.output_tokens ?? '?'} out — "${result.problem}"`
+  );
+
+  return buildTitle({
+    source: 'SLACK',
+    problem: result.problem,
+    sender,
+    account: account || channelName,
+  });
 }
 
 /**
@@ -473,20 +549,6 @@ async function logTokenScopes(token) {
   } catch (e) {
     console.error(`could not read token scopes: ${e.message}`);
   }
-}
-
-function fileName(file) {
-  return file.name || file.title || 'attachment';
-}
-
-/**
- * Slack sends entries here that are not files we can fetch — external links
- * added via "Add a file from Google Drive", and posts still being processed.
- */
-function downloadable(file) {
-  if (!file) return false;
-  if (file.mode === 'external' || file.is_external) return false;
-  return Boolean(file.url_private_download || file.url_private);
 }
 
 /**
@@ -645,140 +707,6 @@ async function slackPost(token, method, body) {
   const data = await res.json();
   if (!data.ok) console.error(`${method} failed:`, data.error);
   return data;
-}
-
-// --------------------------------------------------------------------------
-// Formatting
-// --------------------------------------------------------------------------
-
-/**
- * Turn Slack's wire format into something readable in YouTrack.
- *
- * Agents without a Slack seat were reading raw <@U03ABC> ids and link markup.
- * The entity escapes are Slack's own and must be undone last, so a message
- * containing a literal "&lt;" does not turn into markup.
- */
-function renderSlack(text, names) {
-  return String(text || '')
-    .replace(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `@${names?.get(id) || id}`)
-    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1')
-    .replace(/<!(here|channel|everyone)(?:\|[^>]*)?>/g, '@$1')
-    .replace(/<((?:https?:\/\/|mailto:)[^|>]+)\|([^>]+)>/g, '[$2]($1)')
-    .replace(/<(https?:\/\/[^>]+)>/g, '$1')
-    .replace(/<mailto:([^>]+)>/g, '$1')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .trim();
-}
-
-/**
- * A fixed section order, so every ticket scans the same way.
- *
- * The conversation is quoted verbatim and attributed — an agent acting on this
- * ticket is acting on what the customer actually wrote, not on a paraphrase.
- */
-function buildDescription({
-  sender,
-  email,
-  channelName,
-  permalink,
-  why,
-  messages,
-  names,
-  files,
-  triggerTs,
-}) {
-  const who = email ? `${sender} <${email}>` : sender;
-  const lines = [
-    `**Customer:** ${who} · ${channelName}`,
-    `**Raised:** ${formatUtc(messages[0]?.ts || triggerTs)} UTC · ${why}`,
-  ];
-  if (permalink) lines.push(`**Slack:** [open the thread](${permalink})`);
-
-  lines.push('', `### Conversation (${messages.length} message${messages.length === 1 ? '' : 's'})`, '');
-  for (const m of messages) {
-    const speaker = names?.get(m.user) || m.username || 'Unknown';
-    const body = renderSlack(m.text, names) || '_(no text)_';
-    const marker = m.ts === triggerTs && messages.length > 1 ? ' ←' : '';
-    lines.push(`**${formatUtc(m.ts)} · ${speaker}**${marker}`);
-    for (const line of body.split('\n')) lines.push(`> ${line}`);
-    for (const f of m.files || []) lines.push(`> 📎 ${fileName(f)}`);
-    lines.push('');
-  }
-
-  if (files.length) {
-    lines.push('### Attachments', '');
-    for (const f of files) lines.push(`- ${fileName(f)}`);
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
-/** Slack ts is "<unix-seconds>.<micros>". Render as YYYY-MM-DD HH:MM. */
-function formatUtc(ts) {
-  const ms = ts ? Math.floor(Number(ts) * 1000) : Date.now();
-  const d = new Date(ms);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(
-    d.getUTCHours()
-  )}:${p(d.getUTCMinutes())}`;
-}
-
-/** Remove the first occurrence of `needle`, case-insensitively. */
-function stripFirst(text, needle) {
-  const at = text.toLowerCase().indexOf(needle.toLowerCase());
-  if (at < 0) return text.trim();
-  return `${text.slice(0, at)} ${text.slice(at + needle.length)}`.replace(/\s+/g, ' ').trim();
-}
-
-// --------------------------------------------------------------------------
-// Ticket titles
-// --------------------------------------------------------------------------
-
-/**
- * Strip everything that makes a title unreadable on a board.
- *
- * A pasted link used to swallow the whole title — CS-172 was named after a
- * Google Sheets URL — so links go first, keeping their label where one exists.
- * Opening pleasantries go too: "Well, I've shared the list" is one word of
- * throat-clearing in a field where every character counts.
- */
-function cleanForTitle(text) {
-  return (text || '')
-    .replace(/<(?:https?:\/\/|mailto:)[^|>]+\|([^>]+)>/g, '$1') // <url|label> -> label
-    .replace(/<(?:https?:\/\/|mailto:)[^>]+>/g, '') // bare <url> -> gone
-    .replace(/https?:\/\/\S+/gi, '')
-    .replace(/\S+@\S+\.\S+/g, '')
-    .replace(/<@[A-Z0-9]+>/g, '') // unresolved @-mentions
-    .replace(
-      /^\s*(?:well|so|ok|okay|hi|hey|hello|good\s+(?:morning|afternoon|evening))\b[\s,.!—-]*/i,
-      ''
-    )
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function clip(text, max) {
-  const t = (text || '').trim();
-  if (t.length <= max) return t;
-  const cut = t.slice(0, max);
-  const space = cut.lastIndexOf(' ');
-  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trim()}…`;
-}
-
-/**
- * SOURCE: what they want - who asked - which account
- *
- * The prefix makes the channel readable at a glance on a mixed board, and the
- * trailing name and account mean a ticket can be placed without opening it.
- */
-function buildTitle({ source, problem, sender, account }) {
-  const parts = [clip(cleanForTitle(problem), 70) || 'No message'];
-  if (sender) parts.push(clip(sender, 40));
-  if (account) parts.push(clip(account, 30));
-  return `${source}: ${parts.join(' - ')}`;
 }
 
 // --------------------------------------------------------------------------
