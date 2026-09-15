@@ -94,11 +94,27 @@ function enumField(name, valueName) {
 export async function attachToYouTrackIssue({ baseUrl, token, issueId, name, url, authHeader }) {
   const src = await fetch(url, authHeader ? { headers: { Authorization: authHeader } } : {});
   if (!src.ok) {
-    throw new Error(`could not download ${name} (${src.status})`);
+    throw new Error(`could not download ${name} (HTTP ${src.status})`);
+  }
+
+  // Slack answers an unauthorised file request with 200 and an HTML sign-in
+  // page rather than an error, so status alone proves nothing: without this
+  // check the ticket gets a login page uploaded under the name "image.png".
+  const type = src.headers.get('content-type') || '';
+  if (/^text\/html/i.test(type)) {
+    throw new Error(
+      `${name} came back as an HTML page, not a file — the token is probably ` +
+        'missing files:read, or the app was not reinstalled after adding it'
+    );
+  }
+
+  const blob = await src.blob();
+  if (!blob.size) {
+    throw new Error(`${name} downloaded as 0 bytes`);
   }
 
   const form = new FormData();
-  form.append('file', await src.blob(), name || 'attachment');
+  form.append('file', blob, name || 'attachment');
 
   const dest = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/attachments?fields=id,name`;
   const res = await fetch(dest, {

@@ -374,7 +374,7 @@ async function createTicket(env, trigger) {
     getPermalink(token, trigger.channel, trigger.ts),
   ]);
 
-  const files = messages.flatMap((m) => m.files || []).filter((f) => f && f.url_private);
+  const files = messages.flatMap((m) => m.files || []).filter(downloadable);
 
   const issue = await createYouTrackIssue({
     baseUrl: env.YOUTRACK_BASE_URL,
@@ -428,20 +428,38 @@ async function createTicket(env, trigger) {
  */
 async function uploadFiles(env, issueId, files) {
   for (const file of files) {
+    const name = fileName(file);
+    // url_private_download is the byte-serving URL; url_private can answer
+    // with a preview page for some file types. Prefer it, fall back.
+    const url = file.url_private_download || file.url_private;
     try {
       await attachToYouTrackIssue({
         baseUrl: env.YOUTRACK_BASE_URL,
         token: env.YOUTRACK_TOKEN,
         issueId,
-        name: file.name || file.title || 'attachment',
-        url: file.url_private,
+        name,
+        url,
         authHeader: `Bearer ${env.SLACK_BOT_TOKEN}`,
       });
-      console.log(`attached ${file.name} to ${issueId}`);
+      console.log(`attached ${name} to ${issueId}`);
     } catch (e) {
-      console.error(`attach failed for ${file.name}: ${e.message}`);
+      console.error(`attach failed for ${name} (${url}): ${e.message}`);
     }
   }
+}
+
+function fileName(file) {
+  return file.name || file.title || 'attachment';
+}
+
+/**
+ * Slack sends entries here that are not files we can fetch — external links
+ * added via "Add a file from Google Drive", and posts still being processed.
+ */
+function downloadable(file) {
+  if (!file) return false;
+  if (file.mode === 'external' || file.is_external) return false;
+  return Boolean(file.url_private_download || file.url_private);
 }
 
 /**
@@ -658,13 +676,13 @@ function buildDescription({
     const marker = m.ts === triggerTs && messages.length > 1 ? ' ←' : '';
     lines.push(`**${formatUtc(m.ts)} · ${speaker}**${marker}`);
     for (const line of body.split('\n')) lines.push(`> ${line}`);
-    for (const f of m.files || []) lines.push(`> 📎 ${f.name || f.title || 'attachment'}`);
+    for (const f of m.files || []) lines.push(`> 📎 ${fileName(f)}`);
     lines.push('');
   }
 
   if (files.length) {
     lines.push('### Attachments', '');
-    for (const f of files) lines.push(`- ${f.name || f.title || 'attachment'}`);
+    for (const f of files) lines.push(`- ${fileName(f)}`);
     lines.push('');
   }
 
