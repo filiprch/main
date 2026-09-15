@@ -656,6 +656,35 @@ go.
 Attachments on replies are not carried (that needs `files:write`); text is the
 case that matters and files can follow later.
 
+### Give other projects their own sender address
+
+Every YouTrack notification from every project goes out as
+`support@myrealprofit.com`, because that is the **global** From address. Mail
+is sent through the domain itself (`mailed-by: myrealprofit.com`), so each one
+is archived in the support mailbox — an SPB notification addressed to Nestor
+still lands there as a sent copy.
+
+Nothing is broken: the headers show `to: nestor@myrealprofit.com`, so nothing
+is being *delivered* to support. It is outgoing mail in All Mail, not clutter
+in the inbox. But support@ is a customer channel, and internal issue traffic
+for unrelated projects should not be flowing under its identity.
+
+Fix: set the global From address (**Administration → Notifications**) to
+something neutral like `MyRealProfit <noreply@myrealprofit.com>`, and keep
+`My Real Profit Support <support@myrealprofit.com>` on the CS project alone.
+
+One thing to check first: whether YouTrack sends through support@'s own
+mailbox credentials rather than JetBrains' servers. `mailed-by:
+myrealprofit.com` suggests it does, and in that case changing the From address
+alone will not stop the copies being saved — the sending mailbox has to change
+too.
+
+Note also that the From address must be a parseable
+`Name <address@domain>` pair. It was set to the bare text
+`My Real Profit Support`, which silently blocked every save on that settings
+page with "Cannot parse email address" — including unrelated edits, since the
+form validates every field.
+
 ### Others worth considering
 
 - **Slack trigger.** Every first message in a monitored channel currently
