@@ -58,10 +58,23 @@ const DEFAULT_NIGHT_HOURS = '20:00-08:00';
 const TICKETED_TTL_SECONDS = 60 * 60 * 24 * 30;
 const MAX_THREAD_MESSAGES = 200;
 
-/** channel+message -> ticket, so one message is never filed twice. */
-const kMessage = (channel, ts) => `slack:msg:${channel}:${ts}`;
-/** channel+thread -> ticket, so replies know which ticket to update. */
+/**
+ * channel+thread -> ticket id.
+ *
+ * ONE THREAD IS ONE TICKET. Keying this per message instead let a second
+ * :ticket: reaction elsewhere in the same thread open a second ticket for the
+ * same conversation — and replies afterwards could only ever land on one of
+ * them, so the other silently went stale.
+ */
 const kThread = (channel, ts) => `slack:thread:${channel}:${ts}`;
+
+/**
+ * Written while a ticket is being created, so two reactions landing together
+ * cannot both get past the check above. Short-lived: if the isolate dies
+ * mid-create, the thread must not be wedged forever.
+ */
+const CLAIM = 'creating';
+const CLAIM_TTL_SECONDS = 300;
 
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
@@ -468,19 +481,37 @@ async function reactionTrigger(event, env) {
 // --------------------------------------------------------------------------
 
 async function createTicket(env, trigger) {
-  // One message, one ticket — whichever mode fires. Without this, reacting to
-  // a message that already auto-filed under `all` would file it twice, and
-  // titles cannot be corrected after the fact.
-  const messageKey = kMessage(trigger.channel, trigger.ts);
+  const threadKey = kThread(trigger.channel, trigger.threadTs);
+
   if (env.DEDUPE) {
-    const existing = await env.DEDUPE.get(messageKey);
+    const existing = await env.DEDUPE.get(threadKey);
+    if (existing === CLAIM) {
+      console.log(`skip ${trigger.channel}/${trigger.ts} — this thread is mid-creation`);
+      return;
+    }
     if (existing) {
-      console.log(`skip — message already filed as ${existing}`);
+      console.log(`skip ${trigger.channel}/${trigger.ts} — thread already filed as ${existing}`);
       await confirm(env, trigger, existing, true);
       return;
     }
+    await env.DEDUPE.put(threadKey, CLAIM, { expirationTtl: CLAIM_TTL_SECONDS });
   }
 
+  try {
+    const ticketId = await fileTicket(env, trigger);
+    if (env.DEDUPE) {
+      await env.DEDUPE.put(threadKey, ticketId, { expirationTtl: TICKETED_TTL_SECONDS });
+    }
+    return ticketId;
+  } catch (e) {
+    // Release the claim, or one failed attempt would block this thread from
+    // ever being filed until the TTL expired.
+    await env.DEDUPE?.delete(threadKey);
+    throw e;
+  }
+}
+
+async function fileTicket(env, trigger) {
   const token = env.SLACK_BOT_TOKEN;
 
   // The whole thread, not just the message that tripped the trigger. Reacting
@@ -530,19 +561,11 @@ async function createTicket(env, trigger) {
   });
 
   const ticketId = issue.idReadable || issue.id;
-  if (env.DEDUPE) {
-    await env.DEDUPE.put(messageKey, ticketId, { expirationTtl: TICKETED_TTL_SECONDS });
-    // Keyed by thread as well as by message: under emoji mode the trigger can
-    // be a reply halfway down, so the message key alone would leave later
-    // replies unable to find the ticket they belong to.
-    await env.DEDUPE.put(kThread(trigger.channel, trigger.threadTs), ticketId, {
-      expirationTtl: TICKETED_TTL_SECONDS,
-    });
-  }
 
   // After the ticket exists, so a failing upload cannot cost us the ticket.
   await uploadFiles(env, ticketId, files);
   await confirm(env, trigger, ticketId, false);
+  return ticketId;
 }
 
 /**
@@ -677,7 +700,7 @@ async function confirm(env, trigger, ticketId, alreadyExisted) {
 
   const token = env.SLACK_BOT_TOKEN;
   const text = alreadyExisted
-    ? `ℹ️ This message is already filed as ${ticketId}.`
+    ? `ℹ️ This thread is already filed as ${ticketId} — reply here and it lands on that ticket.`
     : `✅ Ticket ${ticketId} created. Our team will respond shortly.`;
 
   if (mode === 'ephemeral') {

@@ -157,12 +157,18 @@ Without this a ticket was a snapshot of the thread at the moment it was filed:
 "actually it is also affecting Gonorth", sent two minutes later, never reached
 the agent working it.
 
-Replies are matched on `slack:thread:<channel>:<threadTs>`, written alongside
-the per-message key at creation. Both are needed — under `emoji` mode the
-triggering message can be a reply halfway down a thread, so a message key alone
-would leave later replies unable to find their ticket. Bot messages are
-excluded, which also stops an agent reply relayed into Slack from returning as
-a comment on the ticket it came from.
+**One thread is one ticket.** Everything is keyed on
+`slack:thread:<channel>:<threadTs>`. Keying it per message instead let a second
+`:ticket:` reaction elsewhere in the same thread open a second ticket for the
+same conversation — and replies afterwards could only ever land on one of them,
+so the other silently went stale. Reacting again in a filed thread now answers
+with the ticket it already has.
+
+A short-lived `creating` claim is written before the issue is created, so two
+reactions landing together cannot both get through, and it is deleted if
+creation fails — one failed attempt must not wedge a thread out of ever being
+filed. Bot messages are excluded throughout, which also stops an agent reply
+relayed into Slack from returning as a comment on the ticket it came from.
 
 ### When filing fails
 
@@ -545,6 +551,26 @@ the first production run is already permanent — this is the only chance to
 judge the change on real traffic before that. It imports the same builders the
 worker uses rather than copying them, so what it prints is what you would get.
 `--file threads.json` replays pasted threads when reaching Slack is awkward.
+
+### Two-way replies — agreed design, not yet built
+
+An agent works the ticket in YouTrack and then has to go back to Slack and
+answer by hand. Closing that loop is what turns ticket capture into a helpdesk.
+
+The agreed trigger is a **`Reply:` prefix on a YouTrack comment**. A comment
+beginning with that word is relayed into the Slack thread with the prefix
+stripped; every other comment stays internal.
+
+```
+in YouTrack:   Reply: Yes, that is correct.
+in Slack:      Yes, that is correct.          (posted by the bot)
+```
+
+Chosen because it is explicit and needs no UI: the default is private, and
+going public is a deliberate act by the person writing. Still to decide: how
+the customer sees who answered, whether attachments travel, and what the
+mechanism is for YouTrack to reach the worker at all (a workflow HTTP call, or
+the worker polling).
 
 ### Others worth considering
 
