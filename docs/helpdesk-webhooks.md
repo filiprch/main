@@ -552,6 +552,33 @@ judge the change on real traffic before that. It imports the same builders the
 worker uses rather than copying them, so what it prints is what you would get.
 `--file threads.json` replays pasted threads when reaching Slack is awkward.
 
+### Replying to an email customer — it was never a bug
+
+Replies from a mail ticket appeared to go to the support inbox instead of the
+customer, and this was carried as an open defect for days. It was not one.
+
+A helpdesk comment box has a single toggle: **"Internal, visible to Customer
+Support - Helpdesk Team"**. On, it is a private note nobody outside the team
+sees. Off, it is emailed to the customer. There is no separate "reply" button —
+that toggle *is* the public/private flag.
+
+Only users designated **agents** may turn it off. Being System Admin or Project
+Admin does not confer it; it is a separate designation on the project's People
+page (⋯ on the row → *Make an agent*), and YouTrack says so in the comment box
+when you lack it. Every "reply" written before that was an internal note that
+was never going to reach anyone.
+
+**Making someone an agent flips the default to public.** Before that, nothing
+they write can escape; afterwards, an internal note requires deliberately
+switching the toggle on. Tell anyone newly made an agent, on a project where
+the habit has been that comments are safe.
+
+Proven end to end on CS-233: a comment with the toggle off arrived at an
+external Gmail from "My Real Profit Support", carrying YouTrack's
+`##- Please enter your reply above this line -##` marker so the customer's
+answer threads back onto the same ticket. Agent seats are normally licensed
+separately — worth checking the plan before adding people.
+
 ### Two-way replies (Slack) — built
 
 An agent answers in YouTrack; the customer sees it in the Slack thread. A
