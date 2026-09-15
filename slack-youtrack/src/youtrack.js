@@ -73,6 +73,29 @@ export async function createYouTrackIssue(opts) {
   return res.json();
 }
 
+/**
+ * Set an enum custom field on an existing issue.
+ *
+ * Same SingleEnumIssueCustomField projection as creation — anything else hits
+ * the Java cast error noted at the top of this file.
+ */
+export async function setYouTrackEnumField({ baseUrl, token, issueId, field, value }) {
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}?fields=id`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ customFields: [enumField(field, value)] }),
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack set ${field} failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
 function enumField(name, valueName) {
   return {
     name,

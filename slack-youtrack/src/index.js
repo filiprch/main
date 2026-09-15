@@ -31,6 +31,7 @@ import {
   addYouTrackComment,
   attachToYouTrackIssue,
   createYouTrackIssue,
+  setYouTrackEnumField,
 } from './youtrack.js';
 import {
   buildComment,
@@ -76,6 +77,16 @@ const kThread = (channel, ts) => `slack:thread:${channel}:${ts}`;
 const CLAIM = 'creating';
 const CLAIM_TTL_SECONDS = 300;
 
+/** ticket id -> the Slack thread it came from, so a reply knows where to go. */
+const kTicket = (id) => `slack:ticket:${id}`;
+/** comment id -> already relayed, so a workflow retry cannot double-post. */
+const kRelayed = (id) => `slack:relayed:${id}`;
+
+/** Path YouTrack's workflow posts a new comment to. */
+const REPLY_PATH = '/youtrack/comment';
+/** Only a comment starting with this is shown to the customer. */
+const REPLY_PREFIX = 'Reply:';
+
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
  *
@@ -105,6 +116,21 @@ export default {
     }
 
     const rawBody = await request.text();
+
+    // --- YouTrack's workflow, on its own path -----------------------------
+    // Separated before the Slack checks below: this call carries a shared
+    // secret, not a Slack signature, and running it through Slack's
+    // verification would reject every one of them.
+    if (new URL(request.url).pathname === REPLY_PATH) {
+      if (!verifySharedSecret(request, env)) {
+        return new Response('Invalid secret', { status: 401 });
+      }
+      if (!isEnabled(env)) return new Response('disabled', { status: 200 });
+      ctx.waitUntil(
+        relayReply(rawBody, env).catch((e) => console.error('relayReply error:', e))
+      );
+      return new Response('', { status: 200 });
+    }
 
     // --- Slack signature verification -------------------------------------
     const verified = await verifySlackSignature(request, rawBody, env.SLACK_SIGNING_SECRET);
@@ -340,6 +366,107 @@ async function commentOnExistingTicket(env, event, eventId) {
 }
 
 /**
+ * Send an agent's answer from YouTrack back into the Slack thread.
+ *
+ * Only comments beginning "Reply:" travel; everything else stays internal.
+ * Private is the default and going public is a deliberate act by whoever
+ * writes the comment — the opposite arrangement fails badly the first time
+ * somebody forgets, and the thing it leaks is an internal note about a
+ * customer, in front of that customer.
+ */
+async function relayReply(rawBody, env) {
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    console.error('reply: body was not JSON');
+    return;
+  }
+
+  const { issueId, commentId, author, text } = payload;
+  if (!issueId || !text) {
+    console.error('reply: needs issueId and text');
+    return;
+  }
+
+  const body = String(text).trim();
+  if (!body.toLowerCase().startsWith(REPLY_PREFIX.toLowerCase())) {
+    console.log(`reply: ${issueId} comment is internal — not sent`);
+    return;
+  }
+  const message = body.slice(REPLY_PREFIX.length).trim();
+  if (!message) {
+    console.log(`reply: ${issueId} has "${REPLY_PREFIX}" and nothing after it`);
+    return;
+  }
+
+  if (!env.DEDUPE) {
+    console.error('reply: no KV bound, cannot find the thread');
+    return;
+  }
+
+  // A relayed message cannot be unsent, so the guard against a workflow retry
+  // posting it twice comes before the posting, not after.
+  if (commentId) {
+    if (await env.DEDUPE.get(kRelayed(commentId))) {
+      console.log(`reply: comment ${commentId} was already sent`);
+      return;
+    }
+    await env.DEDUPE.put(kRelayed(commentId), '1', { expirationTtl: TICKETED_TTL_SECONDS });
+  }
+
+  const target = await env.DEDUPE.get(kTicket(issueId));
+  if (!target) {
+    console.error(`reply: no Slack thread recorded for ${issueId}`);
+    return;
+  }
+  const { channel, threadTs } = JSON.parse(target);
+
+  const who = String(author || '').trim();
+  const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
+    channel,
+    thread_ts: threadTs,
+    text: who ? `*${who}:* ${message}` : message,
+  });
+  if (!posted.ok) {
+    console.error(`reply: could not post ${issueId} to Slack: ${posted.error}`);
+    return;
+  }
+  console.log(`reply: ${issueId} -> ${channel}/${threadTs}`);
+
+  // The board should show who is still waiting. Failing to flip the field is
+  // not worth undoing a message the customer has already seen.
+  try {
+    await setYouTrackEnumField({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      issueId,
+      field: 'Replied',
+      value: 'Replied',
+    });
+  } catch (e) {
+    console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
+  }
+}
+
+/**
+ * Is this really our YouTrack?
+ *
+ * The endpoint takes a plain shared secret rather than a signature: YouTrack's
+ * workflow HTTP client cannot compute an HMAC over the body. Compared in
+ * constant time all the same, so the comparison itself leaks nothing.
+ */
+function verifySharedSecret(request, env) {
+  const expected = env.YOUTRACK_WEBHOOK_SECRET;
+  const given = request.headers.get('x-helpdesk-secret') || '';
+  if (!expected) {
+    console.error('reply: YOUTRACK_WEBHOOK_SECRET is not set — refusing every call');
+    return false;
+  }
+  return timingSafeEqual(expected, given);
+}
+
+/**
  * Say out loud that a ticket could not be filed.
  *
  * Goes to SLACK_ALERT_CHANNEL when one is set, so the warning reaches the
@@ -501,6 +628,12 @@ async function createTicket(env, trigger) {
     const ticketId = await fileTicket(env, trigger);
     if (env.DEDUPE) {
       await env.DEDUPE.put(threadKey, ticketId, { expirationTtl: TICKETED_TTL_SECONDS });
+      // The reverse lookup, for an agent's reply travelling the other way.
+      await env.DEDUPE.put(
+        kTicket(ticketId),
+        JSON.stringify({ channel: trigger.channel, threadTs: trigger.threadTs }),
+        { expirationTtl: TICKETED_TTL_SECONDS }
+      );
     }
     return ticketId;
   } catch (e) {

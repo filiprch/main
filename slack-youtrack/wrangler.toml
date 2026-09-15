@@ -86,6 +86,12 @@ SLACK_ALERT_CHANNEL = ""
 #   off        say nothing
 SLACK_CONFIRM = "thread"
 
+# Two-way replies need a shared secret, set as a SECRET not a var:
+#   npx wrangler secret put YOUTRACK_WEBHOOK_SECRET
+# The same value goes into the YouTrack workflow in
+# youtrack-workflows/slack-reply-relay/. With it unset, /youtrack/comment
+# refuses every call rather than waving them through.
+
 # ===========================================================================
 # AI-WRITTEN TITLES
 #

@@ -552,25 +552,52 @@ judge the change on real traffic before that. It imports the same builders the
 worker uses rather than copying them, so what it prints is what you would get.
 `--file threads.json` replays pasted threads when reaching Slack is awkward.
 
-### Two-way replies — agreed design, not yet built
+### Two-way replies (Slack) — built
 
-An agent works the ticket in YouTrack and then has to go back to Slack and
-answer by hand. Closing that loop is what turns ticket capture into a helpdesk.
-
-The agreed trigger is a **`Reply:` prefix on a YouTrack comment**. A comment
-beginning with that word is relayed into the Slack thread with the prefix
-stripped; every other comment stays internal.
+An agent answers in YouTrack; the customer sees it in the Slack thread. A
+comment beginning **`Reply:`** is relayed with the prefix stripped; every other
+comment stays internal.
 
 ```
 in YouTrack:   Reply: Yes, that is correct.
-in Slack:      Yes, that is correct.          (posted by the bot)
+in Slack:      Lisa: Yes, that is correct.        (posted by the bot)
 ```
 
-Chosen because it is explicit and needs no UI: the default is private, and
-going public is a deliberate act by the person writing. Still to decide: how
-the customer sees who answered, whether attachments travel, and what the
-mechanism is for YouTrack to reach the worker at all (a workflow HTTP call, or
-the worker polling).
+**Private is the default.** Going public is a deliberate act by whoever writes
+the comment. The opposite arrangement — public unless marked private — fails
+badly the first time somebody forgets, and what it leaks is an internal note
+about a customer, in front of that customer.
+
+**How YouTrack reaches the worker.** A workflow rule
+(`youtrack-workflows/slack-reply-relay/`) fires on each added comment and POSTs
+to `/youtrack/comment`. Chosen over the worker polling YouTrack because a
+customer waiting on an answer should not wait for a schedule — and because the
+cron in the Intercom worker has never once fired, so building a
+customer-facing path on that mechanism would have been a poor bet.
+
+That path is routed **before** the Slack signature check: it carries a shared
+secret in `X-Helpdesk-Secret`, compared in constant time against the
+`YOUTRACK_WEBHOOK_SECRET` worker secret, and running it through Slack's
+verification would reject every call. A plain secret rather than a signature
+because YouTrack's workflow HTTP client cannot compute an HMAC over the body.
+With the secret unset, every call is refused rather than waved through.
+
+`slack:ticket:<id>` maps a ticket back to its thread, written at creation
+alongside the forward key. **Tickets created before this shipped have no such
+key**, so replies on them log "no Slack thread recorded" and go nowhere; only
+tickets filed from now on can be answered this way.
+
+A relayed message cannot be unsent, so `slack:relayed:<commentId>` is claimed
+*before* posting — a workflow retry must not deliver the same answer twice.
+After a successful send the ticket's `Replied` field flips to `Replied`, so the
+board shows who is still waiting; failing to flip it is logged but never undoes
+a message the customer has already seen. If the relay call fails, the workflow
+writes that back into the ticket as a comment — an agent who believes they have
+answered a customer and has not is worse off than one who can see it did not
+go.
+
+Attachments on replies are not carried (that needs `files:write`); text is the
+case that matters and files can follow later.
 
 ### Others worth considering
 
