@@ -444,7 +444,34 @@ async function uploadFiles(env, issueId, files) {
       console.log(`attached ${name} to ${issueId}`);
     } catch (e) {
       console.error(`attach failed for ${name} (${url}): ${e.message}`);
+      if (/HTTP 403/.test(e.message)) await logTokenScopes(env.SLACK_BOT_TOKEN);
     }
+  }
+}
+
+/**
+ * Print the scopes the deployed token actually carries.
+ *
+ * A 403 on a file download means the token lacks files:read — and a token
+ * issued before a scope was added never gains it, however many times the app
+ * is reinstalled. This answers "is the secret in Cloudflare the current
+ * token?" directly, instead of by inference.
+ */
+async function logTokenScopes(token) {
+  try {
+    const res = await fetch('https://slack.com/api/auth.test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const scopes = res.headers.get('x-oauth-scopes') || '(none reported)';
+    console.log(`token scopes: ${scopes}`);
+    console.log(
+      /files:read/.test(scopes)
+        ? 'files:read IS present — the 403 is not a missing scope'
+        : 'files:read is MISSING — re-run: npx wrangler secret put SLACK_BOT_TOKEN'
+    );
+  } catch (e) {
+    console.error(`could not read token scopes: ${e.message}`);
   }
 }
 
