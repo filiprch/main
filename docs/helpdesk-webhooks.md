@@ -149,6 +149,33 @@ Requires the `files:read` **bot** scope.
 > re-run `wrangler secret put SLACK_BOT_TOKEN`: a token carries the scopes it
 > was issued with. (This cost us CS-224 through CS-226.)
 
+### After the ticket exists
+
+A reply in a thread that already has a ticket is added to that ticket as a
+**comment**, with any files attached, rather than opening a second ticket.
+Without this a ticket was a snapshot of the thread at the moment it was filed:
+"actually it is also affecting Gonorth", sent two minutes later, never reached
+the agent working it.
+
+Replies are matched on `slack:thread:<channel>:<threadTs>`, written alongside
+the per-message key at creation. Both are needed — under `emoji` mode the
+triggering message can be a reply halfway down a thread, so a message key alone
+would leave later replies unable to find their ticket. Bot messages are
+excluded, which also stops an agent reply relayed into Slack from returning as
+a comment on the ticket it came from.
+
+### When filing fails
+
+Until now a failed creation was logged and nothing else: the event was
+acknowledged, and the customer's request simply never became a ticket. For a
+helpdesk that is the worst failure available, precisely because it is
+invisible.
+
+The worker now posts a warning to `SLACK_ALERT_CHANNEL` — or into the thread
+when none is set — naming the channel, linking the message, and quoting the
+error. It ignores `SLACK_CONFIRM`, which governs routine confirmations; a
+request that silently failed to become a ticket is not routine.
+
 ## 4. How a ticket is built (field mapping)
 
 Every ticket is created in project **CS** with these fields. The existing

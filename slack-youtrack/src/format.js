@@ -149,3 +149,17 @@ export function buildTitle({ source, problem, sender, account }) {
   if (account) parts.push(clip(account, 30));
   return `${source}: ${parts.join(' - ')}`;
 }
+
+/**
+ * One follow-up message, as a YouTrack comment.
+ *
+ * Same shape as a block in the description above, so a ticket reads as one
+ * continuous conversation rather than a description in one voice and comments
+ * in another.
+ */
+export function buildComment({ speaker, ts, text, files, names }) {
+  const lines = [`**${speaker}** in Slack · ${formatUtc(ts)} UTC`, ''];
+  for (const line of (renderSlack(text, names) || '_(no text)_').split('\n')) lines.push(`> ${line}`);
+  for (const f of files || []) lines.push(`> 📎 ${fileName(f)}`);
+  return lines.join('\n');
+}

@@ -82,6 +82,29 @@ function enumField(name, valueName) {
 }
 
 /**
+ * Add a comment to an issue.
+ *
+ * Used for what the customer says AFTER the ticket exists. Comments preserve
+ * chronology, whereas rewriting the description quietly edits history.
+ */
+export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments?fields=id`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack comment failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/**
  * Copy a file into YouTrack as a real attachment.
  *
  * The file is fetched from wherever it lives and re-uploaded, rather than

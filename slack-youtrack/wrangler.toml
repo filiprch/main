@@ -70,6 +70,15 @@ SLACK_TRIGGERS = "all"
 SLACK_TRIGGER_KEYWORD = "!ticket"
 # ---------------------------------------------------------------------------
 
+# Where to shout when a ticket CANNOT be filed — YouTrack down, token expired,
+# project rejecting the issue. Set this to an internal channel id so the
+# warning reaches the team rather than the customer; leave it empty and the
+# warning goes into the thread itself, on the grounds that somebody seeing it
+# beats nobody seeing it. Invite the bot to the channel you name here.
+# This ignores SLACK_CONFIRM: a request that silently failed to become a
+# ticket is not a routine confirmation.
+SLACK_ALERT_CHANNEL = ""
+
 # What the bot says in Slack once a ticket exists.
 #   thread     public reply in the thread (customers see it)
 #   ephemeral  visible only to whoever triggered it — test in a live channel

@@ -27,8 +27,13 @@
  *   DEDUPE                 (KV, opt) namespace to dedupe events and messages
  */
 
-import { createYouTrackIssue, attachToYouTrackIssue } from './youtrack.js';
 import {
+  addYouTrackComment,
+  attachToYouTrackIssue,
+  createYouTrackIssue,
+} from './youtrack.js';
+import {
+  buildComment,
   buildDescription,
   buildTitle,
   downloadable,
@@ -52,6 +57,11 @@ const DEFAULT_TZ = '+02:00';
 const DEFAULT_NIGHT_HOURS = '20:00-08:00';
 const TICKETED_TTL_SECONDS = 60 * 60 * 24 * 30;
 const MAX_THREAD_MESSAGES = 200;
+
+/** channel+message -> ticket, so one message is never filed twice. */
+const kMessage = (channel, ts) => `slack:msg:${channel}:${ts}`;
+/** channel+thread -> ticket, so replies know which ticket to update. */
+const kThread = (channel, ts) => `slack:thread:${channel}:${ts}`;
 
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
@@ -233,6 +243,11 @@ function channelAllowed(channelId, env) {
 async function handleEvent(payload, env) {
   const event = payload.event || {};
 
+  // A reply in a thread that already has a ticket updates that ticket. Checked
+  // first, so "!ticket" written halfway down a filed thread adds a comment
+  // rather than opening a second ticket for the same conversation.
+  if (await commentOnExistingTicket(env, event, payload.event_id)) return;
+
   // Work out whether this is a trigger BEFORE touching KV. Dedupe writes are
   // capped at 1,000/day on the free tier, so only events that are about to
   // become tickets are allowed to spend one.
@@ -247,16 +262,106 @@ async function handleEvent(payload, env) {
   console.log(
     `trigger: ${trigger.why} (${trigger.channel}/${trigger.ts}) mode=${settings(env).name}`
   );
-  await createTicket(env, trigger);
+
+  try {
+    await createTicket(env, trigger);
+  } catch (e) {
+    // Until now this threw into the void: the event was acknowledged, the log
+    // carried a stack nobody reads, and the customer's request simply did not
+    // become a ticket. For a helpdesk that is the worst failure there is,
+    // precisely because it is invisible.
+    console.error(`create failed for ${trigger.channel}/${trigger.ts}: ${e.stack || e.message}`);
+    await reportFailure(env, trigger, e);
+  }
+}
+
+/**
+ * A reply to an already-filed thread, added to its ticket as a comment.
+ *
+ * Without this a ticket is a snapshot of the thread at the moment it was
+ * filed: "actually it is also affecting Gonorth", sent two minutes later,
+ * never reaches the agent working it.
+ *
+ * Returns true when it has handled the event. Messages from bots are excluded,
+ * which also keeps an agent reply relayed into Slack from coming straight back
+ * as a comment on the ticket it came from.
+ */
+async function commentOnExistingTicket(env, event, eventId) {
+  if (event.type !== 'message' || event.bot_id) return false;
+  if (event.subtype && event.subtype !== 'file_share') return false;
+  if (!event.thread_ts || event.thread_ts === event.ts) return false; // not a reply
+  if (!channelAllowed(event.channel, env)) return false;
+  if (!env.DEDUPE) return false;
+
+  const ticketId = await env.DEDUPE.get(kThread(event.channel, event.thread_ts));
+  if (!ticketId) return false;
+
+  // Claimed before the work, so a Slack redelivery cannot double-comment.
+  if (await alreadyProcessed(env, eventId)) return true;
+
+  const token = env.SLACK_BOT_TOKEN;
+  const names = await resolveNames(token, [event]);
+  const files = (event.files || []).filter(downloadable);
+
+  try {
+    await addYouTrackComment({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      issueId: ticketId,
+      text: buildComment({
+        speaker: names.get(event.user) || event.username || 'Unknown',
+        ts: event.ts,
+        text: event.text,
+        files,
+        names,
+      }),
+    });
+    console.log(`comment: ${event.channel}/${event.ts} -> ${ticketId}`);
+  } catch (e) {
+    console.error(`comment failed for ${ticketId}: ${e.message}`);
+    return true;
+  }
+
+  await uploadFiles(env, ticketId, files);
+  return true;
+}
+
+/**
+ * Say out loud that a ticket could not be filed.
+ *
+ * Goes to SLACK_ALERT_CHANNEL when one is set, so the warning reaches the
+ * team rather than the customer; otherwise into the thread, on the grounds
+ * that somebody seeing it beats nobody seeing it. Deliberately ignores
+ * SLACK_CONFIRM: that setting governs routine confirmations, and a request
+ * that silently failed to become a ticket is not routine.
+ */
+async function reportFailure(env, trigger, error) {
+  const reason = String(error?.message || error).slice(0, 300);
+  const alertChannel = (env.SLACK_ALERT_CHANNEL || '').trim();
+  const link = await getPermalink(env.SLACK_BOT_TOKEN, trigger.channel, trigger.ts).catch(() => '');
+
+  const body = alertChannel
+    ? `⚠️ Could not file a ticket from <#${trigger.channel}>${link ? ` (<${link}|the message>)` : ''} — please raise it manually.\n\n\`${reason}\``
+    : `⚠️ Could not file this in YouTrack — please raise it manually.\n\n\`${reason}\``;
+
+  await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
+    channel: alertChannel || trigger.channel,
+    ...(alertChannel ? {} : { thread_ts: trigger.threadTs }),
+    text: body,
+  }).catch((e) => console.error(`could not report the failure to Slack: ${e.message}`));
 }
 
 /**
  * A plain channel message. Returns a trigger or null.
  */
 async function messageTrigger(event, env) {
-  // Ignore message subtypes (edits, deletes, joins, bot_message, etc.)
-  // and anything posted by a bot, including ourselves, to avoid loops.
-  if (event.subtype || event.bot_id) return null;
+  // Ignore message subtypes (edits, deletes, joins, bot_message, etc.) and
+  // anything posted by a bot, including ourselves, to avoid loops. file_share
+  // is the exception: a screenshot posted with a caption carries that subtype,
+  // and refusing it meant night mode quietly ignored exactly the messages
+  // most worth filing.
+  if (event.bot_id) return null;
+  if (event.subtype && event.subtype !== 'file_share') return null;
   if (!channelAllowed(event.channel, env)) return null;
 
   const text = (event.text || '').trim();
@@ -274,6 +379,7 @@ async function messageTrigger(event, env) {
     problem,
     why,
   });
+
 
   // `all` only ever fires on a thread parent: a reply is a continuation of a
   // conversation that already has (or deliberately has not) a ticket.
@@ -365,7 +471,7 @@ async function createTicket(env, trigger) {
   // One message, one ticket — whichever mode fires. Without this, reacting to
   // a message that already auto-filed under `all` would file it twice, and
   // titles cannot be corrected after the fact.
-  const messageKey = `slack:msg:${trigger.channel}:${trigger.ts}`;
+  const messageKey = kMessage(trigger.channel, trigger.ts);
   if (env.DEDUPE) {
     const existing = await env.DEDUPE.get(messageKey);
     if (existing) {
@@ -426,6 +532,12 @@ async function createTicket(env, trigger) {
   const ticketId = issue.idReadable || issue.id;
   if (env.DEDUPE) {
     await env.DEDUPE.put(messageKey, ticketId, { expirationTtl: TICKETED_TTL_SECONDS });
+    // Keyed by thread as well as by message: under emoji mode the trigger can
+    // be a reply halfway down, so the message key alone would leave later
+    // replies unable to find the ticket they belong to.
+    await env.DEDUPE.put(kThread(trigger.channel, trigger.threadTs), ticketId, {
+      expirationTtl: TICKETED_TTL_SECONDS,
+    });
   }
 
   // After the ticket exists, so a failing upload cannot cost us the ticket.
