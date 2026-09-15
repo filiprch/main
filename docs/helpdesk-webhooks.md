@@ -579,6 +579,36 @@ external Gmail from "My Real Profit Support", carrying YouTrack's
 answer threads back onto the same ticket. Agent seats are normally licensed
 separately — worth checking the plan before adding people.
 
+### What the email customer actually receives
+
+The only part of this system a customer ever looks at, so it is worth the
+attention the internals get.
+
+`commentForReporter` is the template that carries an agent's public reply —
+confirmed by reading it, not inferred. That also settles a worry the subject
+line raised: customers are **not** on `issueDigest`, so they are not pinged
+about internal field changes.
+
+Three things were stripped from it:
+
+| Was | Why it went |
+|---|---|
+| `[Ticket Updated]` in the subject | Reads as a system notification, not a person answering. Removing it also makes the subject match what the customer originally sent, so it threads in their mail client. |
+| The grey *"Updated by … on …"* box | The agent signature already says who wrote it. |
+| The JetBrains footer | Edited in `helpdesk_footer.ftl` itself rather than removed from each template — one edit covers the confirmation, reminder and auto-close mails too, and there is no template left to forget. |
+
+`##- Please enter your reply above this line -##` is load-bearing: it is how a
+customer's reply threads back onto the ticket. Check it survives any template
+edit.
+
+**The `MAIL:` summary prefix was dropped for Gmail tickets** (the rule in
+`auto-tag-and-route` is deleted, sender name included). Gmail is the one
+channel where the ticket title lands in a customer's inbox, and
+`MAIL: Testowanie helpdeska - Ryszard Chmura` shows them our routing prefix and
+their own name appended to their own subject. The board loses nothing: the
+`Channel` field and the reporter column already carry both. Slack and Intercom
+keep their prefixes — those titles never leave YouTrack.
+
 ### Two-way replies (Slack) — built
 
 An agent answers in YouTrack; the customer sees it in the Slack thread. A
