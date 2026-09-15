@@ -121,6 +121,25 @@ auto-filed replies with the existing ticket number instead.
 
 ---
 
+### Slack ticket contents
+
+The description carries the **whole thread**, not the one message that tripped
+the trigger — reacting to the fifth message used to throw away the four above
+it, which is where the customer had explained the problem. Messages are quoted
+verbatim and attributed, with an arrow marking the one that triggered filing,
+so an agent is acting on what the customer actually wrote rather than a
+paraphrase.
+
+Slack's wire format is rendered on the way in: `<@U03ABC>` becomes the person's
+name, `<url|label>` becomes a markdown link, and Slack's own `&amp;` escapes
+are undone. Agents without a Slack seat were otherwise reading raw ids.
+
+Files attached anywhere in the thread are **re-uploaded into YouTrack** rather
+than linked — `url_private` needs the bot token and is useless to an agent
+without a Slack seat. Uploads happen after the issue exists and each file is
+attempted independently, so a failed upload can never cost us the ticket.
+Requires the `files:read` bot scope.
+
 ## 4. How a ticket is built (field mapping)
 
 Every ticket is created in project **CS** with these fields. The existing

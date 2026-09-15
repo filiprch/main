@@ -27,7 +27,7 @@
  *   DEDUPE                 (KV, opt) namespace to dedupe events and messages
  */
 
-import { createYouTrackIssue } from './youtrack.js';
+import { createYouTrackIssue, attachToYouTrackIssue } from './youtrack.js';
 
 const DEFAULT_TRIGGERS = 'all';
 const DEFAULT_EMOJI = 'ticket';
@@ -35,6 +35,7 @@ const DEFAULT_KEYWORD = '!ticket';
 const DEFAULT_TZ = '+02:00';
 const DEFAULT_NIGHT_HOURS = '20:00-08:00';
 const TICKETED_TTL_SECONDS = 60 * 60 * 24 * 30;
+const MAX_THREAD_MESSAGES = 200;
 
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
@@ -358,20 +359,22 @@ async function createTicket(env, trigger) {
     }
   }
 
-  const [user, channelName, permalink] = await Promise.all([
-    getUser(env.SLACK_BOT_TOKEN, trigger.userId),
-    getChannelName(env.SLACK_BOT_TOKEN, trigger.channel),
-    getPermalink(env.SLACK_BOT_TOKEN, trigger.channel, trigger.ts),
+  const token = env.SLACK_BOT_TOKEN;
+
+  // The whole thread, not just the message that tripped the trigger. Reacting
+  // to the fifth message used to throw away the four above it — which is where
+  // the customer actually explained the problem.
+  const thread = await fetchThread(token, trigger.channel, trigger.threadTs);
+  const messages = thread.length ? thread : [{ ts: trigger.ts, user: trigger.userId, text: trigger.text }];
+
+  const names = await resolveNames(token, messages);
+  const [reporter, channelName, permalink] = await Promise.all([
+    getUser(token, trigger.userId),
+    getChannelName(token, trigger.channel),
+    getPermalink(token, trigger.channel, trigger.ts),
   ]);
 
-  const description = buildDescription({
-    sender: user.name,
-    email: user.email,
-    channelName,
-    permalink,
-    ts: trigger.ts,
-    text: trigger.text,
-  });
+  const files = messages.flatMap((m) => m.files || []).filter((f) => f && f.url_private);
 
   const issue = await createYouTrackIssue({
     baseUrl: env.YOUTRACK_BASE_URL,
@@ -379,27 +382,66 @@ async function createTicket(env, trigger) {
     projectId: env.YOUTRACK_PROJECT_ID || 'CS',
     summary: buildTitle({
       source: 'SLACK',
-      problem: trigger.problem || trigger.text,
-      sender: user.name,
+      problem: renderSlack(trigger.problem || trigger.text, names),
+      sender: reporter.name,
       // The channel IS the client here — #gigabrain, #mrp-amiz — so it is the
       // most useful "account" we have, and it costs nothing to read.
       account: channelName,
     }),
-    description,
+    description: buildDescription({
+      sender: reporter.name,
+      email: reporter.email,
+      channelName,
+      permalink,
+      why: trigger.why,
+      messages,
+      names,
+      files,
+      triggerTs: trigger.ts,
+    }),
     channel: 'Slack',
     type: 'Task',
     replied: 'Not Replied',
     // Requires the users:read.email bot scope. Left empty for guests and
     // Slack Connect users who expose no address; the auto-tag-and-route
     // workflow then falls back to the reporter.
-    customerEmail: user.email || undefined,
+    customerEmail: reporter.email || undefined,
   });
 
   const ticketId = issue.idReadable || issue.id;
   if (env.DEDUPE) {
     await env.DEDUPE.put(messageKey, ticketId, { expirationTtl: TICKETED_TTL_SECONDS });
   }
+
+  // After the ticket exists, so a failing upload cannot cost us the ticket.
+  await uploadFiles(env, ticketId, files);
   await confirm(env, trigger, ticketId, false);
+}
+
+/**
+ * Copy Slack files into YouTrack as real attachments.
+ *
+ * url_private needs the bot token, and the link is useless to an agent without
+ * a Slack seat — so the bytes are re-uploaded rather than linked. Each file is
+ * attempted independently: one oversized video should not cost us the
+ * screenshot that explains the problem.
+ */
+async function uploadFiles(env, issueId, files) {
+  for (const file of files) {
+    try {
+      await attachToYouTrackIssue({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId,
+        name: file.name || file.title || 'attachment',
+        url: file.url_private,
+        authHeader: `Bearer ${env.SLACK_BOT_TOKEN}`,
+      });
+      console.log(`attached ${file.name} to ${issueId}`);
+    } catch (e) {
+      console.error(`attach failed for ${file.name}: ${e.message}`);
+    }
+  }
 }
 
 /**
@@ -476,6 +518,37 @@ async function getBotUserId(env) {
  * inside it, so it reaches threaded messages — conversations.history does not.
  * A standalone message comes back as a one-item thread.
  */
+async function fetchThread(token, channel, threadTs) {
+  const data = await slackGet(token, 'conversations.replies', {
+    channel,
+    ts: threadTs,
+    limit: MAX_THREAD_MESSAGES,
+  });
+  return (data?.messages || []).filter((m) => !m.subtype || m.subtype === 'file_share');
+}
+
+/**
+ * Display names for everyone in the thread, plus anyone @-mentioned in it.
+ *
+ * Resolved once per ticket and passed down, so a ten-message thread costs one
+ * users.info call per distinct person rather than one per mention.
+ */
+async function resolveNames(token, messages) {
+  const ids = new Set();
+  for (const m of messages) {
+    if (m.user) ids.add(m.user);
+    for (const [, id] of String(m.text || '').matchAll(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g)) ids.add(id);
+  }
+  const names = new Map();
+  await Promise.all(
+    [...ids].map(async (id) => {
+      const user = await getUser(token, id);
+      names.set(id, user.name);
+    })
+  );
+  return names;
+}
+
 async function fetchMessage(token, channel, ts) {
   const data = await slackGet(token, 'conversations.replies', { channel, ts, limit: 1 });
   const messages = data?.messages || [];
@@ -533,14 +606,68 @@ async function slackPost(token, method, body) {
 // Formatting
 // --------------------------------------------------------------------------
 
-function buildDescription({ sender, email, channelName, permalink, ts, text }) {
+/**
+ * Turn Slack's wire format into something readable in YouTrack.
+ *
+ * Agents without a Slack seat were reading raw <@U03ABC> ids and link markup.
+ * The entity escapes are Slack's own and must be undone last, so a message
+ * containing a literal "&lt;" does not turn into markup.
+ */
+function renderSlack(text, names) {
+  return String(text || '')
+    .replace(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g, (_, id) => `@${names?.get(id) || id}`)
+    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1')
+    .replace(/<!(here|channel|everyone)(?:\|[^>]*)?>/g, '@$1')
+    .replace(/<((?:https?:\/\/|mailto:)[^|>]+)\|([^>]+)>/g, '[$2]($1)')
+    .replace(/<(https?:\/\/[^>]+)>/g, '$1')
+    .replace(/<mailto:([^>]+)>/g, '$1')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
+/**
+ * A fixed section order, so every ticket scans the same way.
+ *
+ * The conversation is quoted verbatim and attributed — an agent acting on this
+ * ticket is acting on what the customer actually wrote, not on a paraphrase.
+ */
+function buildDescription({
+  sender,
+  email,
+  channelName,
+  permalink,
+  why,
+  messages,
+  names,
+  files,
+  triggerTs,
+}) {
+  const who = email ? `${sender} <${email}>` : sender;
   const lines = [
-    '**Source:** Slack',
-    `**Sender:** ${sender}${email ? ` <${email}>` : ''} (${channelName})`,
-    `**Received:** ${formatUtc(ts)} UTC`,
+    `**Customer:** ${who} · ${channelName}`,
+    `**Raised:** ${formatUtc(messages[0]?.ts || triggerTs)} UTC · ${why}`,
   ];
-  if (permalink) lines.push(`**Thread:** ${permalink}`);
-  lines.push('', '**Full message:**', '', text);
+  if (permalink) lines.push(`**Slack:** [open the thread](${permalink})`);
+
+  lines.push('', `### Conversation (${messages.length} message${messages.length === 1 ? '' : 's'})`, '');
+  for (const m of messages) {
+    const speaker = names?.get(m.user) || m.username || 'Unknown';
+    const body = renderSlack(m.text, names) || '_(no text)_';
+    const marker = m.ts === triggerTs && messages.length > 1 ? ' ←' : '';
+    lines.push(`**${formatUtc(m.ts)} · ${speaker}**${marker}`);
+    for (const line of body.split('\n')) lines.push(`> ${line}`);
+    for (const f of m.files || []) lines.push(`> 📎 ${f.name || f.title || 'attachment'}`);
+    lines.push('');
+  }
+
+  if (files.length) {
+    lines.push('### Attachments', '');
+    for (const f of files) lines.push(`- ${f.name || f.title || 'attachment'}`);
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 

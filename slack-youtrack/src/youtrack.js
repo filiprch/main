@@ -80,3 +80,34 @@ function enumField(name, valueName) {
     value: { name: valueName },
   };
 }
+
+/**
+ * Copy a file into YouTrack as a real attachment.
+ *
+ * The file is fetched from wherever it lives and re-uploaded, rather than
+ * linked, so it survives the source URL expiring and is readable by agents who
+ * have no seat on the system it came from.
+ *
+ * Content-Type is deliberately NOT set — FormData must choose its own
+ * multipart boundary, and setting the header by hand breaks the upload.
+ */
+export async function attachToYouTrackIssue({ baseUrl, token, issueId, name, url, authHeader }) {
+  const src = await fetch(url, authHeader ? { headers: { Authorization: authHeader } } : {});
+  if (!src.ok) {
+    throw new Error(`could not download ${name} (${src.status})`);
+  }
+
+  const form = new FormData();
+  form.append('file', await src.blob(), name || 'attachment');
+
+  const dest = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/attachments?fields=id,name`;
+  const res = await fetch(dest, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack attach failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
