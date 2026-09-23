@@ -110,7 +110,7 @@ function enumField(name, valueName) {
  * Used for what the customer says AFTER the ticket exists. Comments preserve
  * chronology, whereas rewriting the description quietly edits history.
  */
-export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
+export async function addYouTrackComment({ baseUrl, token, issueId, text, authorId }) {
   const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments?fields=id`;
   const res = await fetch(url, {
     method: 'POST',
@@ -119,7 +119,7 @@ export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(authorId ? { text, author: { id: authorId } } : { text }),
   });
   if (!res.ok) {
     throw new Error(`YouTrack comment failed (${res.status}): ${await res.text()}`);
@@ -178,6 +178,32 @@ export function isPublicComment(comment) {
   if (type === 'UnlimitedVisibility') return true;
   if (!type && !groups.length && !users.length) return true;
   return false;
+}
+
+/**
+ * Find a YouTrack user by email address.
+ *
+ * The search endpoint matches on name and login as well as email, so the
+ * result is filtered down to an exact address match. A loose match here would
+ * attribute one person's words to another, which is worse than not attributing
+ * them at all.
+ */
+export async function findYouTrackUserByEmail({ baseUrl, token, email }) {
+  const wanted = String(email || '').trim().toLowerCase();
+  if (!wanted) return null;
+
+  const url =
+    `${baseUrl.replace(/\/$/, '')}/api/users` +
+    `?fields=id,login,email&query=${encodeURIComponent(wanted)}&$top=20`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack user search failed (${res.status}): ${await res.text()}`);
+  }
+  const users = await res.json();
+  if (!Array.isArray(users)) return null;
+  return users.find((u) => String(u?.email || '').toLowerCase() === wanted) || null;
 }
 
 /**

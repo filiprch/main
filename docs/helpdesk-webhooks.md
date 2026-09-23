@@ -332,6 +332,34 @@ Two consequences worth knowing:
   Admin; there is no Developer role in this instance, whatever the JetBrains
   docs describe.
 
+#### Slack comments are credited to whoever wrote them
+
+A message carried out of Slack is somebody's words. Crediting them to the
+integration account is wrong about who said what, which matters when a ticket
+is read back months later to work out what was agreed.
+
+The worker looks the Slack author's email up in YouTrack and passes
+`author: { id }` when creating the comment, so Lucjan's message reads
+"Lucjan Rosłanowski commented". The lookup is cached both ways —
+`yt:user:<email>` — because most commenters repeat and because the negative
+answer is the common one: customers in a shared channel have no account and
+never will. The negative has a shorter TTL so somebody who joins next week is
+picked up without anyone clearing a cache.
+
+**Everything falls back to posting as the integration**, which is exactly
+today's behaviour: no email on the Slack profile, no matching account, a
+near-miss address, a failed lookup, or YouTrack refusing the author field.
+JetBrains document the field but also say it is unsupported for reporter-type
+accounts, so a refusal is expected rather than exceptional — and a comment
+under the wrong name still beats a comment lost.
+
+The email match is **exact**. YouTrack's user search also matches on name and
+login, so an unfiltered result would eventually attribute one person's words to
+another — worse than not attributing them at all.
+
+Intercom deliberately does not do this: those conversations are with customers,
+who have no YouTrack account, and guessing at one would be wrong every time.
+
 Comments created over REST arrive **internal** (locked to the helpdesk team)
 regardless of the account's agent status, which is right: a customer's own
 message relayed from Slack is context for an agent, not something to send back

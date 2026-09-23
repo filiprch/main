@@ -31,6 +31,7 @@ import {
   addYouTrackComment,
   attachToYouTrackIssue,
   createYouTrackIssue,
+  findYouTrackUserByEmail,
   listYouTrackComments,
   isPublicComment,
   setYouTrackEnumField,
@@ -85,6 +86,17 @@ const CLAIM_TTL_SECONDS = 300;
 const kTicket = (id) => `slack:ticket:${id}`;
 /** comment id -> already relayed, so a workflow retry cannot double-post. */
 const kRelayed = (id) => `slack:relayed:${id}`;
+/**
+ * email -> YouTrack user id, or "-" when that address has no account.
+ *
+ * Cached because most commenters repeat, and because the negative answer is
+ * the common one — customers in a shared channel have no YouTrack account and
+ * never will. A shorter TTL on the negative so somebody who joins next week is
+ * picked up without anyone having to clear anything.
+ */
+const kYtUser = (email) => `yt:user:${email.toLowerCase()}`;
+const YT_USER_TTL_SECONDS = 60 * 60 * 24 * 7;
+const YT_NO_USER_TTL_SECONDS = 60 * 60 * 24;
 /**
  * attachment id -> already uploaded.
  *
@@ -379,12 +391,12 @@ async function commentOnExistingTicket(env, event, eventId) {
   const token = env.SLACK_BOT_TOKEN;
   const names = await resolveNames(token, [event]);
   const files = (event.files || []).filter(downloadable);
+  const author = await getUser(token, event.user);
 
   try {
-    const created = await addYouTrackComment({
-      baseUrl: env.YOUTRACK_BASE_URL,
-      token: env.YOUTRACK_TOKEN,
+    const created = await commentAsAuthor(env, {
       issueId: ticketId,
+      email: author.email,
       text: buildComment({
         speaker: names.get(event.user) || event.username || 'Unknown',
         ts: event.ts,
@@ -950,6 +962,80 @@ async function buildSummary(env, { trigger, messages, names, sender, channelName
     sender,
     account: account || channelName,
   });
+}
+
+/**
+ * Add a comment attributed to the person who actually wrote it.
+ *
+ * A message carried out of Slack is somebody's words, and a ticket crediting
+ * them to the integration account is wrong about who said what — which matters
+ * when the history is read back months later to work out what was agreed.
+ *
+ * Only people with a YouTrack account can be credited. Customers in a shared
+ * channel have none, and inventing an author for them would be worse than the
+ * honest fallback, so they keep the integration as author with their name in
+ * the comment body.
+ *
+ * Falls back on ANY failure. YouTrack documents the author field but also says
+ * it is unsupported for reporter-type accounts, so a refusal is expected
+ * rather than exceptional — and a comment under the wrong name still beats a
+ * comment lost.
+ */
+async function commentAsAuthor(env, { issueId, email, text }) {
+  const post = (authorId) =>
+    addYouTrackComment({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      issueId,
+      text,
+      authorId,
+    });
+
+  const authorId = await youTrackUserId(env, email);
+  if (!authorId) return post();
+
+  try {
+    return await post(authorId);
+  } catch (e) {
+    console.log(
+      `comment: could not attribute to ${email} (${e.message}) — posting as the integration`
+    );
+    return post();
+  }
+}
+
+/** The YouTrack user id for an email, or '' — cached both ways. */
+async function youTrackUserId(env, email) {
+  const address = String(email || '').trim().toLowerCase();
+  if (!address) return '';
+
+  const key = kYtUser(address);
+  if (env.DEDUPE) {
+    const cached = await env.DEDUPE.get(key);
+    if (cached) return cached === '-' ? '' : cached;
+  }
+
+  let id = '';
+  try {
+    const user = await findYouTrackUserByEmail({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      email: address,
+    });
+    id = user?.id || '';
+  } catch (e) {
+    // Not cached: a lookup that failed for infrastructure reasons leaves the
+    // answer unknown, not negative.
+    console.error(`comment: user lookup failed for ${address}: ${e.message}`);
+    return '';
+  }
+
+  if (env.DEDUPE) {
+    await env.DEDUPE.put(key, id || '-', {
+      expirationTtl: id ? YT_USER_TTL_SECONDS : YT_NO_USER_TTL_SECONDS,
+    });
+  }
+  return id;
 }
 
 /**
