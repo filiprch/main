@@ -128,6 +128,49 @@ export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
 }
 
 /**
+ * Fetch one comment, with enough of its visibility to judge who may read it.
+ *
+ * The workflow that triggers a relay cannot be trusted to report this: comment
+ * visibility is a REST-side concept, and a workflow reading it wrongly would
+ * either relay nothing or — far worse — relay an internal note to a customer.
+ * So the worker asks YouTrack itself.
+ */
+export async function getYouTrackComment({ baseUrl, token, issueId, commentId }) {
+  const fields = 'id,text,author(fullName,login),visibility($type,permittedGroups(id,name),permittedUsers(id))';
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments/${commentId}?fields=${fields}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack read comment failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+/**
+ * Is this comment visible to the customer?
+ *
+ * FAILS CLOSED. A comment counts as public only when YouTrack positively says
+ * it is unrestricted — no visibility object at all, or UnlimitedVisibility with
+ * nothing listed. Every other shape, including one we do not recognise, is
+ * treated as internal. The cost of a false negative is a reply the agent has
+ * to send again; the cost of a false positive is an internal note about a
+ * customer, delivered to that customer.
+ */
+export function isPublicComment(comment) {
+  const visibility = comment?.visibility;
+  if (!visibility) return true;
+
+  const type = visibility.$type;
+  const groups = visibility.permittedGroups || [];
+  const users = visibility.permittedUsers || [];
+
+  if (type === 'UnlimitedVisibility') return true;
+  if (!type && !groups.length && !users.length) return true;
+  return false;
+}
+
+/**
  * Copy a file into YouTrack as a real attachment.
  *
  * The file is fetched from wherever it lives and re-uploaded, rather than

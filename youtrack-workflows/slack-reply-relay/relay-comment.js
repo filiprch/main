@@ -1,13 +1,16 @@
 /**
  * Send an agent's answer from a CS ticket back into its Slack thread.
  *
- * A comment beginning "Reply:" is passed to the slack-youtrack worker, which
- * strips the prefix and posts the rest into the thread the ticket came from.
- * Every other comment stays internal — private is the default, and going
- * public is a deliberate act by whoever writes the comment.
+ * A PUBLIC comment reaches the customer; an INTERNAL one never leaves
+ * YouTrack. That is the same "Internal, visible to Customer Support - Helpdesk
+ * Team" toggle an agent already uses on a Gmail ticket, so there is one habit
+ * across every channel instead of a per-channel convention to remember.
  *
- *   in YouTrack:  Reply: Yes, that is correct.
- *   in Slack:     Lisa: Yes, that is correct.
+ * This rule deliberately does NOT decide what is public. It reports only which
+ * comment changed; the worker reads the comment back from YouTrack's REST API
+ * and relays it only if that confirms it is unrestricted. Comment visibility
+ * is REST-side state, and a rule that judged it here could relay an internal
+ * note to a customer if it judged wrong. The worker fails closed instead.
  *
  * INSTALL
  *   1. YouTrack → Administration → Workflows → New workflow → from this file,
@@ -27,7 +30,7 @@ var WORKER_URL = 'https://slack-youtrack.filip-1f6.workers.dev/youtrack/comment'
 var SHARED_SECRET = 'PASTE-THE-SAME-SECRET-HERE';
 
 exports.rule = entities.Issue.onChange({
-  title: 'Relay "Reply:" comments into Slack',
+  title: 'Relay public comments into Slack',
 
   // Only fires when a comment was added, and only on tickets that came from
   // Slack — a Gmail or Intercom ticket has no Slack thread to answer into.
@@ -43,14 +46,6 @@ exports.rule = entities.Issue.onChange({
     var issue = ctx.issue;
 
     issue.comments.added.forEach(function (comment) {
-      var text = (comment.text || '').trim();
-      if (text.toLowerCase().indexOf('reply:') !== 0) {
-        return; // internal note — nothing leaves YouTrack
-      }
-
-      var author = comment.author;
-      var name = author ? author.fullName || author.login : '';
-
       var connection = new http.Connection(WORKER_URL);
       connection.addHeader('Content-Type', 'application/json');
       connection.addHeader('X-Helpdesk-Secret', SHARED_SECRET);
@@ -60,22 +55,15 @@ exports.rule = entities.Issue.onChange({
         [],
         JSON.stringify({
           issueId: issue.id,
-          commentId: comment.id,
-          author: name,
-          text: text
+          commentId: comment.id
         })
       );
 
-      // Say so in the ticket rather than failing quietly: an agent who thinks
-      // they have answered a customer and has not is worse off than one who
-      // can see it did not go.
-      if (!response.isSuccess) {
-        issue.addComment(
-          'This reply could not be sent to Slack (HTTP ' +
-            response.code +
-            '). The customer has not seen it.'
-        );
-      }
+      // Deliberately silent on failure. Writing the problem back as a comment
+      // would be more helpful, but this rule fires on added comments — so a
+      // failure comment re-fires it, fails again, and comments again. When the
+      // worker is unreachable, that is an unbounded loop. Failures show in the
+      // worker's log and in YouTrack's own workflow error log instead.
     });
   },
 

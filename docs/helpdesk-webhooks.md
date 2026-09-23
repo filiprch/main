@@ -611,47 +611,56 @@ keep their prefixes — those titles never leave YouTrack.
 
 ### Two-way replies (Slack) — built
 
-An agent answers in YouTrack; the customer sees it in the Slack thread. A
-comment beginning **`Reply:`** is relayed with the prefix stripped; every other
-comment stays internal.
+An agent answers in YouTrack; the customer sees it in the Slack thread.
+**What travels is decided by the comment's visibility, and nothing else.**
 
-```
-in YouTrack:   Reply: Yes, that is correct.
-in Slack:      Lisa: Yes, that is correct.        (posted by the bot)
-```
+| The agent | The customer |
+|---|---|
+| Posts a **public** comment | Sees it in the Slack thread |
+| Leaves **"Internal, visible to Customer Support - Helpdesk Team"** on | Sees nothing |
 
-**Private is the default.** Going public is a deliberate act by whoever writes
-the comment. The opposite arrangement — public unless marked private — fails
-badly the first time somebody forgets, and what it leaks is an internal note
-about a customer, in front of that customer.
+That is the same toggle an agent already uses on a Gmail ticket, so there is
+**one habit across every channel**. The earlier design used a `Reply:` prefix
+on Slack while Gmail used the toggle; two conventions is one too many, and the
+thing forgetting the wrong one leaks is an internal note about a customer, to
+that customer.
 
-**How YouTrack reaches the worker.** A workflow rule
-(`youtrack-workflows/slack-reply-relay/`) fires on each added comment and POSTs
-to `/youtrack/comment`. Chosen over the worker polling YouTrack because a
-customer waiting on an answer should not wait for a schedule — and because the
-cron in the Intercom worker has never once fired, so building a
-customer-facing path on that mechanism would have been a poor bet.
+**The workflow does not decide what is public.** It reports only which comment
+changed; the worker reads the comment back through YouTrack's REST API and
+relays it only if that confirms it is unrestricted. Comment visibility is
+REST-side state and a workflow's view of it is not something to bet a customer
+relationship on.
 
-That path is routed **before** the Slack signature check: it carries a shared
-secret in `X-Helpdesk-Secret`, compared in constant time against the
-`YOUTRACK_WEBHOOK_SECRET` worker secret, and running it through Slack's
-verification would reject every call. A plain secret rather than a signature
-because YouTrack's workflow HTTP client cannot compute an HMAC over the body.
-With the secret unset, every call is refused rather than waved through.
+`isPublicComment()` **fails closed**. A comment travels only when YouTrack
+positively says it is unrestricted — no visibility object, or
+`UnlimitedVisibility` with nothing listed. Every other shape, *including one we
+do not recognise*, counts as internal, as does a comment that could not be read
+at all. A false negative costs an agent one re-send; a false positive costs a
+customer relationship.
+
+**Two loops had to be closed** when visibility replaced the prefix, because the
+rule now fires on every comment rather than on a rare keyword:
+
+- The worker posts each customer message from Slack into the ticket, and those
+  comments are public — nothing sets otherwise. Each is claimed in
+  `slack:relayed:<commentId>` the moment it is created, so the rule firing on
+  it finds it already sent. Without that claim the customer's own words would
+  be posted back at them, once per message, forever.
+- The workflow no longer writes failures back as a comment. That was more
+  helpful, but a failure comment re-fires the rule, fails again, and comments
+  again — unbounded whenever the worker is unreachable. Failures show in the
+  worker log and YouTrack's workflow error log instead.
+
+Verified: a public comment posts; an internal one does not; an unreachable
+YouTrack relays nothing rather than guessing; a Slack-sourced comment does not
+bounce back; a retry does not duplicate; a wrong secret is refused; and a
+literal "Reply:" in the text is now just text.
 
 `slack:ticket:<id>` maps a ticket back to its thread, written at creation
 alongside the forward key. **Tickets created before this shipped have no such
-key**, so replies on them log "no Slack thread recorded" and go nowhere; only
-tickets filed from now on can be answered this way.
-
-A relayed message cannot be unsent, so `slack:relayed:<commentId>` is claimed
-*before* posting — a workflow retry must not deliver the same answer twice.
-After a successful send the ticket's `Replied` field flips to `Replied`, so the
-board shows who is still waiting; failing to flip it is logged but never undoes
-a message the customer has already seen. If the relay call fails, the workflow
-writes that back into the ticket as a comment — an agent who believes they have
-answered a customer and has not is worse off than one who can see it did not
-go.
+key**, so replies on them log "no Slack thread recorded"; only tickets filed
+from now on can be answered this way. After a successful send the ticket's
+`Replied` field flips, so the board shows who is still waiting.
 
 Attachments on replies are not carried (that needs `files:write`); text is the
 case that matters and files can follow later.

@@ -31,6 +31,8 @@ import {
   addYouTrackComment,
   attachToYouTrackIssue,
   createYouTrackIssue,
+  getYouTrackComment,
+  isPublicComment,
   setYouTrackEnumField,
 } from './youtrack.js';
 import {
@@ -84,8 +86,6 @@ const kRelayed = (id) => `slack:relayed:${id}`;
 
 /** Path YouTrack's workflow posts a new comment to. */
 const REPLY_PATH = '/youtrack/comment';
-/** Only a comment starting with this is shown to the customer. */
-const REPLY_PREFIX = 'Reply:';
 
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
@@ -343,7 +343,7 @@ async function commentOnExistingTicket(env, event, eventId) {
   const files = (event.files || []).filter(downloadable);
 
   try {
-    await addYouTrackComment({
+    const created = await addYouTrackComment({
       baseUrl: env.YOUTRACK_BASE_URL,
       token: env.YOUTRACK_TOKEN,
       issueId: ticketId,
@@ -355,6 +355,16 @@ async function commentOnExistingTicket(env, event, eventId) {
         names,
       }),
     });
+
+    // Claim it as already relayed. This comment IS the customer's own message,
+    // arriving from Slack — and it is public, because nothing sets otherwise.
+    // Without this claim the relay rule would fire on it, see a public comment
+    // and post the customer's words back at them, once per message, forever.
+    if (created?.id) {
+      await env.DEDUPE.put(kRelayed(created.id), 'from-slack', {
+        expirationTtl: TICKETED_TTL_SECONDS,
+      });
+    }
     console.log(`comment: ${event.channel}/${event.ts} -> ${ticketId}`);
   } catch (e) {
     console.error(`comment failed for ${ticketId}: ${e.message}`);
@@ -368,11 +378,19 @@ async function commentOnExistingTicket(env, event, eventId) {
 /**
  * Send an agent's answer from YouTrack back into the Slack thread.
  *
- * Only comments beginning "Reply:" travel; everything else stays internal.
- * Private is the default and going public is a deliberate act by whoever
- * writes the comment — the opposite arrangement fails badly the first time
- * somebody forgets, and the thing it leaks is an internal note about a
- * customer, in front of that customer.
+ * WHAT TRAVELS IS DECIDED BY THE COMMENT'S VISIBILITY, nothing else. A public
+ * comment reaches the customer; an internal one never leaves YouTrack. That is
+ * the same control an agent already uses on a Gmail ticket — the "Internal,
+ * visible to Customer Support - Helpdesk Team" toggle — so there is one habit
+ * across every channel rather than a per-channel convention to remember. A
+ * convention that has to be remembered is one that will eventually be
+ * forgotten, and the thing forgetting it leaks is an internal note about a
+ * customer, to that customer.
+ *
+ * The workflow reports only WHICH comment changed. Whether it is public is
+ * read back from YouTrack here, because visibility is REST-side state and a
+ * workflow's view of it cannot be relied on. Anything not positively confirmed
+ * public stays put — see isPublicComment.
  */
 async function relayReply(rawBody, env) {
   let payload;
@@ -383,20 +401,9 @@ async function relayReply(rawBody, env) {
     return;
   }
 
-  const { issueId, commentId, author, text } = payload;
-  if (!issueId || !text) {
-    console.error('reply: needs issueId and text');
-    return;
-  }
-
-  const body = String(text).trim();
-  if (!body.toLowerCase().startsWith(REPLY_PREFIX.toLowerCase())) {
-    console.log(`reply: ${issueId} comment is internal — not sent`);
-    return;
-  }
-  const message = body.slice(REPLY_PREFIX.length).trim();
-  if (!message) {
-    console.log(`reply: ${issueId} has "${REPLY_PREFIX}" and nothing after it`);
+  const { issueId, commentId } = payload;
+  if (!issueId || !commentId) {
+    console.error('reply: needs issueId and commentId');
     return;
   }
 
@@ -407,12 +414,34 @@ async function relayReply(rawBody, env) {
 
   // A relayed message cannot be unsent, so the guard against a workflow retry
   // posting it twice comes before the posting, not after.
-  if (commentId) {
-    if (await env.DEDUPE.get(kRelayed(commentId))) {
-      console.log(`reply: comment ${commentId} was already sent`);
-      return;
-    }
-    await env.DEDUPE.put(kRelayed(commentId), '1', { expirationTtl: TICKETED_TTL_SECONDS });
+  if (await env.DEDUPE.get(kRelayed(commentId))) {
+    console.log(`reply: comment ${commentId} was already sent`);
+    return;
+  }
+
+  let comment;
+  try {
+    comment = await getYouTrackComment({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      issueId,
+      commentId,
+    });
+  } catch (e) {
+    // Could not establish that this is public, so it does not travel.
+    console.error(`reply: could not read comment ${commentId}, not relaying: ${e.message}`);
+    return;
+  }
+
+  if (!isPublicComment(comment)) {
+    console.log(`reply: ${issueId} comment ${commentId} is internal — not sent`);
+    return;
+  }
+
+  const message = String(comment.text || '').trim();
+  if (!message) {
+    console.log(`reply: ${issueId} comment ${commentId} is empty`);
+    return;
   }
 
   const target = await env.DEDUPE.get(kTicket(issueId));
@@ -422,7 +451,9 @@ async function relayReply(rawBody, env) {
   }
   const { channel, threadTs } = JSON.parse(target);
 
-  const who = String(author || '').trim();
+  await env.DEDUPE.put(kRelayed(commentId), '1', { expirationTtl: TICKETED_TTL_SECONDS });
+
+  const who = String(comment.author?.fullName || comment.author?.login || '').trim();
   const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
     channel,
     thread_ts: threadTs,
@@ -432,7 +463,7 @@ async function relayReply(rawBody, env) {
     console.error(`reply: could not post ${issueId} to Slack: ${posted.error}`);
     return;
   }
-  console.log(`reply: ${issueId} -> ${channel}/${threadTs}`);
+  console.log(`reply: ${issueId} comment ${commentId} -> ${channel}/${threadTs}`);
 
   // The board should show who is still waiting. Failing to flip the field is
   // not worth undoing a message the customer has already seen.
