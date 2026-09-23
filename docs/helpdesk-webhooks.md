@@ -1,6 +1,7 @@
 # Helpdesk Webhooks — Slack & Intercom → YouTrack
 
-**Status:** Slack channel LIVE and verified (CS-158, 2026-09-03). Intercom untested.
+**Status:** Slack and Intercom both LIVE and verified; Gmail live via YouTrack's
+native email channel. Feature-by-feature state: see `helpdesk-status.md`.
 **Owner:** Filip Seidel
 **Audience:** developers / whoever hosts and maintains these integrations
 
@@ -899,10 +900,10 @@ form validates every field.
   with `sla_applied: null`, so nobody owns them and no Intercom-side clock
   runs. An assignment Workflow would fix that and would also give this
   integration a real webhook to trigger on, replacing the state polling.
-- **Attachments from Slack.** Intercom attachments are copied into YouTrack;
-  Slack file uploads are not yet.
-- **Narrow the YouTrack token.** It currently carries YouTrack Administration
-  scope, which ticket creation does not need.
+- **Narrow the YouTrack token.** Done in part: the workers now run as the
+  `Support - Agent` service account rather than a personal admin token. Project
+  Admin and System Admin were added to that account to test comment author
+  attribution and should be removed now the answer is known.
 - **Upgrade wrangler.** Both workers are pinned to v3 while v4 is current.
 
 ### Remaining limitations
