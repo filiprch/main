@@ -623,8 +623,13 @@ created.
 
 Same contract as Slack, on purpose: one habit for an agent across all three
 channels. `ticket:<issueId>` maps a ticket back to its conversation, written
-alongside the forward key at creation, so **only tickets filed from now on can
-be answered this way**.
+alongside the forward key at creation.
+
+When that key is missing — every ticket filed before it existed — the worker
+recovers the id from **the Intercom link in the ticket's own description**,
+then caches it. The conversation id is already written down there and cannot
+drift, so no ticket is stranded by the mapping arriving late. A ticket with no
+such link is refused rather than guessed at.
 
 Comment text is converted to Intercom's HTML: the agent signature and any
 `![](image.png){...}` left by a pasted image are dropped, and everything is

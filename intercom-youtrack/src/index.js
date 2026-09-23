@@ -371,6 +371,10 @@ async function createTicketFor(env, conversationId) {
 
   // Claim the conversation before anything that can fail, so a later retry
   // cannot produce a second ticket.
+  // The reverse direction too, so an agent's reply can find its way back.
+  await env.DEDUPE.put(kConversation(issue.idReadable), conversationId, {
+    expirationTtl: 60 * 60 * 24 * 30,
+  });
   await env.DEDUPE.put(kTicket(conversationId), issue.idReadable, {
     expirationTtl: 60 * 60 * 24 * 30,
   });
@@ -822,10 +826,20 @@ async function relayReply(rawBody, env) {
     return;
   }
 
-  const conversationId = await env.DEDUPE.get(kConversation(issueId));
+  let conversationId = await env.DEDUPE.get(kConversation(issueId));
   if (!conversationId) {
-    console.error(`reply: no Intercom conversation recorded for ${issueId}`);
-    return;
+    // Tickets filed before the reverse key existed have no mapping. Rather
+    // than strand them, read it back out of the Intercom link the description
+    // already carries, and cache it so this costs one call, once, per ticket.
+    conversationId = await conversationFromDescription(env, issueId);
+    if (!conversationId) {
+      console.error(`reply: no Intercom conversation recorded for ${issueId}`);
+      return;
+    }
+    await env.DEDUPE.put(kConversation(issueId), conversationId, {
+      expirationTtl: 60 * 60 * 24 * 30,
+    });
+    console.log(`reply: recovered conversation ${conversationId} for ${issueId}`);
   }
 
   let comments;
@@ -882,6 +896,31 @@ async function relayReply(rawBody, env) {
     } catch (e) {
       console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
     }
+  }
+}
+
+/**
+ * Recover a ticket's conversation id from its own description.
+ *
+ * Every Intercom ticket links back to the conversation it came from, so the id
+ * is already written down where it cannot drift. Used only when the KV mapping
+ * is missing — which is every ticket filed before that mapping existed.
+ */
+async function conversationFromDescription(env, issueId) {
+  try {
+    const url =
+      `${String(env.YOUTRACK_BASE_URL).replace(/\/$/, '')}` +
+      `/api/issues/${issueId}?fields=description`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${env.YOUTRACK_TOKEN}`, Accept: 'application/json' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const issue = await res.json();
+    const match = /\/inbox\/conversation\/(\d+)/.exec(issue.description || '');
+    return match ? match[1] : '';
+  } catch (e) {
+    console.error(`reply: could not recover a conversation for ${issueId}: ${e.message}`);
+    return '';
   }
 }
 
