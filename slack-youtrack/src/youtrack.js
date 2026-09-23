@@ -194,7 +194,7 @@ export async function findYouTrackUserByEmail({ baseUrl, token, email }) {
 
   const url =
     `${baseUrl.replace(/\/$/, '')}/api/users` +
-    `?fields=id,login,email&query=${encodeURIComponent(wanted)}&$top=20`;
+    `?fields=id,login,email&query=${encodeURIComponent(wanted)}&$top=200`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
@@ -203,7 +203,16 @@ export async function findYouTrackUserByEmail({ baseUrl, token, email }) {
   }
   const users = await res.json();
   if (!Array.isArray(users)) return null;
-  return users.find((u) => String(u?.email || '').toLowerCase() === wanted) || null;
+  const match = users.find((u) => String(u?.email || '').toLowerCase() === wanted) || null;
+  if (!match && users.length) {
+    // The query may be ignored rather than honoured, in which case this is the
+    // first page of every user rather than a search result — worth seeing.
+    console.log(
+      `user search for ${wanted} returned ${users.length} rows, none matching ` +
+        `(first: ${users[0]?.email || users[0]?.login || '?'})`
+    );
+  }
+  return match;
 }
 
 /**

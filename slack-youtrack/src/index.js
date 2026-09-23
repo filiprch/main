@@ -992,9 +992,13 @@ async function commentAsAuthor(env, { issueId, email, text }) {
     });
 
   const authorId = await youTrackUserId(env, email);
-  if (!authorId) return post();
+  if (!authorId) {
+    console.log(`comment: no YouTrack user for ${email || '(no email on the Slack profile)'}`);
+    return post();
+  }
 
   try {
+    console.log(`comment: attributing to ${email} (${authorId})`);
     return await post(authorId);
   } catch (e) {
     console.log(
@@ -1023,6 +1027,7 @@ async function youTrackUserId(env, email) {
       email: address,
     });
     id = user?.id || '';
+    console.log(`comment: user search for ${address} matched ${id || 'nothing'}`);
   } catch (e) {
     // Not cached: a lookup that failed for infrastructure reasons leaves the
     // answer unknown, not negative.
