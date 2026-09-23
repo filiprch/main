@@ -308,6 +308,35 @@ small.
 
 ---
 
+### The workers act as Support - Agent, not a person
+
+`YOUTRACK_TOKEN` is a token on the **Support - Agent** account
+(`support@myrealprofit.com`), not on anyone's personal account. Before this,
+every ticket, comment and relayed reply across all three channels read
+**Filip Seidel** — including messages written by other people in Slack, which
+is actively misleading about who said what.
+
+It also narrows the blast radius considerably. Filip's account carries System
+Admin, Contributor and Project Admin; Support - Agent carries Contributor
+alone, and that proved sufficient to create issues, comment and attach files.
+A dedicated `Helpdesk Bridge` user would have been marginally cleaner — a
+non-agent cannot post public comments at all, which would make the relay loop
+structurally impossible rather than guarded — but JetBrains bill per user and
+this account already exists and is already paid for. Not worth a seat.
+
+Two consequences worth knowing:
+
+- Tickets created before the swap keep their old attribution. Authorship is
+  recorded at creation and does not rewrite.
+- YouTrack's built-in roles here are Contributor / Project Admin / System
+  Admin; there is no Developer role in this instance, whatever the JetBrains
+  docs describe.
+
+Comments created over REST arrive **internal** (locked to the helpdesk team)
+regardless of the account's agent status, which is right: a customer's own
+message relayed from Slack is context for an agent, not something to send back
+to the customer.
+
 ## 8. Credentials & secrets
 
 Seven credentials total. **Five are secrets** (never committed — set via
