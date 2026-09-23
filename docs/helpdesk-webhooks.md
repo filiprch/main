@@ -599,7 +599,32 @@ Three things were stripped from it:
 
 `##- Please enter your reply above this line -##` is load-bearing: it is how a
 customer's reply threads back onto the ticket. Check it survives any template
-edit.
+edit. Its wording is editable under **Project Settings → Notifications →
+Delimiter text**, and it can be switched off there entirely — at the cost of
+less precise trimming of quoted history.
+
+#### Where the sign-off lives
+
+**In the email template, not in the agent signature setting.** The per-agent
+"Agent signature" is appended to the comment *text*, which means it is stored
+in YouTrack, shown on every comment in the ticket, and has to be stripped again
+by both workers on the way to Slack and Intercom. Putting it in
+`helpdesk_comment_for_reporter_email.ftl` instead means it renders for email
+and nowhere else:
+
+```
+<p style="${styles.paragraph}">Kind regards,<br>${(comment.author.visibleName!"")?split(" ")?first!""}<br>My Real Profit</p>
+```
+
+`comment.author.visibleName` is whoever wrote the comment, so Lisa's replies
+sign Lisa and Angelina's sign Angelina — a fixed name would be wrong the moment
+a second person answers. `?split(" ")?first` takes the first name only; the
+`!""` defaults guard an account whose full name is empty, which would otherwise
+send a customer "Kind regards," and a blank line.
+
+The workers still strip signatures from comment text. That is now belt and
+braces rather than the only defence, and it keeps older comments — written
+while the setting was in use — from carrying a sign-off into a chat.
 
 **The `MAIL:` summary prefix was dropped for Gmail tickets** (the rule in
 `auto-tag-and-route` is deleted, sender name included). Gmail is the one
