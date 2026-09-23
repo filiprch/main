@@ -85,6 +85,16 @@ const CLAIM_TTL_SECONDS = 300;
 const kTicket = (id) => `slack:ticket:${id}`;
 /** comment id -> already relayed, so a workflow retry cannot double-post. */
 const kRelayed = (id) => `slack:relayed:${id}`;
+/**
+ * attachment id -> already uploaded.
+ *
+ * A second claim, narrower than the comment's. KV is eventually consistent, so
+ * two firings arriving together can both read the comment as unclaimed; this
+ * gives the upload its own check closer to the act, which is what is worth
+ * protecting — a duplicated sentence is untidy, a duplicated photo looks
+ * broken.
+ */
+const kFileSent = (id) => `slack:file:${id}`;
 
 /** Path YouTrack's workflow posts a new comment to. */
 const REPLY_PATH = '/youtrack/comment';
@@ -555,7 +565,18 @@ async function relayReply(rawBody, env) {
  */
 async function relayAttachment(env, { channel, threadTs, file, issueId, who }) {
   const name = file.name || 'attachment';
+  const claim = file.id ? kFileSent(file.id) : null;
   try {
+    if (claim) {
+      if (await env.DEDUPE.get(claim)) {
+        console.log(`reply: ${name} was already sent for ${issueId}`);
+        return false;
+      }
+      // Claimed before the bytes move, not after: the upload is the slow part
+      // and therefore the widest window for a second pass to slip through.
+      await env.DEDUPE.put(claim, '1', { expirationTtl: TICKETED_TTL_SECONDS });
+    }
+
     const src = await fetch(absoluteUrl(env.YOUTRACK_BASE_URL, file.url), {
       headers: { Authorization: `Bearer ${env.YOUTRACK_TOKEN}` },
     });

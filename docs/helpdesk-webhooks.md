@@ -705,6 +705,20 @@ Order and failure handling matter here:
 
 An internal comment sends neither its text nor its files.
 
+**Duplicate suppression is best-effort, not exact.** The relay is guarded by
+claims in KV, and KV is eventually consistent: two firings arriving close
+together in different locations can both read a comment as unclaimed and both
+relay it. A photo was sent twice once, on the first test after deploy.
+Attachments carry a second, narrower claim of their own (`slack:file:<id>`),
+taken before the bytes move — the upload is the slow part and therefore the
+widest window — because a duplicated sentence is untidy where a duplicated
+photo looks broken.
+
+That narrows the window rather than closing it. Closing it properly needs a
+primitive with real atomicity — a Durable Object — which is a paid-plan
+feature. Worth doing if duplicates recur; not worth it for one occurrence that
+has not repeated across later tests.
+
 ### Give other projects their own sender address
 
 Every YouTrack notification from every project goes out as
