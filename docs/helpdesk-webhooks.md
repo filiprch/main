@@ -332,26 +332,50 @@ Two consequences worth knowing:
   Admin; there is no Developer role in this instance, whatever the JetBrains
   docs describe.
 
-#### Slack comments are credited to whoever wrote them
+#### Slack comments are credited to whoever wrote them — ON HOLD
 
-A message carried out of Slack is somebody's words. Crediting them to the
-integration account is wrong about who said what, which matters when a ticket
-is read back months later to work out what was agreed.
+**This does not work, and cannot be made to work as built.** Tested
+2026-09-23. The code is left in place because the matching half of it is sound
+and costs nothing; only the last step is a dead end.
 
-The worker looks the Slack author's email up in YouTrack and passes
-`author: { id }` when creating the comment, so Lucjan's message reads
-"Lucjan Rosłanowski commented". The lookup is cached both ways —
+What was proven, in order:
+
+1. The email match works. The tail shows
+   `comment: attributing to filip@myrealprofit.com (2-8)` — `2-8` is the real
+   YouTrack user id — followed by the comment landing on CS-263.
+2. `author: { id }` is sent on the request. YouTrack answers **200 OK** and
+   discards the field without an error.
+3. It is not a permission. Unchanged with the token account raised to Project
+   Admin, then System Admin. *(Both have since been removed — they were granted
+   only for this test.)*
+4. JetBrains confirm it. The on-behalf-of mechanism exists for creating
+   **issues**, so an agent can open a ticket without becoming its author; they
+   state there are "no plans to make the same mechanism for comments".
+
+So every Slack comment lands as **Support - Agent**. The author's real name is
+already the first line of the comment body — "**Lucjan Rosłanowski** in Slack ·
+2026-09-16 08:15 UTC" — so the information is there; only the avatar and byline
+are wrong.
+
+The one route that would work is posting with **the commenter's own permanent
+token**: a comment made with Lucjan's token *is* authored by Lucjan, with no
+`author` field for YouTrack to ignore. Everyone at MRP is a full YouTrack user,
+so the reporter-type blocker JetBrains describe does not apply. Deferred
+because it means the worker storing one long-lived, full-access credential per
+person, with no expiry and a re-deploy needed to rotate or revoke one.
+
+The matching itself stays and still runs: the worker looks the Slack author's
+email up in YouTrack and passes `author: { id }`, which is a no-op until
+JetBrains support it. The lookup is cached both ways —
 `yt:user:<email>` — because most commenters repeat and because the negative
 answer is the common one: customers in a shared channel have no account and
 never will. The negative has a shorter TTL so somebody who joins next week is
 picked up without anyone clearing a cache.
 
-**Everything falls back to posting as the integration**, which is exactly
-today's behaviour: no email on the Slack profile, no matching account, a
-near-miss address, a failed lookup, or YouTrack refusing the author field.
-JetBrains document the field but also say it is unsupported for reporter-type
-accounts, so a refusal is expected rather than exceptional — and a comment
-under the wrong name still beats a comment lost.
+**Everything falls back to posting as the integration**, which is what happens
+in every case today: no email on the Slack profile, no matching account, a
+near-miss address, a failed lookup, or the field being ignored. A comment under
+the wrong name still beats a comment lost.
 
 The email match is **exact**. YouTrack's user search also matches on name and
 login, so an unfiltered result would eventually attribute one person's words to

@@ -976,10 +976,22 @@ async function buildSummary(env, { trigger, messages, names, sender, channelName
  * honest fallback, so they keep the integration as author with their name in
  * the comment body.
  *
- * Falls back on ANY failure. YouTrack documents the author field but also says
- * it is unsupported for reporter-type accounts, so a refusal is expected
- * rather than exceptional — and a comment under the wrong name still beats a
- * comment lost.
+ * ON HOLD — the author field does not work, and this is kept for the day it
+ * does. Tested 2026-09-23: the lookup matches (tail shows
+ * "attributing to filip@myrealprofit.com (2-8)"), the field is sent, YouTrack
+ * returns 200 and silently discards it. Unchanged with the token account at
+ * Project Admin and then System Admin, so it is not a permission. JetBrains
+ * confirm it: the on-behalf-of mechanism exists for creating ISSUES and they
+ * have "no plans to make the same mechanism for comments".
+ *
+ * Every comment therefore lands as the integration account today. The author's
+ * real name is already the first line of the comment body, so nothing is lost
+ * but the byline. The only route to a real author is posting with that
+ * person's own permanent token — deferred, because it means the worker holding
+ * one full-access credential per person.
+ *
+ * Falls back on ANY failure regardless: a comment under the wrong name still
+ * beats a comment lost.
  */
 async function commentAsAuthor(env, { issueId, email, text }) {
   const post = (authorId) =>
