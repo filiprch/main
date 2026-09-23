@@ -57,6 +57,9 @@ import {
   createYouTrackIssue,
   addYouTrackComment,
   attachToYouTrackIssue,
+  isPublicComment,
+  listYouTrackComments,
+  setYouTrackEnumField,
 } from './youtrack.js';
 
 /**
@@ -85,6 +88,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const kTicket = (id) => `intercom:${id}`; // conversation -> ticket id
 const kPending = (id) => `pending:${id}`; // conversation -> { dueAt, attempts }
 const kSeen = (id) => `seen:${id}`; // conversation -> last part id in the ticket
+const kConversation = (ticketId) => `ticket:${ticketId}`; // ticket id -> conversation
+const kRelayed = (commentId) => `relayed:${commentId}`; // comment -> already sent
+
+/** Path YouTrack's workflow posts a new comment to. */
+const REPLY_PATH = '/youtrack/comment';
+/** How far back a relay pass will look — see the Slack worker for the rationale. */
+const RELAY_MAX_AGE_MS = 60 * 60 * 1000;
 
 export default {
   async fetch(request, env, ctx) {
@@ -93,6 +103,19 @@ export default {
     }
 
     const rawBody = await request.text();
+
+    // --- YouTrack's workflow, on its own path -----------------------------
+    // Ahead of the Intercom signature check: this call carries a shared
+    // secret, not an Intercom signature, and would be rejected by it.
+    if (new URL(request.url).pathname === REPLY_PATH) {
+      if (!verifySharedSecret(request, env)) {
+        return new Response('Invalid secret', { status: 401 });
+      }
+      if (!isEnabled(env)) return new Response('disabled', { status: 200 });
+      ctx.waitUntil(relayReply(rawBody, env).catch((e) => console.error('relayReply error:', e)));
+      return new Response('', { status: 200 });
+    }
+
     if (!(await verifyIntercomSignature(request, rawBody, env.INTERCOM_CLIENT_SECRET))) {
       return new Response('Invalid signature', { status: 401 });
     }
@@ -766,6 +789,170 @@ function buildTitle({ source, problem, sender, account }) {
 function summarize(text) {
   const first = text.split('\n')[0].trim() || text.trim();
   return first.length > 140 ? `${first.slice(0, 137)}…` : first;
+}
+
+/**
+ * Send an agent's answer from YouTrack into the Intercom conversation.
+ *
+ * WHAT TRAVELS IS DECIDED BY THE COMMENT'S VISIBILITY. A public comment is
+ * sent to the customer as a real reply in the chat; an internal one sends
+ * nothing at all — not even a note. Notes were scaffolding from the period
+ * when nothing was allowed to reach a customer, and leaving them in would mean
+ * an agent's private thinking showing up in the conversation record.
+ *
+ * Same contract as the Slack worker, deliberately: one habit for an agent
+ * across all three channels.
+ */
+async function relayReply(rawBody, env) {
+  let payload;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    console.error('reply: body was not JSON');
+    return;
+  }
+
+  const issueId = payload.issueId;
+  if (!issueId) {
+    console.error('reply: needs issueId');
+    return;
+  }
+  if (!env.DEDUPE) {
+    console.error('reply: no KV bound');
+    return;
+  }
+
+  const conversationId = await env.DEDUPE.get(kConversation(issueId));
+  if (!conversationId) {
+    console.error(`reply: no Intercom conversation recorded for ${issueId}`);
+    return;
+  }
+
+  let comments;
+  try {
+    comments = await listYouTrackComments({
+      baseUrl: env.YOUTRACK_BASE_URL,
+      token: env.YOUTRACK_TOKEN,
+      issueId,
+    });
+  } catch (e) {
+    // Could not establish what is public, so nothing travels.
+    console.error(`reply: could not read comments on ${issueId}: ${e.message}`);
+    return;
+  }
+
+  const cutoff = Date.now() - RELAY_MAX_AGE_MS;
+  const recent = comments
+    .filter((c) => c?.id && Number(c.created || 0) >= cutoff)
+    .sort((a, b) => Number(a.created) - Number(b.created));
+
+  for (const comment of recent) {
+    if (await env.DEDUPE.get(kRelayed(comment.id))) continue;
+
+    if (!isPublicComment(comment)) {
+      console.log(
+        `reply: ${issueId} comment ${comment.id} is internal — nothing sent ` +
+          `(visibility=${JSON.stringify(comment.visibility ?? null)})`
+      );
+      continue;
+    }
+
+    const message = commentToHtml(comment.text);
+    if (!message) continue;
+
+    // Claimed before the send, because a reply cannot be unsent.
+    await env.DEDUPE.put(kRelayed(comment.id), '1', { expirationTtl: 60 * 60 * 24 * 30 });
+
+    try {
+      await postCustomerReply(env, conversationId, message);
+      console.log(`reply: ${issueId} comment ${comment.id} -> conversation ${conversationId}`);
+    } catch (e) {
+      console.error(`reply: could not send ${issueId}/${comment.id} to Intercom: ${e.message}`);
+      continue;
+    }
+
+    try {
+      await setYouTrackEnumField({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId,
+        field: 'Replied',
+        value: 'Replied',
+      });
+    } catch (e) {
+      console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
+    }
+  }
+}
+
+/**
+ * A real reply in the conversation — message_type "comment", which the
+ * customer sees, as opposed to the "note" used while this was in testing.
+ */
+async function postCustomerReply(env, conversationId, body) {
+  if (!env.INTERCOM_TOKEN) throw new Error('INTERCOM_TOKEN is not set');
+
+  const adminId =
+    env.INTERCOM_NOTE_ADMIN_ID || (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN));
+  if (!adminId) throw new Error('no admin id available');
+
+  const res = await fetch(`https://api.intercom.io/conversations/${conversationId}/reply`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.INTERCOM_TOKEN}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'Intercom-Version': '2.11',
+    },
+    body: JSON.stringify({
+      message_type: 'comment', // the customer sees this one
+      type: 'admin',
+      admin_id: String(adminId),
+      body,
+    }),
+  });
+  if (!res.ok) throw new Error(`reply rejected (${res.status}): ${await res.text()}`);
+}
+
+/**
+ * A YouTrack comment as Intercom-safe HTML.
+ *
+ * Drops the agent signature YouTrack appends, and the `![](image.png){...}`
+ * markup a pasted image leaves behind — the customer would otherwise read the
+ * raw markup. Everything else is escaped before any tag is added, so a
+ * customer can never be sent markup an agent did not intend.
+ */
+function commentToHtml(text) {
+  const withoutSignature = String(text || '').replace(/\n\s*_{3,}\s*\n[\s\S]*$/, '');
+  const plain = withoutSignature
+    .replace(/[ \t]*!\[[^\]]*\]\([^)]*\)(?:\{[^}]*\})?/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!plain) return '';
+
+  const escaped = plain
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Links become links only after escaping, so the href cannot carry markup.
+  return escaped
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\n/g, '<br>');
+}
+
+/**
+ * Is this really our YouTrack? A plain shared secret, compared in constant
+ * time — YouTrack's workflow HTTP client cannot compute an HMAC over a body.
+ */
+function verifySharedSecret(request, env) {
+  const expected = env.YOUTRACK_WEBHOOK_SECRET;
+  const given = request.headers.get('x-helpdesk-secret') || '';
+  if (!expected) {
+    console.error('reply: YOUTRACK_WEBHOOK_SECRET is not set — refusing every call');
+    return false;
+  }
+  return timingSafeEqual(expected, given);
 }
 
 async function verifyIntercomSignature(request, rawBody, clientSecret) {

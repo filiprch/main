@@ -73,6 +73,29 @@ export async function createYouTrackIssue(opts) {
   return res.json();
 }
 
+/**
+ * Set an enum custom field on an existing issue.
+ *
+ * Same SingleEnumIssueCustomField projection as creation — anything else hits
+ * the Java cast error noted at the top of this file.
+ */
+export async function setYouTrackEnumField({ baseUrl, token, issueId, field, value }) {
+  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}?fields=id`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ customFields: [enumField(field, value)] }),
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack set ${field} failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
 function enumField(name, valueName) {
   return {
     name,
@@ -133,4 +156,57 @@ export async function attachToYouTrackIssue({ baseUrl, token, issueId, name, url
     throw new Error(`YouTrack attach failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
+}
+
+/**
+ * The issue's recent comments, with enough of each one's visibility to judge
+ * who may read it.
+ *
+ * Deliberately a LIST rather than a lookup by id. The workflow reports that
+ * something changed; asking it *which* comment means trusting that a workflow
+ * comment id matches a REST comment id, which is not documented either way.
+ * Reading the issue's own comments needs only the issue id — the one
+ * identifier that is already proven to work — and makes the relay idempotent
+ * and self-healing: a firing that arrives late, twice, or batched still lands
+ * every comment exactly once.
+ */
+export async function listYouTrackComments({ baseUrl, token, issueId, limit = 20 }) {
+  const fields =
+    'id,text,created,author(fullName,login),' +
+    'visibility($type,permittedGroups(id,name),permittedUsers(id)),' +
+    'attachments(id,name,url,mimeType,size)';
+  const url =
+    `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments` +
+    `?fields=${fields}&$top=${limit}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`YouTrack read comments failed (${res.status}): ${await res.text()}`);
+  }
+  const comments = await res.json();
+  return Array.isArray(comments) ? comments : [];
+}
+
+/**
+ * Is this comment visible to the customer?
+ *
+ * FAILS CLOSED. A comment counts as public only when YouTrack positively says
+ * it is unrestricted — no visibility object at all, or UnlimitedVisibility with
+ * nothing listed. Every other shape, including one we do not recognise, is
+ * treated as internal. The cost of a false negative is a reply the agent has
+ * to send again; the cost of a false positive is an internal note about a
+ * customer, delivered to that customer.
+ */
+export function isPublicComment(comment) {
+  const visibility = comment?.visibility;
+  if (!visibility) return true;
+
+  const type = visibility.$type;
+  const groups = visibility.permittedGroups || [];
+  const users = visibility.permittedUsers || [];
+
+  if (type === 'UnlimitedVisibility') return true;
+  if (!type && !groups.length && !users.length) return true;
+  return false;
 }

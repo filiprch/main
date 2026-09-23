@@ -49,7 +49,17 @@ INTERCOM_MAX_AGE_HOURS = "24"
 INTERCOM_DEBOUNCE_SECONDS = "180"
 
 # Bold first line of the internal note. Clear this when testing is over.
+# Prefix on the internal note posted when a ticket is created. That note is
+# internal and the customer never sees it — but "TESTING HELPDESK" is no longer
+# true now that public comments reach customers for real. Clear it or reword it
+# before this is in front of clients.
 INTERCOM_NOTE_PREFIX = "TESTING HELPDESK"
+
+# Two-way replies need a shared secret, set as a SECRET not a var:
+#   npx wrangler secret put YOUTRACK_WEBHOOK_SECRET
+# It must be the SAME value as the Slack worker's and the one in the YouTrack
+# workflow at youtrack-workflows/reply-relay/. With it unset,
+# /youtrack/comment refuses every call rather than waving them through.
 
 # Dedupe store, keyed by conversation id, so a reassignment or a webhook
 # retry cannot produce a second ticket for the same conversation. Separate

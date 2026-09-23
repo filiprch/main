@@ -609,6 +609,35 @@ their own name appended to their own subject. The board loses nothing: the
 `Channel` field and the reporter column already carry both. Slack and Intercom
 keep their prefixes — those titles never leave YouTrack.
 
+### Two-way replies (Intercom) — built
+
+An agent's **public** comment is sent to the customer as a real reply in the
+chat (`message_type: "comment"`). An **internal** one sends nothing at all —
+not even a note.
+
+That last part is a deliberate change. Notes were scaffolding from the period
+when nothing was allowed to reach a customer; leaving them in would put an
+agent's private thinking into the conversation record where the customer's own
+history lives. The only note that remains is the one posted when a ticket is
+created.
+
+Same contract as Slack, on purpose: one habit for an agent across all three
+channels. `ticket:<issueId>` maps a ticket back to its conversation, written
+alongside the forward key at creation, so **only tickets filed from now on can
+be answered this way**.
+
+Comment text is converted to Intercom's HTML: the agent signature and any
+`![](image.png){...}` left by a pasted image are dropped, and everything is
+**escaped before any tag is added**, so an agent cannot accidentally send a
+customer markup they did not intend. Attachments are not carried yet — Intercom
+takes files by public URL, and whether YouTrack's signed attachment links
+qualify is untested.
+
+Verified: a public comment arrives as a visible reply; an internal one produces
+no Intercom request whatsoever; a retry does not double-send; a wrong secret is
+refused; and an ordinary Intercom webhook on the normal path still has its
+signature checked.
+
 ### Two-way replies (Slack) — built
 
 An agent answers in YouTrack; the customer sees it in the Slack thread.
