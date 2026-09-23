@@ -434,7 +434,13 @@ async function relayReply(rawBody, env) {
   }
 
   if (!isPublicComment(comment)) {
-    console.log(`reply: ${issueId} comment ${commentId} is internal — not sent`);
+    // The shape is logged, not just the verdict. What YouTrack actually puts
+    // on a public helpdesk comment is the one thing this decision rests on,
+    // and reading it once beats guessing at it twice.
+    console.log(
+      `reply: ${issueId} comment ${commentId} treated as internal — ` +
+        `visibility=${JSON.stringify(comment.visibility ?? null)}`
+    );
     return;
   }
 
