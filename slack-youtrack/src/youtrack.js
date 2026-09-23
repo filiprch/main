@@ -141,7 +141,9 @@ export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
  */
 export async function listYouTrackComments({ baseUrl, token, issueId, limit = 20 }) {
   const fields =
-    'id,text,created,author(fullName,login),visibility($type,permittedGroups(id,name),permittedUsers(id))';
+    'id,text,created,author(fullName,login),' +
+    'visibility($type,permittedGroups(id,name),permittedUsers(id)),' +
+    'attachments(id,name,url,mimeType,size)';
   const url =
     `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments` +
     `?fields=${fields}&$top=${limit}`;

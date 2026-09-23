@@ -106,6 +106,15 @@ const RELAY_MAX_AGE_MS = 60 * 60 * 1000;
 const loggedInternal = new Set();
 
 /**
+ * Largest attachment worth moving through the worker.
+ *
+ * Every byte passes through memory on its way from YouTrack to Slack, and a
+ * worker has far less of it than either service. A screenshot is the case that
+ * matters; a video is the case that would take the whole relay down with it.
+ */
+const MAX_RELAY_FILE_BYTES = 20 * 1024 * 1024;
+
+/**
  * Named presets, so switching behaviour is one line in wrangler.toml.
  *
  *   always       Every new thread, round the clock. The original behaviour.
@@ -476,21 +485,45 @@ async function relayReply(rawBody, env) {
     }
 
     const message = stripSignature(comment.text);
-    if (!message) continue;
+    const attachments = comment.attachments || [];
+    if (!message && !attachments.length) continue;
 
     await env.DEDUPE.put(kRelayed(comment.id), '1', { expirationTtl: TICKETED_TTL_SECONDS });
 
     const who = String(comment.author?.fullName || comment.author?.login || '').trim();
-    const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
-      channel,
-      thread_ts: threadTs,
-      text: who ? `*${who}:* ${message}` : message,
-    });
-    if (!posted.ok) {
-      console.error(`reply: could not post ${issueId}/${comment.id} to Slack: ${posted.error}`);
-      continue;
+
+    if (message) {
+      const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
+        channel,
+        thread_ts: threadTs,
+        text: who ? `*${who}:* ${message}` : message,
+      });
+      if (!posted.ok) {
+        console.error(`reply: could not post ${issueId}/${comment.id} to Slack: ${posted.error}`);
+        continue;
+      }
     }
-    console.log(`reply: ${issueId} comment ${comment.id} -> ${channel}/${threadTs}`);
+
+    // After the text, so a file that will not move cannot cost the answer.
+    let sentFiles = 0;
+    for (const file of attachments) {
+      const ok = await relayAttachment(env, {
+        channel,
+        threadTs,
+        file,
+        issueId,
+        who: message ? '' : who,
+      });
+      if (ok) sentFiles++;
+    }
+
+    // Counts what arrived, not what was attempted — a line claiming a file was
+    // sent when it failed is worse than no line at all.
+    const files =
+      attachments.length === 0
+        ? ''
+        : ` (${sentFiles}/${attachments.length} file${attachments.length === 1 ? '' : 's'})`;
+    console.log(`reply: ${issueId} comment ${comment.id} -> ${channel}/${threadTs}${files}`);
 
     // The board should show who is still waiting. Failing to flip the field is
     // not worth undoing a message the customer has already seen.
@@ -506,6 +539,82 @@ async function relayReply(rawBody, env) {
       console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
     }
   }
+}
+
+/**
+ * Move one YouTrack attachment into the Slack thread.
+ *
+ * files.upload was retired, so this is Slack's three-step external flow: ask
+ * for an upload URL, PUT the bytes at it, then tell Slack where to share the
+ * result. Needs the files:write bot scope.
+ *
+ * Failures are logged and swallowed: the agent's words have already reached
+ * the customer by this point, and a screenshot that would not move is not a
+ * reason to abandon the rest of the thread. Returns whether it arrived.
+ */
+async function relayAttachment(env, { channel, threadTs, file, issueId, who }) {
+  const name = file.name || 'attachment';
+  try {
+    const src = await fetch(absoluteUrl(env.YOUTRACK_BASE_URL, file.url), {
+      headers: { Authorization: `Bearer ${env.YOUTRACK_TOKEN}` },
+    });
+    if (!src.ok) throw new Error(`download failed (HTTP ${src.status})`);
+
+    const blob = await src.blob();
+    if (!blob.size) throw new Error('downloaded as 0 bytes');
+    if (blob.size > MAX_RELAY_FILE_BYTES) {
+      throw new Error(`${Math.round(blob.size / 1048576)}MB exceeds the relay limit`);
+    }
+
+    const ticket = await slackForm(env.SLACK_BOT_TOKEN, 'files.getUploadURLExternal', {
+      filename: name,
+      length: String(blob.size),
+    });
+    if (!ticket.ok) throw new Error(`getUploadURLExternal: ${ticket.error}`);
+
+    const form = new FormData();
+    form.append('file', blob, name);
+    const put = await fetch(ticket.upload_url, { method: 'POST', body: form });
+    if (!put.ok) throw new Error(`upload failed (HTTP ${put.status})`);
+
+    const done = await slackPost(env.SLACK_BOT_TOKEN, 'files.completeUploadExternal', {
+      files: [{ id: ticket.file_id, title: name }],
+      channel_id: channel,
+      // Must be the thread PARENT, which is what we stored — Slack rejects a
+      // reply's ts here.
+      thread_ts: threadTs,
+      ...(who ? { initial_comment: `*${who}:*` } : {}),
+    });
+    if (!done.ok) throw new Error(`completeUploadExternal: ${done.error}`);
+
+    console.log(`reply: ${issueId} attached ${name} to ${channel}/${threadTs}`);
+    return true;
+  } catch (e) {
+    console.error(`reply: could not relay ${name} from ${issueId}: ${e.message}`);
+    return false;
+  }
+}
+
+/** YouTrack gives attachment urls relative in some responses, absolute in others. */
+function absoluteUrl(baseUrl, url) {
+  const href = String(url || '');
+  if (/^https?:\/\//i.test(href)) return href;
+  return `${String(baseUrl).replace(/\/$/, '')}${href.startsWith('/') ? '' : '/'}${href}`;
+}
+
+/** Slack methods that want form encoding rather than JSON. */
+async function slackForm(token, method, params) {
+  const res = await fetch(`https://slack.com/api/${method}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams(params),
+  });
+  const data = await res.json();
+  if (!data.ok) console.error(`${method} failed:`, data.error);
+  return data;
 }
 
 /**

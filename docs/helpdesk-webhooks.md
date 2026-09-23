@@ -679,8 +679,31 @@ key**, so replies on them log "no Slack thread recorded"; only tickets filed
 from now on can be answered this way. After a successful send the ticket's
 `Replied` field flips, so the board shows who is still waiting.
 
-Attachments on replies are not carried (that needs `files:write`); text is the
-case that matters and files can follow later.
+**Attachments on a public comment travel with it.** A screenshot an agent
+attaches in YouTrack appears in the Slack thread. Requires the `files:write`
+bot scope.
+
+`files.upload` was retired, so this uses Slack's three-step external flow: ask
+for an upload URL, POST the bytes, then share the result into the thread. The
+`thread_ts` must be the thread **parent** — Slack rejects a reply's ts — which
+is what `slack:ticket:<id>` already stores.
+
+Order and failure handling matter here:
+
+- Files go **after** the text, so a file that will not move cannot cost the
+  answer. An upload failure is logged and swallowed; the agent's words have
+  already reached the customer.
+- Anything over `MAX_RELAY_FILE_BYTES` (20 MB) is skipped with a logged reason.
+  Every byte passes through the worker's memory, which is far smaller than
+  either service's. A screenshot is the case that matters; a video is the case
+  that would take the relay down with it.
+- A comment with an attachment and no text still sends, with the agent's name
+  as the file's comment.
+- The log counts what **arrived**, not what was attempted — `(0/1 file)` when
+  an upload failed, because a line claiming a file was sent when it was not is
+  worse than no line at all.
+
+An internal comment sends neither its text nor its files.
 
 ### Give other projects their own sender address
 
