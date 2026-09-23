@@ -128,23 +128,31 @@ export async function addYouTrackComment({ baseUrl, token, issueId, text }) {
 }
 
 /**
- * Fetch one comment, with enough of its visibility to judge who may read it.
+ * The issue's recent comments, with enough of each one's visibility to judge
+ * who may read it.
  *
- * The workflow that triggers a relay cannot be trusted to report this: comment
- * visibility is a REST-side concept, and a workflow reading it wrongly would
- * either relay nothing or — far worse — relay an internal note to a customer.
- * So the worker asks YouTrack itself.
+ * Deliberately a LIST rather than a lookup by id. The workflow reports that
+ * something changed; asking it *which* comment means trusting that a workflow
+ * comment id matches a REST comment id, which is not documented either way.
+ * Reading the issue's own comments needs only the issue id — the one
+ * identifier that is already proven to work — and makes the relay idempotent
+ * and self-healing: a firing that arrives late, twice, or batched still lands
+ * every comment exactly once.
  */
-export async function getYouTrackComment({ baseUrl, token, issueId, commentId }) {
-  const fields = 'id,text,author(fullName,login),visibility($type,permittedGroups(id,name),permittedUsers(id))';
-  const url = `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments/${commentId}?fields=${fields}`;
+export async function listYouTrackComments({ baseUrl, token, issueId, limit = 20 }) {
+  const fields =
+    'id,text,created,author(fullName,login),visibility($type,permittedGroups(id,name),permittedUsers(id))';
+  const url =
+    `${baseUrl.replace(/\/$/, '')}/api/issues/${issueId}/comments` +
+    `?fields=${fields}&$top=${limit}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
   if (!res.ok) {
-    throw new Error(`YouTrack read comment failed (${res.status}): ${await res.text()}`);
+    throw new Error(`YouTrack read comments failed (${res.status}): ${await res.text()}`);
   }
-  return res.json();
+  const comments = await res.json();
+  return Array.isArray(comments) ? comments : [];
 }
 
 /**

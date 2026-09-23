@@ -625,11 +625,28 @@ on Slack while Gmail used the toggle; two conventions is one too many, and the
 thing forgetting the wrong one leaks is an internal note about a customer, to
 that customer.
 
-**The workflow does not decide what is public.** It reports only which comment
-changed; the worker reads the comment back through YouTrack's REST API and
-relays it only if that confirms it is unrestricted. Comment visibility is
-REST-side state and a workflow's view of it is not something to bet a customer
-relationship on.
+**The workflow does not decide what is public**, and does not say which comment
+changed either. It reports only the issue id. The worker then reads that
+issue's recent comments over REST and sends every public one it has not sent
+before.
+
+That shape was chosen after two guesses failed. Comment visibility is REST-side
+state, so a workflow's view of it cannot be trusted — and whether a workflow's
+`comment.id` matches a REST comment id is documented nowhere, so asking the
+workflow *which* comment would have been a second unverified assumption. The
+issue id is the one identifier already proven to work. Reading the list instead
+makes the pass **idempotent and self-healing**: a firing that arrives late,
+twice, or batched still lands each comment exactly once, and a comment missed
+during an outage is picked up by the next firing.
+
+`RELAY_MAX_AGE_MS` bounds that self-healing to an hour. Without it, the first
+firing after a fix would flood the customer with every public comment ever
+written on the ticket.
+
+The agent signature YouTrack appends to public comments is stripped before
+sending: in Slack it would land under the `*Name:*` prefix the relay already
+adds, so the customer would read the sender's name twice and a written sign-off
+on a chat message.
 
 `isPublicComment()` **fails closed**. A comment travels only when YouTrack
 positively says it is unrestricted — no visibility object, or

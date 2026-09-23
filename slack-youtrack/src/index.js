@@ -31,7 +31,7 @@ import {
   addYouTrackComment,
   attachToYouTrackIssue,
   createYouTrackIssue,
-  getYouTrackComment,
+  listYouTrackComments,
   isPublicComment,
   setYouTrackEnumField,
 } from './youtrack.js';
@@ -43,6 +43,7 @@ import {
   fileName,
   renderSlack,
   stripFirst,
+  stripSignature,
 } from './format.js';
 import {
   DEFAULT_EFFORT,
@@ -86,6 +87,23 @@ const kRelayed = (id) => `slack:relayed:${id}`;
 
 /** Path YouTrack's workflow posts a new comment to. */
 const REPLY_PATH = '/youtrack/comment';
+/**
+ * How far back a relay pass will look.
+ *
+ * The pass is self-healing, which without a bound would mean the first firing
+ * after a fix floods a customer with every public comment ever written on the
+ * ticket. An hour is long enough to recover from an outage, short enough that
+ * nothing surprising arrives.
+ */
+const RELAY_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Comments already reported as internal, so a chatty ticket does not reprint
+ * the same verdict on every firing for an hour. Per-isolate and lossy on
+ * purpose: this is log hygiene, not correctness, and must never cost a KV
+ * write.
+ */
+const loggedInternal = new Set();
 
 /**
  * Named presets, so switching behaviour is one line in wrangler.toml.
@@ -387,10 +405,13 @@ async function commentOnExistingTicket(env, event, eventId) {
  * forgotten, and the thing forgetting it leaks is an internal note about a
  * customer, to that customer.
  *
- * The workflow reports only WHICH comment changed. Whether it is public is
- * read back from YouTrack here, because visibility is REST-side state and a
- * workflow's view of it cannot be relied on. Anything not positively confirmed
- * public stays put — see isPublicComment.
+ * The workflow reports only THAT something changed, by issue id. This pass
+ * then reads the issue's recent comments from YouTrack and sends every public
+ * one it has not sent before. That makes it idempotent and self-healing — a
+ * firing that arrives late, twice, or batched still lands each comment exactly
+ * once — and it avoids depending on a workflow comment id matching a REST
+ * comment id, which is documented nowhere. Anything not positively confirmed
+ * public stays put; see isPublicComment.
  */
 async function relayReply(rawBody, env) {
   let payload;
@@ -401,52 +422,13 @@ async function relayReply(rawBody, env) {
     return;
   }
 
-  const { issueId, commentId } = payload;
-  if (!issueId || !commentId) {
-    console.error('reply: needs issueId and commentId');
+  const issueId = payload.issueId;
+  if (!issueId) {
+    console.error('reply: needs issueId');
     return;
   }
-
   if (!env.DEDUPE) {
     console.error('reply: no KV bound, cannot find the thread');
-    return;
-  }
-
-  // A relayed message cannot be unsent, so the guard against a workflow retry
-  // posting it twice comes before the posting, not after.
-  if (await env.DEDUPE.get(kRelayed(commentId))) {
-    console.log(`reply: comment ${commentId} was already sent`);
-    return;
-  }
-
-  let comment;
-  try {
-    comment = await getYouTrackComment({
-      baseUrl: env.YOUTRACK_BASE_URL,
-      token: env.YOUTRACK_TOKEN,
-      issueId,
-      commentId,
-    });
-  } catch (e) {
-    // Could not establish that this is public, so it does not travel.
-    console.error(`reply: could not read comment ${commentId}, not relaying: ${e.message}`);
-    return;
-  }
-
-  if (!isPublicComment(comment)) {
-    // The shape is logged, not just the verdict. What YouTrack actually puts
-    // on a public helpdesk comment is the one thing this decision rests on,
-    // and reading it once beats guessing at it twice.
-    console.log(
-      `reply: ${issueId} comment ${commentId} treated as internal — ` +
-        `visibility=${JSON.stringify(comment.visibility ?? null)}`
-    );
-    return;
-  }
-
-  const message = String(comment.text || '').trim();
-  if (!message) {
-    console.log(`reply: ${issueId} comment ${commentId} is empty`);
     return;
   }
 
@@ -457,32 +439,72 @@ async function relayReply(rawBody, env) {
   }
   const { channel, threadTs } = JSON.parse(target);
 
-  await env.DEDUPE.put(kRelayed(commentId), '1', { expirationTtl: TICKETED_TTL_SECONDS });
-
-  const who = String(comment.author?.fullName || comment.author?.login || '').trim();
-  const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
-    channel,
-    thread_ts: threadTs,
-    text: who ? `*${who}:* ${message}` : message,
-  });
-  if (!posted.ok) {
-    console.error(`reply: could not post ${issueId} to Slack: ${posted.error}`);
-    return;
-  }
-  console.log(`reply: ${issueId} comment ${commentId} -> ${channel}/${threadTs}`);
-
-  // The board should show who is still waiting. Failing to flip the field is
-  // not worth undoing a message the customer has already seen.
+  let comments;
   try {
-    await setYouTrackEnumField({
+    comments = await listYouTrackComments({
       baseUrl: env.YOUTRACK_BASE_URL,
       token: env.YOUTRACK_TOKEN,
       issueId,
-      field: 'Replied',
-      value: 'Replied',
     });
   } catch (e) {
-    console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
+    // Could not establish what is public, so nothing travels.
+    console.error(`reply: could not read comments on ${issueId}: ${e.message}`);
+    return;
+  }
+
+  const cutoff = Date.now() - RELAY_MAX_AGE_MS;
+  const recent = comments
+    .filter((c) => c?.id && Number(c.created || 0) >= cutoff)
+    .sort((a, b) => Number(a.created) - Number(b.created));
+
+  for (const comment of recent) {
+    // A relayed message cannot be unsent, so the claim comes before the send.
+    if (await env.DEDUPE.get(kRelayed(comment.id))) continue;
+
+    if (!isPublicComment(comment)) {
+      // The shape is logged, not just the verdict. What YouTrack actually puts
+      // on a public helpdesk comment is the one thing this decision rests on.
+      if (!loggedInternal.has(comment.id)) {
+        loggedInternal.add(comment.id);
+        if (loggedInternal.size > 500) loggedInternal.clear();
+        console.log(
+          `reply: ${issueId} comment ${comment.id} treated as internal — ` +
+            `visibility=${JSON.stringify(comment.visibility ?? null)}`
+        );
+      }
+      continue;
+    }
+
+    const message = stripSignature(comment.text);
+    if (!message) continue;
+
+    await env.DEDUPE.put(kRelayed(comment.id), '1', { expirationTtl: TICKETED_TTL_SECONDS });
+
+    const who = String(comment.author?.fullName || comment.author?.login || '').trim();
+    const posted = await slackPost(env.SLACK_BOT_TOKEN, 'chat.postMessage', {
+      channel,
+      thread_ts: threadTs,
+      text: who ? `*${who}:* ${message}` : message,
+    });
+    if (!posted.ok) {
+      console.error(`reply: could not post ${issueId}/${comment.id} to Slack: ${posted.error}`);
+      continue;
+    }
+    console.log(`reply: ${issueId} comment ${comment.id} -> ${channel}/${threadTs}`);
+
+    // The board should show who is still waiting. Failing to flip the field is
+    // not worth undoing a message the customer has already seen.
+    try {
+      await setYouTrackEnumField({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId,
+        field: 'Replied',
+        value: 'Replied',
+      });
+    } catch (e) {
+      console.error(`reply: sent, but could not mark ${issueId} replied: ${e.message}`);
+    }
   }
 }
 

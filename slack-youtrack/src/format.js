@@ -163,3 +163,18 @@ export function buildComment({ speaker, ts, text, files, names }) {
   for (const f of files || []) lines.push(`> 📎 ${fileName(f)}`);
   return lines.join('\n');
 }
+
+/**
+ * Drop the agent signature YouTrack appends to public comments.
+ *
+ * It is stored in the comment text, separated by a rule: "test\n___\nKind
+ * regards,\nFilip Seidel". In Slack that lands under a "*Filip Seidel:*"
+ * prefix we already added, so the customer reads the sender's name twice and a
+ * sign-off on a chat message. Only a trailing block is removed, and only after
+ * a line that is nothing but underscores — YouTrack's own separator.
+ */
+export function stripSignature(text) {
+  const body = String(text || '');
+  const match = /\n\s*_{3,}\s*\n[\s\S]*$/.exec(body);
+  return (match ? body.slice(0, match.index) : body).trim();
+}
