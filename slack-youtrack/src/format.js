@@ -178,3 +178,25 @@ export function stripSignature(text) {
   const match = /\n\s*_{3,}\s*\n[\s\S]*$/.exec(body);
   return (match ? body.slice(0, match.index) : body).trim();
 }
+
+/**
+ * Turn a YouTrack comment into something worth reading in Slack.
+ *
+ * Pasting an image into a comment puts BOTH an attachment on the comment and
+ * `![](image2.png){width=70%}` in its text. The relay uploads the attachment,
+ * so that markup arrives as literal characters next to the picture it refers
+ * to. Markdown links have the same problem — Slack has its own syntax and
+ * shows `[label](url)` verbatim — so they are converted rather than dropped,
+ * since the address is the part the customer may need.
+ *
+ * A comment that was nothing but a pasted image comes back empty, which is
+ * correct: the caller then sends the file alone.
+ */
+export function slackifyComment(text) {
+  return String(text || '')
+    .replace(/[ \t]*!\[[^\]]*\]\([^)]*\)(?:\{[^}]*\})?/g, '')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<$2|$1>')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

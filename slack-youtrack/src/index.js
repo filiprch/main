@@ -43,6 +43,7 @@ import {
   fileName,
   renderSlack,
   stripFirst,
+  slackifyComment,
   stripSignature,
 } from './format.js';
 import {
@@ -484,7 +485,7 @@ async function relayReply(rawBody, env) {
       continue;
     }
 
-    const message = stripSignature(comment.text);
+    const message = slackifyComment(stripSignature(comment.text));
     const attachments = comment.attachments || [];
     if (!message && !attachments.length) continue;
 
