@@ -71,7 +71,7 @@ These are settings and admin, not code. Each is small.
 |---|------|------|------|
 | 1 | **Switch Fin to @mention-only** | Intercom Workflow | Gates the whole trial. Fin currently answers every message, including "hi" — which bills $0.99 if nobody closes the thread out. |
 | 2 | **Test the disengage gesture** | test | Does an MRP reply *in the Slack thread* stop Fin, or must it come from the Intercom inbox? Unresolved and important. |
-| 3 | **Each agent: own Intercom seat, then authenticate their own Slack** | Intercom | Proven to work. Cannot be done centrally — each person clicks it, and needs *Can manage workspace data*. Their YouTrack and Intercom emails must match. Do **not** authenticate the shared seat against one person's Slack: every colleague's reply would then show as them. |
+| 3 | **Revoke the personal Slack link on the shared `support@` seat** | Intercom/Slack | **Decided: no new Intercom seats.** So that seat is the fallback for nearly every reply, and a personal Slack link on it puts one colleague's face on everyone's words. Teammates who already have their own seat (Lisa) are unaffected by the revoke. Attribution for everyone else is the name prefix in the message body. Previously: proven to work Cannot be done centrally — each person clicks it, and needs *Can manage workspace data*. Their YouTrack and Intercom emails must match. Do **not** authenticate the shared seat against one person's Slack: every colleague's reply would then show as them. |
 | 4 | **Write the pinned channel guidance** | copy | Once the trigger is settled. |
 | 5 | **Deploy the SLACK-origin labelling fix** | deploy | Committed; `npx wrangler deploy` in `intercom-youtrack/`. |
 

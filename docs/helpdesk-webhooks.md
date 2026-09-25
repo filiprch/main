@@ -764,7 +764,14 @@ reply under the team's name still beats a reply that never went.
 This is the same wish that proved impossible on YouTrack's own comments — and
 it works here only because Intercom supports what YouTrack does not.
 
-**Two things are needed per person, and neither is code:**
+**Decision (2026-09-25): MRP is not creating Intercom seats per person.** Only
+people who already hold one — Lisa, and whoever else exists — can be attributed
+this way. Everyone else reaches customers under the service identity with their
+name in the message body, which is the intended end state rather than a gap. So
+the two steps below apply only to teammates who already have a seat; do not
+propose creating seats for the others.
+
+**Where a seat does exist, two things are needed, and neither is code:**
 
 1. **Their own Intercom seat**, on the same email as their YouTrack account. A
    shared seat cannot tell one teammate from another.
@@ -796,7 +803,11 @@ words. Confidently wrong, which beats vague only in the wrong direction.
 Two things guard against it, and only the first actually closes it:
 
 1. **Config, and this is the real fix:** the seat used as the service identity
-   must be one no person has authenticated. Humans reply from their own seats.
+   must be one no person has authenticated. Since most people have no seat of
+   their own, that shared seat is the fallback for nearly every reply — so a
+   personal Slack link on it puts one colleague's face on everybody's words.
+   Revoking that link is required, not optional, and it does not disturb a
+   teammate who authenticated their OWN seat.
 2. **Code, as a safety net:** a reply that could not be attributed is prefixed
    with the author's name in bold, so the text says who wrote it even when the
    avatar cannot. The name is escaped before it is added — it is user data, and
