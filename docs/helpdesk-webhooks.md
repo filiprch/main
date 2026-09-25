@@ -738,6 +738,57 @@ then caches it. The conversation id is already written down there and cannot
 drift, so no ticket is stranded by the mapping arriving late. A ticket with no
 such link is refused rather than guessed at.
 
+#### One conversation, three places, one story
+
+Slack, Intercom and the ticket should all show the same exchange. Three paths
+keep them together, and each one has to avoid feeding the others.
+
+| Written in | Reaches | How |
+|---|---|---|
+| YouTrack (public comment) | Intercom **and** Slack | The worker replies to the conversation; Intercom posts it into the thread |
+| Intercom inbox (teammate) | Slack **and** YouTrack | Intercom posts it into the thread; `mirrorAdminReplies` copies it onto the ticket |
+| Slack (customer) | Intercom **and** YouTrack | Fin creates the conversation; `commentNewMessages` copies it onto the ticket |
+
+##### Who the reply appears to come from
+
+Intercom, unlike YouTrack, **honours the sender**: pass `admin_id` on a reply
+and the customer sees that teammate's name and avatar. So the worker reads the
+YouTrack comment's author, matches them to an Intercom admin **by exact email**,
+and sends as them — an answer Filip writes in YouTrack reaches Slack as Filip.
+
+Matching is exact because the cost of a loose match is a reply signed by the
+wrong colleague, which is worse than one signed by the team account. No match,
+no email, or a failed lookup all fall back to the service account, because a
+reply under the team's name still beats a reply that never went.
+
+This is the same wish that proved impossible on YouTrack's own comments — and
+it works here only because Intercom supports what YouTrack does not.
+
+##### Not echoing
+
+An answer must not travel YouTrack → Intercom → back to YouTrack. Two marks
+prevent it, both written **before** the action they guard:
+
+- Relaying outward, the worker reads back the id of the part Intercom created
+  and marks it `mirrored:<part id>`, so the inbound mirror skips it. The part is
+  matched **by body**, not taken as "the last one" — a message arriving in the
+  same moment would otherwise be silenced instead of ours.
+- Mirroring inward, the YouTrack comment it creates is marked
+  `relayed:<comment id>`, so the outbound rule does not send it back out.
+
+The mirrored comment is created **public**, because it was public — the
+customer has already seen it. Fin's own messages are not mirrored: they are
+many, and what matters about them is already on the ticket under "Fin already
+tried".
+
+##### The topic that must stay mirror-only
+
+`conversation.admin.replied` was once ignored entirely, because treating a
+teammate's reply as a handoff **filed a ticket every time Lisa answered a
+client**. That reasoning still holds and is now enforced rather than implied:
+the topic is in `MIRROR_ONLY_TOPICS`, returns before any handoff or ticket
+decision, and does nothing at all unless a ticket already exists.
+
 #### Which worker gets told about a comment
 
 The YouTrack rule tells **both workers** about every new comment and lets

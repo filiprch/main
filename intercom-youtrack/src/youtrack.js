@@ -172,7 +172,7 @@ export async function attachToYouTrackIssue({ baseUrl, token, issueId, name, url
  */
 export async function listYouTrackComments({ baseUrl, token, issueId, limit = 20 }) {
   const fields =
-    'id,text,created,author(fullName,login),' +
+    'id,text,created,author(fullName,login,email),' +
     'visibility($type,permittedGroups(id,name),permittedUsers(id)),' +
     'attachments(id,name,url,mimeType,size)';
   const url =

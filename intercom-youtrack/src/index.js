@@ -70,7 +70,25 @@ import {
  * human already doing the work — and treating it as one filed a ticket every
  * time Lisa replied to a client.
  */
-const HANDLED_TOPICS = ['conversation.operator.replied', 'conversation.user.replied'];
+const HANDLED_TOPICS = [
+  'conversation.operator.replied',
+  'conversation.user.replied',
+  // MIRROR ONLY — see MIRROR_ONLY_TOPICS. Listed here so the event reaches
+  // handleEvent at all; it returns before any handoff or ticket decision.
+  'conversation.admin.replied',
+];
+
+/**
+ * Topics that may only copy a message onto an EXISTING ticket.
+ *
+ * conversation.admin.replied used to be ignored outright because treating a
+ * teammate's reply as a handoff filed a ticket every time Lisa answered a
+ * client. That reasoning still holds and is enforced here: these topics never
+ * reach the handoff logic and never create anything. They exist so that an
+ * answer written in the Intercom inbox appears on the ticket too, which is the
+ * only way the three places tell the same story.
+ */
+const MIRROR_ONLY_TOPICS = ['conversation.admin.replied'];
 
 /** A customer message can land before Fin has finished deciding. */
 const TOPICS_WORTH_RECHECKING = ['conversation.user.replied'];
@@ -89,7 +107,19 @@ const kTicket = (id) => `intercom:${id}`; // conversation -> ticket id
 const kPending = (id) => `pending:${id}`; // conversation -> { dueAt, attempts }
 const kSeen = (id) => `seen:${id}`; // conversation -> last part id in the ticket
 const kConversation = (ticketId) => `ticket:${ticketId}`; // ticket id -> conversation
-const kRelayed = (commentId) => `relayed:${commentId}`; // comment -> already sent
+const kRelayed = (commentId) => `relayed:${commentId}`;
+const kAdmin = (email) => `intercom:admin:${email.toLowerCase()}`;
+/**
+ * An Intercom part that must never be copied into YouTrack.
+ *
+ * Marked both for parts WE created (relaying a YouTrack comment outward) and
+ * for parts already mirrored inward. Without the first, an agent's answer
+ * would travel YouTrack → Intercom → back to YouTrack as a duplicate.
+ */
+const kMirrored = (partId) => `mirrored:${partId}`;
+const MIRRORED_TTL_SECONDS = 60 * 60 * 24 * 30;
+const ADMIN_TTL_SECONDS = 60 * 60 * 24 * 7;
+const NO_ADMIN_TTL_SECONDS = 60 * 60 * 24; // comment -> already sent
 
 /** Path YouTrack's workflow posts a new comment to. */
 const REPLY_PATH = '/youtrack/comment';
@@ -183,6 +213,19 @@ async function handleEvent(payload, env) {
   if (!item?.id) return;
   if (!env.DEDUPE) {
     console.error('DEDUPE KV is not bound — cannot schedule or dedupe');
+    return;
+  }
+
+  // Before anything that could file a ticket: these topics only ever copy a
+  // message onto a ticket that already exists.
+  if (MIRROR_ONLY_TOPICS.includes(payload.topic)) {
+    const existing = await env.DEDUPE.get(kTicket(item.id));
+    if (!existing) return;
+    try {
+      await mirrorAdminReplies(env, item.id, existing);
+    } catch (e) {
+      console.error(`mirror onto ${existing} failed:`, e);
+    }
     return;
   }
 
@@ -413,6 +456,74 @@ async function createTicketFor(env, conversationId) {
   } catch (e) {
     console.error('postInternalNote failed:', e);
   }
+}
+
+/**
+ * Copy answers written in the Intercom inbox onto the ticket.
+ *
+ * Without this the three places disagree: an answer typed in Intercom reaches
+ * Slack, because Intercom posts it into the thread, but the ticket never hears
+ * about it and the next person to open it sees a question nobody answered.
+ *
+ * Fin's own messages are left out. They are many, and what matters about them
+ * — which articles it tried — is already on the ticket. Only what a person
+ * wrote is copied.
+ *
+ * The comment is created PUBLIC, because it was public: the customer has
+ * already seen it. It is marked relayed in the same breath so the outbound
+ * rule does not send it back to Intercom as an echo.
+ */
+async function mirrorAdminReplies(env, conversationId, ticketId) {
+  const conversation = await fetchConversation(env.INTERCOM_TOKEN, conversationId);
+  if (!conversation) return;
+
+  const fresh = [];
+  for (const part of conversation.conversation_parts?.conversation_parts || []) {
+    if (part?.part_type !== 'comment') continue;
+    if (!isHumanAdmin(part.author)) continue;
+    if (await env.DEDUPE.get(kMirrored(part.id))) continue;
+    const text = htmlToText(part.body || '');
+    if (!text) continue;
+    fresh.push({ id: part.id, text, author: part.author?.name || 'A teammate' });
+  }
+  if (!fresh.length) return;
+
+  for (const m of fresh) {
+    // Claimed before the write: a retry must not comment twice.
+    await env.DEDUPE.put(kMirrored(m.id), '1', { expirationTtl: MIRRORED_TTL_SECONDS });
+
+    let created;
+    try {
+      created = await addYouTrackComment({
+        baseUrl: env.YOUTRACK_BASE_URL,
+        token: env.YOUTRACK_TOKEN,
+        issueId: ticketId,
+        text: `**${m.author} replied in Intercom**\n\n${m.text}`,
+      });
+    } catch (e) {
+      // Unclaim, so the next firing can try again.
+      await env.DEDUPE.delete(kMirrored(m.id));
+      throw e;
+    }
+
+    if (created?.id) {
+      await env.DEDUPE.put(kRelayed(created.id), '1', { expirationTtl: MIRRORED_TTL_SECONDS });
+    }
+  }
+  console.log(`mirrored ${fresh.length} Intercom reply(s) onto ${ticketId}`);
+}
+
+/**
+ * A real teammate, not Fin and not the customer.
+ *
+ * Fin is an admin as far as the API is concerned, so type alone is not enough:
+ * its parts arrive as type "bot", and its address is the workspace operator
+ * mailbox (operator+<app>@intercom.io).
+ */
+function isHumanAdmin(author) {
+  if (!author) return false;
+  if (author.type !== 'admin') return false;
+  return !/^operator\+/i.test(String(author.email || ''));
 }
 
 /** Everything the customer has said since the ticket was written. */
@@ -951,9 +1062,18 @@ async function relayReply(rawBody, env) {
     // Claimed before the send, because a reply cannot be unsent.
     await env.DEDUPE.put(kRelayed(comment.id), '1', { expirationTtl: 60 * 60 * 24 * 30 });
 
+    const senderAdminId = await intercomAdminIdByEmail(env, comment.author?.email);
+
     try {
-      await postCustomerReply(env, conversationId, message);
-      console.log(`reply: ${issueId} comment ${comment.id} -> conversation ${conversationId}`);
+      const partId = await postCustomerReply(env, conversationId, message, senderAdminId);
+      // Ours — so the inbound mirror does not copy it back onto the ticket.
+      if (partId) {
+        await env.DEDUPE.put(kMirrored(partId), '1', { expirationTtl: MIRRORED_TTL_SECONDS });
+      }
+      console.log(
+        `reply: ${issueId} comment ${comment.id} -> conversation ${conversationId}` +
+          (senderAdminId ? ` as ${comment.author?.email}` : ' as the service account')
+      );
     } catch (e) {
       console.error(`reply: could not send ${issueId}/${comment.id} to Intercom: ${e.message}`);
       continue;
@@ -1002,11 +1122,62 @@ async function conversationFromDescription(env, issueId) {
  * A real reply in the conversation — message_type "comment", which the
  * customer sees, as opposed to the "note" used while this was in testing.
  */
-async function postCustomerReply(env, conversationId, body) {
+/**
+ * The Intercom admin id for a YouTrack comment author, or ''.
+ *
+ * Intercom, unlike YouTrack, honours the sender on a reply: pass admin_id and
+ * the customer sees that teammate's name and avatar. So an answer Filip writes
+ * in YouTrack can reach Slack as Filip rather than as the service account.
+ *
+ * Matching is by email and EXACT. Intercom's admin list is small and the cost
+ * of a loose match is a reply signed by the wrong colleague, which is worse
+ * than one signed by the team account.
+ */
+async function intercomAdminIdByEmail(env, email) {
+  const wanted = String(email || '').trim().toLowerCase();
+  if (!wanted || !env.INTERCOM_TOKEN) return '';
+
+  const key = kAdmin(wanted);
+  if (env.DEDUPE) {
+    const cached = await env.DEDUPE.get(key);
+    if (cached) return cached === '-' ? '' : cached;
+  }
+
+  let id = '';
+  try {
+    const res = await intercomGet(env.INTERCOM_TOKEN, '/admins');
+    if (!res.ok) {
+      // Unknown, not absent — so deliberately not cached.
+      console.error(`reply: admin list failed (${res.status})`);
+      return '';
+    }
+    const data = await res.json();
+    const admins = data?.admins || [];
+    const match = admins.find((a) => String(a?.email || '').toLowerCase() === wanted);
+    id = match?.id ? String(match.id) : '';
+    console.log(`reply: ${wanted} matched Intercom admin ${id || 'nothing'}`);
+  } catch (e) {
+    console.error(`reply: admin lookup failed for ${wanted}: ${e.message}`);
+    return '';
+  }
+
+  if (env.DEDUPE) {
+    await env.DEDUPE.put(key, id || '-', {
+      expirationTtl: id ? ADMIN_TTL_SECONDS : NO_ADMIN_TTL_SECONDS,
+    });
+  }
+  return id;
+}
+
+async function postCustomerReply(env, conversationId, body, senderAdminId) {
   if (!env.INTERCOM_TOKEN) throw new Error('INTERCOM_TOKEN is not set');
 
+  // The comment's own author when we could match them, otherwise the service
+  // account — a reply under the team's name still beats one not sent.
   const adminId =
-    env.INTERCOM_NOTE_ADMIN_ID || (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN));
+    senderAdminId ||
+    env.INTERCOM_NOTE_ADMIN_ID ||
+    (await fetchTokenOwnerAdminId(env.INTERCOM_TOKEN));
   if (!adminId) throw new Error('no admin id available');
 
   const res = await fetch(`https://api.intercom.io/conversations/${conversationId}/reply`, {
@@ -1025,6 +1196,24 @@ async function postCustomerReply(env, conversationId, body) {
     }),
   });
   if (!res.ok) throw new Error(`reply rejected (${res.status}): ${await res.text()}`);
+
+  // Return the part Intercom just created, so the caller can mark it as ours.
+  // Matched on the body rather than taken as "the last one", because a message
+  // arriving in the same moment would otherwise be marked instead — and the
+  // one we silence must be the one we sent.
+  try {
+    const conversation = await res.json();
+    const parts = conversation?.conversation_parts?.conversation_parts || [];
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (String(parts[i]?.body || '') === body) return String(parts[i].id);
+    }
+  } catch {
+    // The reply was delivered; only the id is missing. The mirror's own
+    // author check still keeps Fin out, and a duplicated agent line on the
+    // ticket is a far smaller problem than a reply that never went.
+    console.error('reply: sent, but could not read back the part id');
+  }
+  return '';
 }
 
 /**
