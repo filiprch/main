@@ -2619,6 +2619,31 @@ def _leak_selected_rows(sp_ids: list, include_trials: bool) -> list:
     return out, blocked
 
 
+_LEAK_SCHED_COUNT_QUERY = """
+    select amazon_selling_partner_id as sp_id, count(*) as n
+    from scheduler_config
+    where amazon_selling_partner_id = ANY (%(ids)s)
+      and type like 'SQP%%'
+    group by 1
+"""
+
+
+def _leak_sched_counts(sp_ids: list) -> dict:
+    """SQP scheduler_config rows per seller — used to prove a removal landed."""
+    ids = []
+    for s in sp_ids:
+        try:
+            ids.append(int(s))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(_LEAK_SCHED_COUNT_QUERY, {"ids": ids})
+            return {str(r["sp_id"]): int(r["n"]) for r in cur.fetchall()}
+
+
 def _leak_selection_is_trials(sp_ids: list) -> bool:
     """True when the selection only matches rows in the trials bucket."""
     wanted = {str(s) for s in sp_ids}
@@ -2681,6 +2706,11 @@ def leak_remove_test():
         return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
 
     try:
+        before = _leak_sched_counts([sp_id]).get(str(sp_id), 0)
+    except Exception:
+        before = None
+
+    try:
         url, body, resp = _leak_remove_via_api(token, sp_id, method)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
@@ -2695,11 +2725,32 @@ def leak_remove_test():
     elif resp.status_code in (400, 422):
         hint = ("The endpoint exists but rejected this body shape. The response "
                 "should say which fields it wants.")
-    elif 200 <= resp.status_code < 300:
-        hint = ("Accepted. Confirm in the database that this seller's SQP scheduler "
-                "rows are now disabled before using it in bulk.")
+
+    # A 2xx is not proof. Count the seller's SQP scheduler rows before and after.
+    after = None
+    if 200 <= resp.status_code < 300:
+        try:
+            after = _leak_sched_counts([sp_id]).get(str(sp_id), 0)
+        except Exception:
+            after = None
+        if before is None or after is None:
+            hint = "Accepted, but scheduler_config could not be read to confirm it."
+        elif before and not after:
+            hint = (f"Confirmed: {before} SQP scheduler_config row(s) deleted for this "
+                    "seller. amazon_report_info is untouched.")
+        elif not before:
+            hint = "Accepted, but this seller had no SQP scheduler rows to begin with."
+        elif after == before:
+            hint = (f"Accepted ({resp.status_code}) but the {before} scheduler_config "
+                    "row(s) are still there — nothing was actually removed. This is the "
+                    "case the backend team warned about, where it depends on when the "
+                    "seller was added.")
+        else:
+            hint = f"Partially removed: {before} row(s) before, {after} after."
+
     return jsonify({"ok": True, "status": resp.status_code, "method": method,
-                    "url": url, "sent": body, "response": text, "hint": hint})
+                    "url": url, "sent": body, "response": text, "hint": hint,
+                    "rows_before": before, "rows_after": after})
 
 
 @app.route("/api/leak/disable", methods=["POST"])
@@ -2736,6 +2787,15 @@ def leak_disable():
     except Exception as exc:
         return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
 
+    # The endpoint deletes scheduler_config rows, and the backend team flagged
+    # that whether it matches depends on when the seller was added. A 2xx is
+    # therefore not proof: count the rows before and after and report the truth.
+    targets = [str(r.get("sp_id")) for r in rows]
+    try:
+        before = _leak_sched_counts(targets)
+    except Exception:
+        before = {}
+
     results, ok_n, fail_n = [], 0, 0
     for r in rows:
         sp_id = r.get("sp_id")
@@ -2752,8 +2812,32 @@ def leak_disable():
                             "status": 0, "detail": str(exc)[:160]})
             fail_n += 1
         time.sleep(0.1)
+
+    try:
+        after = _leak_sched_counts(targets)
+        verified = 0
+        for item in results:
+            sp = str(item["sp_id"])
+            b, a = before.get(sp, 0), after.get(sp, 0)
+            item["rows_before"], item["rows_after"] = b, a
+            if b and not a:
+                item["verified"] = "REMOVED"
+                verified += 1
+            elif a and a < b:
+                item["verified"] = "PARTIAL"
+            elif a:
+                item["verified"] = "STILL PRESENT"
+            else:
+                item["verified"] = "NOTHING TO REMOVE"
+        verify_note = (f"{verified}/{len(results)} confirmed gone from scheduler_config. "
+                       "amazon_report_info is untouched, so reports already queued can "
+                       "still land.")
+    except Exception as exc:
+        verify_note = f"Could not verify against scheduler_config — {exc}"
+
     return jsonify({"ok": True, "mode": "api", "disabled": ok_n, "failed": fail_n,
-                    "blocked": len(blocked), "results": results})
+                    "blocked": len(blocked), "results": results,
+                    "verify_note": verify_note})
 
 
 # ── Weekly auto-run ───────────────────────────────────────────────────────────

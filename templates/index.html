@@ -2786,8 +2786,11 @@ async function leakTestRemove() {
     const d = await r.json();
     if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
     out.innerHTML =
-      `<div class="${d.status >= 200 && d.status < 300 ? 'leak-gap' : 'leak-warn'}">
-         ${d.method} ${esc(d.url)} → <strong>${d.status}</strong><br>${esc(d.hint)}</div>
+      `<div class="${d.status >= 200 && d.status < 300 && d.rows_after === 0 ? 'leak-gap' : 'leak-warn'}">
+         ${d.method} ${esc(d.url)} → <strong>${d.status}</strong>` +
+         (d.rows_before !== null && d.rows_before !== undefined
+           ? ` · scheduler_config rows ${d.rows_before} → ${d.rows_after === null ? '?' : d.rows_after}` : '') +
+         `<br>${esc(d.hint)}</div>
        <div class="leak-sql">sent: ${esc(JSON.stringify(d.sent))}
 
 response: ${esc(d.response || '(empty)')}</div>`;
@@ -2829,11 +2832,20 @@ function leakActionBar() {
       <button class="btn btn-sm btn-ghost" onclick="leakTestRemove()"
         title="Probe the remove endpoint against one seller before acting in bulk">Test endpoint</button>
       <button class="btn btn-sm btn-ghost" onclick="leakStopFetching('sql')"
-        title="Copy review-first UPDATE statements for the selection">⧉ Copy disable SQL</button>
+        title="Copy UPDATE statements that set is_enabled = false — reversible, for a backend dev to run">⧉ Copy disable SQL</button>
       <button class="btn btn-sm btn-red" onclick="leakStopFetching('api')" ${n ? '' : 'disabled'}
-        title="Call the remove endpoint for every selected seller">Stop fetching for selected</button>
+        title="Call the remove endpoint, which DELETES the scheduler_config rows">Stop fetching for selected</button>
     </div>
-    <div class="leak-sec-body"><div id="leak-action-out"></div></div>
+    <div class="leak-sec-body">
+      <div class="leak-gap">The endpoint <strong>deletes</strong> the
+        <code>scheduler_config</code> rows; the SQL only sets
+        <code>is_enabled = false</code>, which is reversible. Whether the delete
+        matches depends on when the seller was added, so every call is checked
+        against <code>scheduler_config</code> afterwards rather than trusting the
+        HTTP status. <code>amazon_report_info</code> is not touched, so reports
+        already queued can still land.</div>
+      <div id="leak-action-out"></div>
+    </div>
   </div>`;
 }
 
