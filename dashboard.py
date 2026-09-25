@@ -2079,8 +2079,9 @@ _LEAK_SQP_INGEST_QUERY = """
 
 LEAK_TRAFFIC_DAYS = int(os.environ.get("LEAK_TRAFFIC_DAYS", "7"))
 LEAK_SQP_DAYS = int(os.environ.get("LEAK_SQP_DAYS", "14"))
-# Accounts canceled within this many days are shown but held back from action,
-# so someone who just canceled and may reconsider is not cut off immediately.
+# "Protection window" in the UI. Accounts canceled within this many days are
+# shown but held back from action, so someone who just canceled and may
+# reconsider is not cut off immediately.
 LEAK_GRACE_DAYS = int(os.environ.get("LEAK_GRACE_DAYS", "14"))
 # Unverified: /admin/scheduler/add exists, this is the presumed counterpart.
 LEAK_REMOVE_PATH = os.environ.get("LEAK_REMOVE_PATH", "/admin/scheduler/remove")
@@ -2282,7 +2283,10 @@ def _leak_days_since(stamp: str):
 
 
 def _leak_grace(row: dict, grace_days: int) -> dict:
-    """Tag a row with how long ago it was canceled and whether it is held back."""
+    """Tag a row with how long ago it was canceled and whether it is protected.
+
+    `in_grace` is what the UI shows as PROTECTED.
+    """
     days = _leak_days_since(row.get("canceled_at", ""))
     row["canceled_days"] = days
     # An unknown cancellation date is treated as in-grace: better to hold an
@@ -2611,7 +2615,7 @@ def _leak_selected_rows(sp_ids: list, include_trials: bool) -> list:
         if str(r.get("sp_id")) not in wanted:
             continue
         # no_sub rows have no cancellation date and are only actionable when the
-        # trials toggle is on; canceled rows must be past the grace period.
+        # trials toggle is on; canceled rows must be past the protection window.
         if r.get("in_grace") and r.get("canceled_at"):
             blocked.append(r)
             continue
@@ -2767,8 +2771,8 @@ def leak_disable():
     rows, blocked = _leak_selected_rows(sp_ids, include_trials)
     if not rows:
         if blocked:
-            reason = (f"All {len(blocked)} selected account(s) are still inside the "
-                      "grace period and cannot be actioned yet.")
+            reason = (f"All {len(blocked)} selected account(s) are still protected "
+                      "(canceled too recently) and cannot be actioned yet.")
         elif not include_trials and _leak_selection_is_trials(sp_ids):
             reason = ("The selection is trial accounts with no Stripe subscription. "
                       "Turn on 'Trials actionable' to include them.")

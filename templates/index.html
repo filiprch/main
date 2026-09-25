@@ -837,7 +837,7 @@
           <span class="ms-status-label" id="leak-finished"></span>
         </div>
         <div class="ms-controls">
-          <span style="color:#475569;font-size:.78rem">Grace</span>
+          <span style="color:#475569;font-size:.78rem">Protection</span>
           <input type="number" id="leak-grace" class="ms-filter-input" style="width:70px"
                  value="14" min="0" onchange="leakSaveSettings()">
           <span style="color:#475569;font-size:.78rem">days</span>
@@ -2618,6 +2618,7 @@ const LEAK_COLS = {
   ],
 };
 
+// "Protection" in the UI is the in_grace/grace_days fields below.
 // Selection is per ACCOUNT — one canceled customer can own several sellers, and
 // the decision is made about the account, not each seller row.
 const leakSel = { sqp: new Set(), no_sub: new Set() };
@@ -2666,7 +2667,7 @@ function leakAcctRows(which, groups) {
         ? `${esc(g.canceled_at.slice(0, 10))} <span class="upg-detail">${g.canceled_days ?? '?'}d</span>`
         : '<span class="upg-detail">no subscription</span>';
       const badge = g.in_grace && g.canceled_at
-        ? `<span class="ms-pill pend" title="Canceled less than ${leakGraceDays} days ago — held back">GRACE</span>`
+        ? `<span class="ms-pill pend" title="Canceled less than ${leakGraceDays} days ago — protected from action">PROTECTED</span>`
         : (which === 'no_sub' && !leakIncludeTrials
             ? '<span class="ms-pill na" title="Enable the Trials actionable toggle">TRIAL</span>' : '');
       const box = (which === 'stream')
@@ -2763,10 +2764,10 @@ async function leakStopFetching(mode) {
       await sqpCopyText(d.sql);
       out.innerHTML = `<div class="leak-sql">${esc(d.sql)}</div>
         <div class="upg-detail">Copied to clipboard · ${d.count} seller(s)` +
-        (d.blocked ? ` · ${d.blocked} held in grace` : '') + `</div>`;
+        (d.blocked ? ` · ${d.blocked} protected` : '') + `</div>`;
     } else {
       out.innerHTML = `<div class="${d.failed ? 'leak-warn' : 'leak-gap'}">
-        ${d.disabled} disabled, ${d.failed} failed${d.blocked ? `, ${d.blocked} held in grace` : ''}</div>
+        ${d.disabled} disabled, ${d.failed} failed${d.blocked ? `, ${d.blocked} protected` : ''}</div>
         <div class="leak-sql">${esc(d.results.map(x =>
           `${x.sp_id} ${x.seller_name} → ${x.status} ${x.detail}`).join('\\n'))}</div>`;
     }
