@@ -738,6 +738,81 @@ then caches it. The conversation id is already written down there and cannot
 drift, so no ticket is stranded by the mapping arriving late. A ticket with no
 such link is refused rather than guessed at.
 
+#### Fin in Slack — how it should behave (open design)
+
+**This is the project's current main focus.** The plumbing is proven (see the
+section below); what is undecided is when Fin should speak and how it steps
+back. These are settings and conventions, not code in this repo, but they
+determine what reaches YouTrack.
+
+##### When Fin responds
+
+Out of the box Fin answers **every message** in a connected channel. Verified
+2026-09-25: "hi" drew "Hello! How may I assist you today? 😊". That is wrong for
+our customer channels, where clients talk to each other and do not treat Slack
+as a knowledge base.
+
+Fin over Slack inherits the configuration set for Fin over chat — audience
+rules and handover — and the trigger lives in **Workflows**. Available triggers
+are **@mention, keyword and emoji**. Intercom's own guidance: *avoid
+over-triggering by setting clear keywords and mentions*.
+
+**Decision: @mention-only** for customer channels. It puts a human intention in
+the loop, which is the same reason the Slack worker moved off `always` mode.
+
+Planned gesture vocabulary, one meaning each:
+
+```
+@Fin …     ask the bot, answered in thread
+react 🎫   file this as a ticket (slack-youtrack, unchanged)
+overnight  night mode catches what nobody triggered
+```
+
+Worth settling before customers learn it; changing it afterwards is expensive.
+
+##### Two risks this is guarding against
+
+**Interjecting in a client-to-client conversation.** In a Slack Connect
+channel that is visible to the customer's whole team. Two people discussing
+something, Fin answers confidently from the help centre and has the context
+wrong — worse than silence, and public in a way a 1:1 Messenger chat is not.
+
+**Cost.** Fin bills **$0.99 per outcome, at most once per conversation** (one
+Slack thread = one conversation). Nothing is charged when the customer asks for
+a human — CS-265 was free. But a customer who does not reply within 24 hours of
+Fin's last answer counts as an **assumed resolution and bills**. So a greeting
+Fin answers and nobody closes out costs $0.99. In a chatty channel that is the
+real exposure, not verbosity. There is also a 50-outcome/month minimum (~$49).
+
+##### Stopping Fin inside a thread — UNRESOLVED
+
+There is **no un-mention**. The documented way to stop Fin in a conversation is
+for a **human to reply or take the conversation over**. Two caveats from
+Intercom's community: Fin may respond again in escalated threads when workflow
+criteria still match, and there is a reported case of it resuming after a
+teammate replied and the customer replied again.
+
+**The open question, and the next thing to test:** when an MRP person replies
+*in the Slack thread*, does Intercom record it as an **admin reply** (Fin steps
+back) or as another **contact message** (Fin keeps going)? This is the
+difference between "just answer and Fin gets out of the way" and "you must open
+the Intercom inbox to silence it". The likely deciding factor is Intercom's
+*"Authenticate your Slack account to reply as yourself"* prompt — an
+authenticated teammate's Slack reply probably registers as an admin reply.
+
+That same authentication is worth noting for another reason: an authenticated
+agent's reply posts into Slack **under their own name and avatar**. That is the
+comment-attribution problem, solved on the Fin path by Intercom, with nothing
+for us to build. It does not revive YouTrack's comment `author` field, but it
+means replies sent through Intercom carry the real person while replies sent
+through the Slack worker post as the bot.
+
+##### Guidance customers will need
+
+A pinned message per channel, once the trigger is decided. Roughly: *@Fin for
+instant answers from our help centre; otherwise just talk normally — we are
+watching the channel.*
+
 #### A Slack thread reaching YouTrack through Fin
 
 Fin answers in Slack as well as in the Messenger, and a connected Slack thread

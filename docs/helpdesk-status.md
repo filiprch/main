@@ -1,6 +1,11 @@
 # Helpdesk — feature status
 
-**Updated:** 2026-09-23 · **Owner:** Filip Seidel
+**Updated:** 2026-09-25 · **Owner:** Filip Seidel
+
+> **Current main focus: Fin (Intercom) in Slack.** The chain is proven end to
+> end — a question in #helpdesk-testing, Fin's answer, "No, I still need help",
+> and CS-265. What is open is *when Fin should speak* and *how it steps back*.
+> See "Fin in Slack — how it should behave" in `helpdesk-webhooks.md`.
 
 One page saying what works, what is parked and what is left. Detail for every
 line lives in `helpdesk-webhooks.md`; this is the index.
@@ -58,10 +63,21 @@ These are settings and admin, not code. Each is small.
 
 ---
 
+## To do — Fin in Slack (current focus)
+
+| # | Item | Kind | Note |
+|---|------|------|------|
+| 1 | **Switch Fin to @mention-only** | Intercom Workflow | Gates the whole trial. Fin currently answers every message, including "hi" — which bills $0.99 if nobody closes the thread out. |
+| 2 | **Test the disengage gesture** | test | Does an MRP reply *in the Slack thread* stop Fin, or must it come from the Intercom inbox? Unresolved and important. |
+| 3 | **Have agents authenticate their Slack accounts** | Intercom | Their replies then post into Slack under their own name — and probably decide item 2. |
+| 4 | **Write the pinned channel guidance** | copy | Once the trigger is settled. |
+| 5 | **Deploy the SLACK-origin labelling fix** | deploy | Committed; `npx wrangler deploy` in `intercom-youtrack/`. |
+
 ## To do — build
 
 | Feature | Size | Note |
 |---------|------|------|
+| **Close the duplicate-ticket race** | medium | CS-251/252 proved it in production. More urgent now: Fin adds a second source of Intercom conversations on the path that already duplicated. |
 | **Intercom reply attachments** | small | Intercom takes files by public URL; whether YouTrack's signed links qualify is untested. |
 | **Intercom escalation routing** | small | Escalated conversations sit unassigned with `sla_applied: null`. An assignment Workflow would fix ownership *and* give a real webhook to replace state polling. |
 | **Wrangler v3 → v4** | small | Both workers pinned to v3. |
