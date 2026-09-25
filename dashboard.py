@@ -2017,8 +2017,10 @@ def upg_state():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Subscription Leakage Check (SPB-629) — Stripe-canceled accounts that are still
-# consuming paid Amazon data. Produces review lists only; nothing is executed.
+# Disable Fetching for Inactive Users (SPB-629) — shown in the UI under that
+# name; the code keeps the shorter `leak` prefix. Finds Stripe-canceled accounts
+# that are still consuming paid Amazon data. Produces review lists and ready-to-
+# run SQL only; nothing is executed.
 #
 # Stripe subscription status does not exist in the database (stripe_detail holds
 # only id/customer_id/trial_started, and pricing_plan_id is the sold tier, not
@@ -2287,7 +2289,7 @@ def _leak_last_mapping_rows():
 
 def _leak_worker() -> None:
     try:
-        _leak_log("info", "Subscription Leakage Check started (read-only; nothing is executed).")
+        _leak_log("info", "Disable Fetching for Inactive Users — started (read-only; nothing is executed).")
 
         # Check Stripe first: it costs one request, and the DB scans that follow
         # take minutes that are wasted if the key turns out to be unusable.

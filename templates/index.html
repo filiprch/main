@@ -229,7 +229,7 @@
     .sqp-list-wrap thead th { position: sticky; top: 0; z-index: 1; }
     a.btn { text-decoration: none; display: inline-block; line-height: 1.5; }
 
-    /* ── Subscription Leakage Check ── */
+    /* ── Disable Fetching for Inactive Users ── */
     .leak-note { font-size: .78rem; color: #94a3b8; line-height: 1.55; background: #161827;
       border: 1px solid #252a3a; border-radius: 9px; padding: .7rem .85rem; margin-bottom: .7rem; }
     .leak-note code { color: #fbbf24; }
@@ -806,15 +806,15 @@
 </div><!-- /card: remover -->
 
 <!-- ══════════════════════════════════════════════════════════
-     CARD: Subscription Leakage Check (SPB-629)
+     CARD: Disable Fetching for Inactive Users (SPB-629)
      ══════════════════════════════════════════════════════════ -->
 <div class="card" id="card-leak">
   <div class="card-hdr" onclick="toggleCard('leak')">
     <div class="card-hdr-left">
-      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">LEAKAGE</span>
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">INACTIVE USERS</span>
       <div>
-        <div class="card-title">Subscription Leakage Check</div>
-        <div class="card-desc">Stripe-canceled accounts still pulling paid Amazon data — review lists only, nothing is executed</div>
+        <div class="card-title">Disable Fetching for Inactive Users</div>
+        <div class="card-desc">Finds Stripe-canceled accounts still pulling paid Amazon data and prepares the disable statements — review first, nothing is executed</div>
       </div>
     </div>
     <button class="card-fold" id="fold-leak">▶</button>
@@ -2533,7 +2533,7 @@ async function rmStop() { await fetch('/api/remove/stop', { method: 'POST' }); }
 
 setInterval(rmPoll, 1000);
 rmPoll();
-// ── Subscription Leakage Check (SPB-629) ──────────────────────────────────────
+// ── Disable Fetching for Inactive Users (SPB-629) ─────────────────────────────
 let leakSince = 0;
 const leakOpen = { stream: false, sqp: false, no_sub: false };
 
