@@ -340,12 +340,14 @@ async function createTicketFor(env, conversationId) {
   const said = customerMessages(conversation);
   const attachments = said.flatMap((m) => m.attachments);
 
+  const origin = conversationOrigin(conversation);
+
   const issue = await createYouTrackIssue({
     baseUrl: env.YOUTRACK_BASE_URL,
     token: env.YOUTRACK_TOKEN,
     projectId: env.YOUTRACK_PROJECT_ID || 'CS',
     summary: buildTitle({
-      source: 'INT',
+      source: origin.source,
       problem: pickSummary(said, conversation),
       sender: contact.name || email,
       // Populated only when the contact is linked to a company; website
@@ -362,8 +364,10 @@ async function createTicketFor(env, conversationId) {
       said,
       attachments,
       finTried: finArticles(conversation),
+      slackChannel: origin.slackChannel,
+      slackWorkspace: origin.slackWorkspace,
     }),
-    channel: 'Intercom',
+    channel: origin.channel,
     type: 'Task',
     replied: 'Not Replied',
     customerEmail: email || undefined,
@@ -631,14 +635,46 @@ function conversationLink(appId, conversationId) {
 // The ticket body
 // --------------------------------------------------------------------------
 
+/**
+ * Where the conversation actually started.
+ *
+ * Fin answers in Slack as well as in the Messenger, and a Slack thread becomes
+ * an ordinary Intercom conversation — so by the time it reaches here, nothing
+ * in the shape of the payload says it came from Slack. The only marker is a
+ * custom attribute Intercom sets on the conversation, and without reading it
+ * every Slack escalation files as "INT:" with Channel = Intercom, which is
+ * wrong in the ticket title and silently wrong in channel reporting.
+ */
+function conversationOrigin(conversation) {
+  const attrs = conversation?.custom_attributes || {};
+  const slackChannel = String(attrs['Slack channel'] || '').trim();
+  if (!slackChannel) {
+    return { source: 'INT', channel: 'Intercom', slackChannel: '', slackWorkspace: '' };
+  }
+  return {
+    source: 'SLACK',
+    channel: 'Slack',
+    slackChannel: slackChannel.startsWith('#') ? slackChannel : `#${slackChannel}`,
+    slackWorkspace: String(attrs['Slack workspace'] || '').trim(),
+  };
+}
+
 function buildDescription({
   sender, email, link, escalatedReason, createdAt, said, attachments, finTried,
+  slackChannel, slackWorkspace,
 }) {
   const who = email && email !== sender ? `${sender} <${email}>` : sender;
   const lines = [
     `**Customer:** ${who}`,
     `**Started:** ${formatUtc(createdAt)} UTC`,
   ];
+  if (slackChannel) {
+    // Named rather than linked: Intercom records which channel the thread is
+    // in, but not its timestamp, and a Slack permalink cannot be built without
+    // one. The channel name plus the start time above is enough to find it.
+    const where = slackWorkspace ? `${slackChannel} (${slackWorkspace})` : slackChannel;
+    lines.push(`**Slack:** ${where}`);
+  }
   if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
   if (link) lines.push(`**Intercom:** [open the conversation](${link})`);
 

@@ -738,6 +738,36 @@ then caches it. The conversation id is already written down there and cannot
 drift, so no ticket is stranded by the mapping arriving late. A ticket with no
 such link is refused rather than guessed at.
 
+#### A Slack thread reaching YouTrack through Fin
+
+Fin answers in Slack as well as in the Messenger, and a connected Slack thread
+becomes an **ordinary Intercom conversation** — same webhooks, same escalation
+states, same path into YouTrack. Verified end to end on 2026-09-25: a question
+in #helpdesk-testing, Fin's answer, "No, I still need help", and CS-265.
+
+By the time the conversation reaches this worker, nothing in the shape of the
+payload says it came from Slack. The only marker is a custom attribute:
+
+```
+custom_attributes["Slack channel"]    e.g. "helpdesk-testing"
+custom_attributes["Slack workspace"]  e.g. "My Real Profit"
+```
+
+`conversationOrigin()` reads it and switches the ticket's prefix to `SLACK:`
+and its **Channel** field to `Slack`, and names the channel in the description.
+Without it every Slack escalation files as `INT:` with Channel = Intercom —
+wrong in the title and, worse, silently wrong in channel reporting. CS-265 was
+created before this and carries the old labels.
+
+The contact is resolved by Fin, not by us: it arrives with
+`external_id: "slack:<Slack user id>"` and, where Fin can determine it, the
+person's email. So a Slack customer gets a real Intercom contact with history,
+which is more than the Slack worker can do on its own.
+
+The Slack thread is **named rather than linked**. Intercom records the channel
+but not the thread timestamp, and a Slack permalink cannot be built without
+one; the channel name plus the start time is enough to find it.
+
 Comment text is converted to Intercom's HTML: the agent signature and any
 `![](image.png){...}` left by a pasted image are dropped, and everything is
 **escaped before any tag is added**, so an agent cannot accidentally send a
