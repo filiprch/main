@@ -2742,20 +2742,29 @@ async function leakStreamsPoll() {
         : `${(s.rows || []).length} profile(s) with an ACTIVE subscription` +
           (c.total ? ` · ${c.inactive} with none · ${c.errors} error(s)` : '');
     }
-    // Pull the finished list into the main state so the table renders.
-    if (!s.running && (s.rows || []).length &&
-        ((leakLastState.lists || {}).stream_active || []).length !== s.rows.length) {
+    // Pull the finished list into the main state so the table renders. The
+    // length may also DROP to zero after archiving, so don't require rows.
+    if (!s.running &&
+        ((leakLastState.lists || {}).stream_active || []).length !== (s.rows || []).length) {
       leakLastState.lists = leakLastState.lists || {};
-      leakLastState.lists.stream_active = s.rows;
+      leakLastState.lists.stream_active = s.rows || [];
       leakRenderResults(leakLastState);
     }
   } catch (_) {}
 }
 
 async function leakStreamsArchive(probe) {
-  const keys = [...leakSel.stream_active];
   const out = document.getElementById('leak-str-out');
-  if (!keys.length) { out.innerHTML = `<div class="leak-warn">Nothing selected.</div>`; return; }
+  // Anything thrown here would otherwise vanish into the console, which reads
+  // as "the button does nothing" — show it where the click happened instead.
+  try { await leakStreamsArchiveRun(probe, out); }
+  catch (e) { if (out) out.innerHTML = `<div class="leak-warn">${esc(String(e && e.message || e))}</div>`; }
+  if (out) out.scrollIntoView({ block: 'nearest' });
+}
+
+async function leakStreamsArchiveRun(probe, out) {
+  const keys = [...leakSel.stream_active];
+  if (!keys.length) { out.innerHTML = `<div class="leak-warn">Nothing selected — tick a row first.</div>`; return; }
   const rows = ((leakLastState.lists || {}).stream_active || []).filter(r => keys.includes(r.key));
   if (!probe) {
     const names = rows.slice(0, 12).map(r => `  • ${r.username} (${r.active_datasets})`).join('\n');
@@ -2764,22 +2773,30 @@ async function leakStreamsArchive(probe) {
       `\n\nThis stops Amazon sending their data. Each profile is re-read afterwards ` +
       `to confirm it actually stopped.`)) return;
   }
-  out.innerHTML = `<span class="token-idle">Working…</span>`;
-  try {
-    const d = await (await fetch('/api/leak/streams/archive', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys, probe }),
-    })).json();
-    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
-    out.innerHTML = `<div class="${d.failed ? 'leak-warn' : 'leak-gap'}">
-      ${d.probe ? 'Probe: ' : ''}${d.archived} archived, ${d.failed} failed` +
-      (d.blocked ? `, ${d.blocked} protected` : '') + `</div>
-      <div class="leak-sql">${esc(d.results.map(x =>
-        `${x.sp_id} ${x.username} → [${x.verified}]` +
-        (x.still_active ? ` still active: ${x.still_active}` : '') +
-        x.calls.map(cc => `\n    ${cc.subscription_id} HTTP ${cc.status} ${cc.detail}`).join('')
-      ).join('\n'))}</div>`;
-  } catch (e) { out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`; }
+  out.innerHTML = `<span class="token-idle">Working… (each profile is re-read afterwards, so this takes a few seconds)</span>`;
+  const d = await (await fetch('/api/leak/streams/archive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys, probe }),
+  })).json();
+  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+  out.innerHTML = `<div class="${d.failed ? 'leak-warn' : 'leak-gap'}">
+    ${d.probe ? 'Probe: ' : ''}${d.archived} archived, ${d.failed} failed` +
+    (d.blocked ? `, ${d.blocked} protected` : '') + `</div>
+    <div class="leak-sql">${esc(d.results.map(x =>
+      `${x.sp_id} ${x.username} → [${x.verified}]` +
+      (x.still_active ? ` still active: ${x.still_active}` : '') +
+      x.calls.map(cc => `\n    ${cc.subscription_id} HTTP ${cc.status} ${cc.detail}`).join('')
+    ).join('\n'))}</div>`;
+  // The server drops confirmed-archived rows; mirror that here so the table
+  // shrinks immediately instead of waiting for the next poll.
+  const done = new Set(d.results.filter(x => x.verified === 'ARCHIVED').map(x => x.key));
+  if (done.size) {
+    done.forEach(k => leakSel.stream_active.delete(k));
+    leakLastState.lists = leakLastState.lists || {};
+    leakLastState.lists.stream_active =
+      (leakLastState.lists.stream_active || []).filter(r => !done.has(r.key));
+    leakRenderResults(leakLastState);
+  }
 }
 
 function leakCopyText(el, text) {
@@ -3042,12 +3059,21 @@ function leakRenderResults(s) {
   // Preserve how far the user had scrolled inside each open list.
   const scrolls = [...document.querySelectorAll('#leak-results .sqp-list-wrap')]
     .map(el => el.scrollTop);
+  // Section C's log and result panels sit inside the re-rendered markup, so
+  // carry their contents over — otherwise a re-render blanks them and it looks
+  // like the stream check and the archive button did nothing.
+  const keep = {};
+  ['leak-str-log', 'leak-str-out'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) keep[id] = { html: el.innerHTML, top: el.scrollTop };
+  });
   if (s.remove_path) leakRemovePath = s.remove_path;
   if (typeof s.grace_days === 'number') leakGraceDays = s.grace_days;
   if (typeof s.include_trials === 'boolean') leakIncludeTrials = s.include_trials;
   const L = s.lists || { stream: [], sqp: [], no_sub: [] };
   const c = s.counters || {};
-  if (!L.stream.length && !L.sqp.length && !L.no_sub.length && !s.finished_at) {
+  if (!(L.stream || []).length && !(L.sqp || []).length && !(L.no_sub || []).length &&
+      !(L.stream_active || []).length && !s.finished_at) {
     document.getElementById('leak-results').innerHTML = '';
     return;
   }
@@ -3070,6 +3096,10 @@ function leakRenderResults(s) {
       L.no_sub);
   [...document.querySelectorAll('#leak-results .sqp-list-wrap')]
     .forEach((el, i) => { if (scrolls[i] !== undefined) el.scrollTop = scrolls[i]; });
+  Object.keys(keep).forEach(id => {
+    const el = document.getElementById(id);
+    if (el && keep[id].html) { el.innerHTML = keep[id].html; el.scrollTop = keep[id].top; }
+  });
 }
 
 async function leakCopySql(btn) {

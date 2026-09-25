@@ -3105,6 +3105,7 @@ def leak_streams_archive():
         rows = rows[:1]
 
     cache, results, ok_n, fail_n = {}, [], 0, 0
+    _lst_log("warn", f"Archiving stream subscriptions for {len(rows)} profile(s)…")
     for r in rows:
         sid = str(r.get("sp_id"))
         try:
@@ -3117,6 +3118,9 @@ def leak_streams_archive():
                 resp = _ms_archive_subscription(token, info["profile_id"], sub_id)
                 per_sub.append({"subscription_id": sub_id, "status": resp.status_code,
                                 "detail": (resp.text or "").strip()[:160]})
+                _lst_log("ok" if 200 <= resp.status_code < 300 else "error",
+                         f"{r.get('username','')} ({sid}): PUT {sub_id} → {resp.status_code} "
+                         f"{(resp.text or '').strip()[:100]}")
                 time.sleep(0.12)
             # Re-read: an HTTP 2xx is not proof the subscription actually stopped.
             after = _ms_subscriptions_detail(token, info["profile_id"])
@@ -3125,13 +3129,29 @@ def leak_streams_archive():
                             "sp_id": r.get("sp_id"), "calls": per_sub,
                             "still_active": ",".join(still),
                             "verified": "ARCHIVED" if not still else "STILL ACTIVE"})
-            ok_n += 0 if still else 1
-            fail_n += 1 if still else 0
+            if still:
+                fail_n += 1
+                _lst_log("error", f"{r.get('username','')} ({sid}): still ACTIVE — {', '.join(still)}")
+            else:
+                ok_n += 1
+                _lst_log("ok", f"{r.get('username','')} ({sid}): confirmed archived.")
         except Exception as exc:
             results.append({"key": r.get("key"), "username": r.get("username", ""),
                             "sp_id": r.get("sp_id"), "calls": [],
                             "still_active": "", "verified": f"ERROR: {str(exc)[:120]}"})
             fail_n += 1
+            _lst_log("error", f"{r.get('username','')} ({sid}): {str(exc)[:160]}")
+
+    # Drop the confirmed-archived rows so the list visibly shrinks.
+    done_keys = {x["key"] for x in results if x["verified"] == "ARCHIVED"}
+    if done_keys:
+        with _leak_lock:
+            _leak_state["lists"]["stream_active"] = [
+                r for r in (_leak_state["lists"].get("stream_active") or [])
+                if r.get("key") not in done_keys]
+        _leak_save_results()
+    _lst_log("info", f"Archive finished: {ok_n} confirmed archived, {fail_n} not.")
+
     return jsonify({"ok": True, "archived": ok_n, "failed": fail_n,
                     "blocked": len(blocked), "probe": probe_only, "results": results})
 
