@@ -2748,9 +2748,24 @@ async function leakStopFetching(mode) {
   const ids = leakSelectedSpIds();
   const out = document.getElementById('leak-action-out');
   if (!ids.length) { out.innerHTML = `<div class="leak-warn">Nothing selected.</div>`; return; }
-  if (mode === 'api' && !confirm(
-      `Disable SQP fetching for ${ids.length} seller(s) via ${leakRemovePath}?\n\n` +
-      `This calls production. Test the endpoint on one seller first if you have not.`)) return;
+  if (mode === 'api') {
+    // Name the accounts, not just a count — this delete cannot be undone.
+    const picked = [];
+    ['sqp', 'no_sub'].forEach(which => {
+      leakGroup((leakLastState.lists || {})[which] || [])
+        .filter(g => leakSel[which].has(g.key) && leakActionable(which, g))
+        .forEach(g => picked.push(`  • ${g.username || g.key}  (${g.rows.length} seller${g.rows.length > 1 ? 's' : ''})`));
+    });
+    const shown = picked.slice(0, 12).join('\n') +
+      (picked.length > 12 ? `\n  …and ${picked.length - 12} more` : '');
+    if (!confirm(
+      `DELETE the SQP schedulers for ${picked.length} account(s) / ${ids.length} seller(s)?\n\n` +
+      shown +
+      `\n\nThis calls ${leakRemovePath} on production and removes scheduler_config ` +
+      `rows. It cannot be undone from here.\n\n` +
+      `Each seller is checked against the database afterwards, so you will see ` +
+      `which ones were actually removed.`)) return;
+  }
   out.innerHTML = `<span class="token-idle">Working…</span>`;
   try {
     const r = await fetch('/api/leak/disable', {
