@@ -2892,6 +2892,12 @@ async function leakCopySql(btn) {
   setTimeout(() => { btn.textContent = original; }, 1400);
 }
 
+function leakElapsed(sec) {
+  sec = sec || 0;
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return m ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
+}
+
 async function leakPoll() {
   try {
     const r = await fetch('/api/leak/state?since=' + leakSince);
@@ -2917,7 +2923,8 @@ async function leakPoll() {
     document.getElementById('leak-go').disabled   = s.running;
     document.getElementById('leak-stop').disabled = !s.running;
     document.getElementById('leak-dot').className = 'dot ' + (s.running ? 'spin' : '');
-    document.getElementById('leak-status').textContent = s.running ? 'Running…' : 'Idle';
+    document.getElementById('leak-status').textContent =
+      s.running ? `Running… ${leakElapsed(s.elapsed)}` : 'Idle';
     document.getElementById('leak-finished').textContent =
       s.finished_at ? `last run ${s.finished_at}` : '';
     document.getElementById('leak-warnings').innerHTML =

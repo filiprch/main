@@ -2091,6 +2091,7 @@ _leak_stop_event = threading.Event()
 _leak_state = {
     "running": False,
     "logs": [],
+    "started_at": 0.0,
     "finished_at": "",
     "counters": {"customers": 0, "canceled": 0, "live": 0, "mapping_rows": 0,
                  "stream": 0, "sqp": 0, "no_sub": 0},
@@ -2506,6 +2507,7 @@ def leak_start():
         _leak_state["counters"] = {"customers": 0, "canceled": 0, "live": 0,
                                    "mapping_rows": 0, "stream": 0, "sqp": 0, "no_sub": 0}
         _leak_state["finished_at"] = ""
+        _leak_state["started_at"] = time.time()
         _leak_state["running"] = True
     threading.Thread(target=_leak_worker, daemon=True).start()
     return jsonify({"ok": True})
@@ -2527,6 +2529,8 @@ def leak_state():
             "counters": _leak_state["counters"],
             "warnings": _leak_state["warnings"],
             "finished_at": _leak_state["finished_at"],
+            "elapsed": int(time.time() - _leak_state["started_at"])
+                       if _leak_state["running"] and _leak_state["started_at"] else 0,
             "logs": [e for e in _leak_state["logs"] if e["i"] >= since],
             "next": len(_leak_state["logs"]),
             "lists": _leak_state["lists"],
@@ -2870,6 +2874,7 @@ def _leak_scheduler_loop() -> None:
             _leak_stop_event.clear()
             with _leak_lock:
                 _leak_state["logs"] = []
+                _leak_state["started_at"] = time.time()
                 _leak_state["running"] = True
             _leak_worker()
         except Exception:
