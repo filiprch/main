@@ -34,6 +34,8 @@ line lives in `helpdesk-webhooks.md`; this is the index.
 | 16 | **Service account** — workers run as `Support - Agent`, not a personal admin token | swapped and deployed |
 | 17 | **Secrets audit** — nothing sensitive in the repo; the workflow file keeps a placeholder | audited |
 | 18 | **Retained logs** on both workers | Cloudflare Observability tab |
+| 19 | **Replies reach the customer under the real person's name** — a YouTrack comment relayed via Intercom arrives in Slack as *Filip Seidel*, not the service account | Verified 2026-09-25. Needs a per-person Intercom seat plus that teammate authenticating their own Slack. |
+| 20 | **One history in all three places** — YouTrack ↔ Intercom ↔ Slack, including replies typed in the Intercom inbox, with echo guards in both directions | Verified 2026-09-25 on CS-276 |
 
 ---
 
@@ -41,7 +43,7 @@ line lives in `helpdesk-webhooks.md`; this is the index.
 
 | Feature | State | Why it is parked |
 |---------|-------|------------------|
-| **Comment author attribution** (Slack commenter shown as themselves, not Support - Agent) | Built, matching works, last step impossible | YouTrack accepts `author: { id }` with 200 and discards it. Not a permission — unchanged at System Admin. JetBrains: "no plans to make the same mechanism for comments." Only route is one permanent token per person in the worker; deferred on security grounds. Code left in place as a no-op. |
+| **Comment author attribution — inside YouTrack** (who a relayed Slack message is credited to on the ticket). The customer-facing half is **solved**, see Done #19. | Built, matching works, last step impossible | YouTrack accepts `author: { id }` with 200 and discards it. Not a permission — unchanged at System Admin. JetBrains: "no plans to make the same mechanism for comments." Only route is one permanent token per person in the worker; deferred on security grounds. Code left in place as a no-op. |
 | **AI-written titles** (`TITLE_AI`) | Built and dry-run tested against real threads, switched off | Needs `ANTHROPIC_API_KEY` as a worker secret. Falls back to today's quoted title on any failure, so turning it on risks nothing. |
 
 ---
@@ -69,7 +71,7 @@ These are settings and admin, not code. Each is small.
 |---|------|------|------|
 | 1 | **Switch Fin to @mention-only** | Intercom Workflow | Gates the whole trial. Fin currently answers every message, including "hi" — which bills $0.99 if nobody closes the thread out. |
 | 2 | **Test the disengage gesture** | test | Does an MRP reply *in the Slack thread* stop Fin, or must it come from the Intercom inbox? Unresolved and important. |
-| 3 | **Have agents authenticate their Slack accounts** | Intercom | Their replies then post into Slack under their own name — and probably decide item 2. |
+| 3 | **Each agent: own Intercom seat, then authenticate their own Slack** | Intercom | Proven to work. Cannot be done centrally — each person clicks it, and needs *Can manage workspace data*. Their YouTrack and Intercom emails must match. Do **not** authenticate the shared seat against one person's Slack: every colleague's reply would then show as them. |
 | 4 | **Write the pinned channel guidance** | copy | Once the trigger is settled. |
 | 5 | **Deploy the SLACK-origin labelling fix** | deploy | Committed; `npx wrangler deploy` in `intercom-youtrack/`. |
 

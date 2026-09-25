@@ -764,6 +764,32 @@ reply under the team's name still beats a reply that never went.
 This is the same wish that proved impossible on YouTrack's own comments — and
 it works here only because Intercom supports what YouTrack does not.
 
+**Two things are needed per person, and neither is code:**
+
+1. **Their own Intercom seat**, on the same email as their YouTrack account. A
+   shared seat cannot tell one teammate from another.
+2. **They click "Authenticate your Slack account"** themselves, in the Intercom
+   inbox. It OAuth-links that teammate to that person's Slack account and needs
+   the *Can manage workspace data* permission.
+
+It **cannot be done centrally**: the link requires signing in to Slack as that
+person. Anyone who skips it falls back to the generic team name — nothing
+breaks, the reply is simply not personalised.
+
+Verified 2026-09-25: after authenticating, a comment written in YouTrack and
+relayed **through the API** arrived in the Slack thread under *Filip Seidel*
+with his avatar, where the same path had shown *MRP Support Team* minutes
+earlier. So a reply carrying `admin_id` inherits that teammate's linked Slack
+identity — not only replies typed in the inbox, which is all the documentation
+promised.
+
+**The failure mode to avoid:** authenticating the *shared* seat against one
+person's Slack. Every reply from that seat then appears as that person,
+colleagues' included — right in testing, wrong in front of a customer.
+
+The email must match end to end, YouTrack account → Intercom teammate. Someone
+whose two addresses differ is silently unmatchable.
+
 ##### Not echoing
 
 An answer must not travel YouTrack → Intercom → back to YouTrack. Two marks
