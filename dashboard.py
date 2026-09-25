@@ -2065,9 +2065,12 @@ _LEAK_SQP_SCHED_QUERY = """
 """
 
 _LEAK_TRAFFIC_QUERY = """
-    select advertiser_id, count(*) n, max(created_at) last_ingest
+    select advertiser_id,
+           date_trunc('day', created_at)::date as day,
+           count(*) n,
+           max(created_at) last_ingest
     from sp_traffic where created_at >= now() - interval '%(days)s days'
-    group by 1 order by 2 desc
+    group by 1, 2 order by 1, 2
 """
 
 _LEAK_SQP_INGEST_QUERY = """
@@ -2374,7 +2377,17 @@ def _leak_worker() -> None:
             return
 
         # ── Cross-check ──────────────────────────────────────────────────────
-        streaming = {r["advertiser_id"]: r for r in db["traffic"] if r.get("advertiser_id")}
+        streaming = {}
+        for r in db["traffic"]:
+            adv = r.get("advertiser_id")
+            if not adv:
+                continue
+            cur = streaming.setdefault(adv, {"n": 0, "last_ingest": "", "days": {}})
+            cur["n"] += int(r["n"])
+            cur["days"][str(r["day"])] = int(r["n"])
+            li = str(r["last_ingest"])
+            if li > cur["last_ingest"]:
+                cur["last_ingest"] = li
         sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in db["sqp"]
                       if r.get("amazon_selling_partner_id") is not None}
         sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in db["sched"]
@@ -2413,6 +2426,13 @@ def _leak_worker() -> None:
                 row["ad_marketplaces"] = m.get("ad_marketplaces") or ""
                 row["stream_rows_7d"] = sum(int(streaming[t]["n"]) for t in hot)
                 row["stream_last_ingest"] = max(str(streaming[t]["last_ingest"]) for t in hot)
+                # Merge the daily series across this seller's tokens, so the UI can
+                # show whether it is a steady stream or a one-off backfill burst.
+                daily = {}
+                for t in hot:
+                    for day, n in streaming[t]["days"].items():
+                        daily[day] = daily.get(day, 0) + n
+                row["stream_daily"] = [{"day": d, "n": daily[d]} for d in sorted(daily)]
                 stream_hits.append(row)
 
             if sp_id in sqp_ingest or sp_id in sqp_enabled:
