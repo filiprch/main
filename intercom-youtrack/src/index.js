@@ -479,7 +479,12 @@ async function mirrorAdminReplies(env, conversationId, ticketId) {
 
   const fresh = [];
   for (const part of conversation.conversation_parts?.conversation_parts || []) {
-    if (part?.part_type !== 'comment') continue;
+    // "comment" is a plain reply; "assignment" is Intercom's assign-and-reply,
+    // which carries a real customer-visible message in the same field. Taking
+    // only "comment" silently dropped every reply sent while picking a
+    // conversation up — which is most first replies. Bodyless parts fall out
+    // below, when the text comes back empty.
+    if (part?.part_type !== 'comment' && part?.part_type !== 'assignment') continue;
     if (!isHumanAdmin(part.author)) continue;
     if (await env.DEDUPE.get(kMirrored(part.id))) continue;
     const text = htmlToText(part.body || '');
@@ -1201,12 +1206,18 @@ async function postCustomerReply(env, conversationId, body, senderAdminId) {
   // Matched on the body rather than taken as "the last one", because a message
   // arriving in the same moment would otherwise be marked instead — and the
   // one we silence must be the one we sent.
+  //
+  // Compared through sameBody(), NOT ===. Intercom rewrites what it stores:
+  // send `cool` and it comes back `<p>cool</p>`. An exact comparison therefore
+  // never matched, which left this guard inert and every relayed reply free to
+  // come back as a duplicate the moment the inbound mirror started running.
   try {
     const conversation = await res.json();
     const parts = conversation?.conversation_parts?.conversation_parts || [];
     for (let i = parts.length - 1; i >= 0; i--) {
-      if (String(parts[i]?.body || '') === body) return String(parts[i].id);
+      if (sameBody(parts[i]?.body, body)) return String(parts[i].id);
     }
+    console.error('reply: sent, but could not match the part we created');
   } catch {
     // The reply was delivered; only the id is missing. The mirror's own
     // author check still keeps Fin out, and a duplicated agent line on the
@@ -1224,6 +1235,24 @@ async function postCustomerReply(env, conversationId, body, senderAdminId) {
  * raw markup. Everything else is escaped before any tag is added, so a
  * customer can never be sent markup an agent did not intend.
  */
+/**
+ * Whether two HTML bodies say the same thing.
+ *
+ * Intercom does not store a reply verbatim — it wraps and re-tags it, so
+ * `cool` comes back as `<p>cool</p>`. Tags and whitespace are therefore
+ * stripped from both sides before comparing; only the words are compared.
+ */
+function sameBody(a, b) {
+  const plain = (html) =>
+    String(html || '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const left = plain(a);
+  return left !== '' && left === plain(b);
+}
+
 function commentToHtml(text) {
   const withoutSignature = String(text || '').replace(/\n\s*_{3,}\s*\n[\s\S]*$/, '');
   const plain = withoutSignature

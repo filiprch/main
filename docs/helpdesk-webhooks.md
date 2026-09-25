@@ -773,13 +773,33 @@ prevent it, both written **before** the action they guard:
   and marks it `mirrored:<part id>`, so the inbound mirror skips it. The part is
   matched **by body**, not taken as "the last one" — a message arriving in the
   same moment would otherwise be silenced instead of ours.
+
+  That comparison must be `sameBody()`, never `===`. **Intercom does not store
+  a reply verbatim**: send `cool` and it comes back `<p>cool</p>`, or
+  `<p class="no-margin">2000</p>`. An exact comparison never matched, which
+  left this guard inert — harmless only for as long as the inbound mirror was
+  not running. Tags and whitespace are stripped from both sides before
+  comparing.
 - Mirroring inward, the YouTrack comment it creates is marked
   `relayed:<comment id>`, so the outbound rule does not send it back out.
+
+Both `comment` and `assignment` parts are mirrored. **Intercom's
+assign-and-reply produces an `assignment` part carrying the message**, so
+taking only `comment` dropped most first replies — the one where a teammate
+picks the conversation up and answers in the same action.
 
 The mirrored comment is created **public**, because it was public — the
 customer has already seen it. Fin's own messages are not mirrored: they are
 many, and what matters about them is already on the ticket under "Fin already
 tried".
+
+##### Intercom must be subscribed to the topic
+
+Accepting `conversation.admin.replied` in the worker does nothing unless
+**Intercom is configured to send it** — the topic has to be ticked in the
+webhook subscription. Nothing in this repository can enable it, and its absence
+looks exactly like a code fault: replies typed in Intercom simply never appear
+on the ticket.
 
 ##### The topic that must stay mirror-only
 
