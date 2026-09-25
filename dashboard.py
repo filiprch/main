@@ -806,6 +806,41 @@ def _ads_headers(access_token: str, profile_id) -> dict:
     }
 
 
+def _ms_subscriptions_detail(access_token: str, profile_id) -> list:
+    """Full subscription records, including subscriptionId.
+
+    _ms_get_subscriptions() reduces this to {dataset: status}; archiving needs
+    the subscriptionId, so this keeps the whole record.
+    """
+    resp = http_requests.get(
+        f"{ADS_HOST}/streams/subscriptions",
+        headers=_ads_headers(access_token, profile_id),
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise ValueError(f"GET subscriptions {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    subs = data.get("subscriptions", data) if isinstance(data, dict) else data
+    out = []
+    for sub in subs or []:
+        out.append({
+            "dataSetId": sub.get("dataSetId") or "",
+            "status": (sub.get("status") or "").upper(),
+            "subscriptionId": sub.get("subscriptionId") or "",
+        })
+    return out
+
+
+def _ms_archive_subscription(access_token: str, profile_id, subscription_id: str):
+    """Archive a stream subscription — the documented way to stop one."""
+    return http_requests.put(
+        f"{ADS_HOST}/streams/subscriptions/{subscription_id}",
+        headers=_ads_headers(access_token, profile_id),
+        json={"status": "ARCHIVED"},
+        timeout=30,
+    )
+
+
 def _ms_get_subscriptions(access_token: str, profile_id) -> dict:
     """Return {dataset: status} for the profile's stream subscriptions."""
     resp = http_requests.get(
@@ -2098,7 +2133,8 @@ _leak_state = {
     "finished_at": "",
     "counters": {"customers": 0, "canceled": 0, "live": 0, "mapping_rows": 0,
                  "stream": 0, "sqp": 0, "no_sub": 0},
-    "lists": {"stream": [], "sqp": [], "no_sub": []},
+    "lists": {"stream": [], "sqp": [], "no_sub": [], "stream_active": []},
+    "candidates": [],
     "warnings": [],
 }
 
@@ -2394,6 +2430,10 @@ def _leak_worker() -> None:
                        if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
 
         stream_hits, sqp_hits, no_sub = [], [], []
+        # Every canceled seller that has an advertising profile — the input for
+        # the Ads API stream check, which asks what is actually subscribed rather
+        # than inferring it from data that happened to arrive.
+        stream_candidates = []
         for m in mapping:
             cust = m.get("stripe_customer") or ""
             sp_id = str(m.get("sp_id"))
@@ -2418,6 +2458,12 @@ def _leak_worker() -> None:
                 continue   # live, or a status we deliberately leave alone
 
             tokens = [t for t in (m.get("merchant_tokens") or "").split(",") if t]
+            marketplaces = [x for x in (m.get("ad_marketplaces") or "").split(",") if x]
+            if tokens and marketplaces:
+                cand = dict(base)
+                cand["canceled_at"] = canceled[cust]
+                cand["ad_marketplaces"] = ",".join(marketplaces)
+                stream_candidates.append(cand)
             hot = [t for t in tokens if t in streaming]
             if hot:
                 row = dict(base)
@@ -2455,8 +2501,12 @@ def _leak_worker() -> None:
         held = sum(1 for r in sqp_hits if r["in_grace"]) + \
                sum(1 for r in stream_hits if r["in_grace"])
 
+        for r in stream_candidates:
+            _leak_grace(r, grace_days)
         with _leak_lock:
-            _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits, "no_sub": no_sub}
+            _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits,
+                                    "no_sub": no_sub, "stream_active": []}
+            _leak_state["candidates"] = stream_candidates
             _leak_state["counters"] = {
                 "customers": len(by_customer), "canceled": len(canceled),
                 "live": len(live), "mapping_rows": len(mapping),
@@ -2478,6 +2528,8 @@ def _leak_worker() -> None:
 
         _leak_log("ok", f"A) canceled + Marketing Stream still arriving: {len(stream_hits):,} seller row(s)")
         _leak_log("ok", f"B) canceled + SQP enabled or arriving:         {len(sqp_hits):,} seller row(s)")
+        _leak_log("info", f"{len(stream_candidates):,} canceled seller/profile pair(s) can be "
+                          "checked against the Ads API for live stream subscriptions.")
         _leak_log("info", f"Not actioned — no Stripe subscription at all: {len(no_sub):,} seller row(s)")
         _leak_log("info", "Marketing Stream rows name the account but not the SNS subscription: "
                           "the link table keys on advertising ENTITY ids, which do not join to the "
@@ -2523,7 +2575,8 @@ def leak_start():
         _leak_state["warnings"] = []
         # Clear previous results: a run that aborts must not leave last week's
         # lists on screen where they could be read as current.
-        _leak_state["lists"] = {"stream": [], "sqp": [], "no_sub": []}
+        _leak_state["lists"] = {"stream": [], "sqp": [], "no_sub": [], "stream_active": []}
+        _leak_state["candidates"] = []
         _leak_state["counters"] = {"customers": 0, "canceled": 0, "live": 0,
                                    "mapping_rows": 0, "stream": 0, "sqp": 0, "no_sub": 0}
         _leak_state["finished_at"] = ""
@@ -2905,6 +2958,184 @@ def _leak_start_scheduler() -> None:
     threading.Thread(target=_leak_scheduler_loop, daemon=True).start()
 
 
+# ── Ads API stream check: what is actually subscribed, not what happened to
+#    arrive. This is the authoritative answer for list A. ──────────────────────
+
+_lst_lock = threading.Lock()
+_lst_stop = threading.Event()
+_lst_state = {"running": False, "logs": [], "started_at": 0.0,
+              "counters": {"checked": 0, "total": 0, "active": 0,
+                           "inactive": 0, "errors": 0}}
+
+
+def _lst_log(level: str, msg: str) -> None:
+    with _lst_lock:
+        _lst_state["logs"].append({
+            "i": len(_lst_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level, "msg": msg,
+        })
+
+
+def _lst_worker(candidates: list) -> None:
+    cache, rows = {}, []
+    try:
+        _lst_log("info", f"Asking the Ads API about {len(candidates):,} canceled "
+                         "seller/profile pair(s)…")
+        with _lst_lock:
+            _lst_state["counters"] = {"checked": 0, "total": len(candidates),
+                                      "active": 0, "inactive": 0, "errors": 0}
+        for cand in candidates:
+            if _lst_stop.is_set():
+                _lst_log("warn", "Stopped by user.")
+                break
+            sid = str(cand.get("sp_id"))
+            for mp_id in [m for m in (cand.get("ad_marketplaces") or "").split(",") if m]:
+                try:
+                    found = _ms_fetch_profiles([sid], mp_id)
+                    info = found.get(sid)
+                    if not info:
+                        continue      # no profile in this marketplace
+                    token = _ads_access_token(info["token"], cache)
+                    subs = _ms_subscriptions_detail(token, info["profile_id"])
+                    active = [s for s in subs if s["status"] == "ACTIVE"]
+                    row = dict(cand)
+                    row["marketplace_id"] = mp_id
+                    row["profile_id"] = info["profile_id"]
+                    row["subscriptions"] = subs
+                    row["active_datasets"] = ",".join(s["dataSetId"] for s in active)
+                    row["active_ids"] = [s["subscriptionId"] for s in active if s["subscriptionId"]]
+                    row["any_active"] = bool(active)
+                    row["key"] = f"{sid}|{mp_id}"
+                    rows.append(row)
+                    with _lst_lock:
+                        _lst_state["counters"]["active" if active else "inactive"] += 1
+                    if active:
+                        _lst_log("ok", f"{cand.get('username','')} ({sid}): ACTIVE — "
+                                       f"{row['active_datasets']}")
+                except Exception as exc:
+                    with _lst_lock:
+                        _lst_state["counters"]["errors"] += 1
+                    _lst_log("error", f"{cand.get('username','')} ({sid}): {str(exc)[:140]}")
+                time.sleep(0.12)
+            with _lst_lock:
+                _lst_state["counters"]["checked"] += 1
+
+        active_rows = [r for r in rows if r["any_active"]]
+        active_rows.sort(key=lambda r: (r.get("canceled_days") or 0), reverse=True)
+        with _leak_lock:
+            _leak_state["lists"]["stream_active"] = active_rows
+        _leak_save_results()
+        c = _lst_state["counters"]
+        _lst_log("ok", f"Done. {c['active']} profile(s) with a LIVE stream subscription, "
+                       f"{c['inactive']} with none, {c['errors']} error(s).")
+        if c["active"]:
+            _lst_log("info", "These are canceled accounts that Amazon still has an ACTIVE "
+                             "subscription for — the authoritative list to archive.")
+    finally:
+        with _lst_lock:
+            _lst_state["running"] = False
+
+
+@app.route("/api/leak/streams/start", methods=["POST"])
+def leak_streams_start():
+    with _lst_lock:
+        if _lst_state["running"]:
+            return jsonify({"ok": False, "error": "A stream check is already running."}), 409
+    with _leak_lock:
+        candidates = list(_leak_state.get("candidates") or [])
+    if not candidates:
+        return jsonify({"ok": False, "error": (
+            "No canceled accounts with advertising profiles — run the main check first.")}), 400
+    if not ADS_CLIENT_ID:
+        return jsonify({"ok": False, "error": "ADS_CLIENT_ID is not set in .env."}), 400
+
+    _lst_stop.clear()
+    with _lst_lock:
+        _lst_state["logs"] = []
+        _lst_state["started_at"] = time.time()
+        _lst_state["running"] = True
+    threading.Thread(target=_lst_worker, args=(candidates,), daemon=True).start()
+    return jsonify({"ok": True, "count": len(candidates)})
+
+
+@app.route("/api/leak/streams/stop", methods=["POST"])
+def leak_streams_stop():
+    _lst_stop.set()
+    _lst_log("warn", "Stop requested...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leak/streams/state")
+def leak_streams_state():
+    since = request.args.get("since", default=0, type=int)
+    with _lst_lock:
+        running, counters = _lst_state["running"], _lst_state["counters"]
+        logs = [e for e in _lst_state["logs"] if e["i"] >= since]
+        nxt = len(_lst_state["logs"])
+        elapsed = int(time.time() - _lst_state["started_at"]) if running else 0
+    with _leak_lock:
+        rows = list(_leak_state["lists"].get("stream_active") or [])
+        candidates = len(_leak_state.get("candidates") or [])
+    return jsonify({"running": running, "counters": counters, "logs": logs,
+                    "next": nxt, "elapsed": elapsed, "rows": rows,
+                    "candidates": candidates})
+
+
+@app.route("/api/leak/streams/archive", methods=["POST"])
+def leak_streams_archive():
+    """Archive the live subscriptions of the selected profiles."""
+    payload = request.get_json(silent=True) or {}
+    keys = set(payload.get("keys") or [])
+    probe_only = bool(payload.get("probe"))
+    if not keys:
+        return jsonify({"ok": False, "error": "Nothing selected."}), 400
+
+    with _leak_lock:
+        rows = [r for r in (_leak_state["lists"].get("stream_active") or [])
+                if r.get("key") in keys]
+    # Never archive an account still inside the protection window.
+    blocked = [r for r in rows if r.get("in_grace")]
+    rows = [r for r in rows if not r.get("in_grace")]
+    if not rows:
+        return jsonify({"ok": False, "error": (
+            f"All {len(blocked)} selected account(s) are still protected "
+            "(canceled too recently)." if blocked else "Nothing actionable selected.")}), 400
+    if probe_only:
+        rows = rows[:1]
+
+    cache, results, ok_n, fail_n = {}, [], 0, 0
+    for r in rows:
+        sid = str(r.get("sp_id"))
+        try:
+            info = (_ms_fetch_profiles([sid], r["marketplace_id"]) or {}).get(sid)
+            if not info:
+                raise ValueError("advertising profile not found")
+            token = _ads_access_token(info["token"], cache)
+            per_sub = []
+            for sub_id in r.get("active_ids") or []:
+                resp = _ms_archive_subscription(token, info["profile_id"], sub_id)
+                per_sub.append({"subscription_id": sub_id, "status": resp.status_code,
+                                "detail": (resp.text or "").strip()[:160]})
+                time.sleep(0.12)
+            # Re-read: an HTTP 2xx is not proof the subscription actually stopped.
+            after = _ms_subscriptions_detail(token, info["profile_id"])
+            still = [s["dataSetId"] for s in after if s["status"] == "ACTIVE"]
+            results.append({"key": r["key"], "username": r.get("username", ""),
+                            "sp_id": r.get("sp_id"), "calls": per_sub,
+                            "still_active": ",".join(still),
+                            "verified": "ARCHIVED" if not still else "STILL ACTIVE"})
+            ok_n += 0 if still else 1
+            fail_n += 1 if still else 0
+        except Exception as exc:
+            results.append({"key": r.get("key"), "username": r.get("username", ""),
+                            "sp_id": r.get("sp_id"), "calls": [],
+                            "still_active": "", "verified": f"ERROR: {str(exc)[:120]}"})
+            fail_n += 1
+    return jsonify({"ok": True, "archived": ok_n, "failed": fail_n,
+                    "blocked": len(blocked), "probe": probe_only, "results": results})
+
+
 @app.route("/api/leak/sql")
 def leak_sql():
     with _leak_lock:
@@ -2929,6 +3160,10 @@ def leak_export_csv():
         "no_sub": ["user_id", "username", "stripe_customer", "trial_started",
                    "registered", "sp_id", "selling_partner_id", "seller_name",
                    "region", "pricing_plan_id", "plan_name"],
+        "stream_active": ["user_id", "username", "stripe_customer", "canceled_at",
+                          "canceled_days", "sp_id", "selling_partner_id",
+                          "seller_name", "region", "plan_name", "marketplace_id",
+                          "profile_id", "active_datasets"],
     }
     if which not in columns:
         return Response("error,unknown list\n", mimetype="text/csv", status=400)
