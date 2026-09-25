@@ -2154,6 +2154,27 @@ def _leak_period_end(sub: dict):
     return None
 
 
+def _leak_stripe_preflight() -> None:
+    """One cheap call to prove the key works before the slow DB scans.
+
+    Without this, a bad or wrongly-scoped key only fails after several minutes
+    of scanning sp_traffic and sqp_by_asin.
+    """
+    key = _leak_stripe_key()
+    resp = http_requests.get(STRIPE_API, params={"status": "all", "limit": 1},
+                             auth=(key, ""), timeout=30)
+    if resp.status_code == 401:
+        raise ValueError("Stripe rejected the key (401). Check ~/.stripe_key holds a "
+                         "live restricted key and that it has not been revoked.")
+    if resp.status_code == 403:
+        raise ValueError("Stripe returned 403 — the key lacks read access to "
+                         "Subscriptions. Give it Customers: read and Subscriptions: read.")
+    if resp.status_code != 200:
+        raise ValueError(f"Stripe {resp.status_code}: "
+                         f"{_leak_scrub(resp.text, key)[:200]}")
+    _leak_log("ok", "Stripe key accepted.")
+
+
 def _leak_fetch_stripe() -> list:
     """Every subscription, all statuses, via cursor pagination."""
     key = _leak_stripe_key()
@@ -2267,6 +2288,17 @@ def _leak_last_mapping_rows():
 def _leak_worker() -> None:
     try:
         _leak_log("info", "Subscription Leakage Check started (read-only; nothing is executed).")
+
+        # Check Stripe first: it costs one request, and the DB scans that follow
+        # take minutes that are wasted if the key turns out to be unusable.
+        try:
+            _leak_stripe_preflight()
+        except Exception as exc:
+            _leak_log("error", f"Stripe check failed — {exc}")
+            return
+        if _leak_stop_event.is_set():
+            _leak_log("warn", "Stopped by user.")
+            return
 
         # ── DB side ──────────────────────────────────────────────────────────
         try:
