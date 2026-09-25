@@ -2016,6 +2016,492 @@ def upg_state():
         })
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Subscription Leakage Check (SPB-629) — Stripe-canceled accounts that are still
+# consuming paid Amazon data. Produces review lists only; nothing is executed.
+#
+# Stripe subscription status does not exist in the database (stripe_detail holds
+# only id/customer_id/trial_started, and pricing_plan_id is the sold tier, not
+# proof of payment), so this has to join two sources: the DB says who is still
+# consuming, Stripe says who is still paying.
+# ══════════════════════════════════════════════════════════════════════════════
+
+STRIPE_API = "https://api.stripe.com/v1/subscriptions"
+STRIPE_KEY_FILE = os.environ.get(
+    "STRIPE_KEY_FILE", os.path.expanduser("~/.stripe_key"))
+
+# Any of these means the customer is still worth money — leave them alone.
+# past_due and unpaid are deliberately here: they often recover on retry, and
+# cutting off a customer who then pays is the expensive mistake.
+LEAK_LIVE_STATUSES = {"active", "trialing", "past_due", "unpaid",
+                      "incomplete", "incomplete_expired", "paused"}
+
+LEAK_PLAN_NAMES = {"1": "basic", "2": "advanced", "3": "custom",
+                   "2004": "custom_ads", "2005": "custom_ads_sqp"}
+
+LEAK_SQP_TYPES = ("SQP_BY_ASIN", "SQP_BY_ASIN_CONVERT", "SQP_BY_ASIN_GENERATE")
+
+_LEAK_MAPPING_QUERY = """
+    select u.id as user_id, u.username, u.user_type, u.pricing_plan_id,
+           sd.customer_id as stripe_customer, sd.trial_started,
+           u.registration_date::date as registered,
+           s.id as sp_id, s.selling_partner_id, s.name as seller_name,
+           s.state as region,
+           coalesce(string_agg(distinct ap.account_info_id, ','), '') as merchant_tokens,
+           coalesce(string_agg(distinct ap.account_info_marketplace_id, ','), '') as ad_marketplaces
+    from my_real_profit_user u
+    join stripe_detail sd on sd.id = u.stripe_detail_id
+    join amazon_selling_partner s on s.my_real_profit_user_id = u.id
+    left join advertising_profile ap on ap.amazon_selling_partner_id = s.id
+    group by 1,2,3,4,5,6,7,8,9,10,11
+    order by 1,8
+"""
+
+_LEAK_SQP_SCHED_QUERY = """
+    select amazon_selling_partner_id, type, marketplace_id, is_enabled
+    from scheduler_config where type like 'SQP%' order by 1,2,3
+"""
+
+_LEAK_TRAFFIC_QUERY = """
+    select advertiser_id, count(*) n, max(created_at) last_ingest
+    from sp_traffic where created_at >= now() - interval '%(days)s days'
+    group by 1 order by 2 desc
+"""
+
+_LEAK_SQP_INGEST_QUERY = """
+    select amazon_selling_partner_id, count(*) n, max(created_at) last_ingest,
+           max(start_date) last_period
+    from sqp_by_asin where created_at >= now() - interval '%(days)s days'
+    group by 1 order by 2 desc
+"""
+
+LEAK_TRAFFIC_DAYS = int(os.environ.get("LEAK_TRAFFIC_DAYS", "7"))
+LEAK_SQP_DAYS = int(os.environ.get("LEAK_SQP_DAYS", "14"))
+
+_leak_lock = threading.Lock()
+_leak_stop_event = threading.Event()
+_leak_state = {
+    "running": False,
+    "logs": [],
+    "finished_at": "",
+    "counters": {"customers": 0, "canceled": 0, "live": 0, "mapping_rows": 0,
+                 "stream": 0, "sqp": 0, "no_sub": 0},
+    "lists": {"stream": [], "sqp": [], "no_sub": []},
+    "warnings": [],
+}
+
+
+def _leak_log(level: str, msg: str) -> None:
+    with _leak_lock:
+        _leak_state["logs"].append({
+            "i": len(_leak_state["logs"]),
+            "t": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "msg": msg,
+        })
+
+
+def _leak_warn(msg: str) -> None:
+    with _leak_lock:
+        _leak_state["warnings"].append(msg)
+    _leak_log("warn", msg)
+
+
+def _leak_stripe_key() -> str:
+    """Read the restricted Stripe key. Never logged, never put in argv."""
+    key = (os.environ.get("STRIPE_API_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        with open(STRIPE_KEY_FILE) as fh:
+            key = fh.read().strip()
+    except OSError:
+        key = ""
+    if not key:
+        raise ValueError(
+            f"No Stripe key. Set STRIPE_API_KEY or create {STRIPE_KEY_FILE} "
+            "(chmod 600) holding the restricted read-only key."
+        )
+    return key
+
+
+def _leak_scrub(text: str, key: str) -> str:
+    """Belt and braces: never let a key reach a log line."""
+    out = text or ""
+    if key and key in out:
+        out = out.replace(key, "***")
+    return out
+
+
+def _leak_ts(value):
+    """Stripe epoch seconds → ISO date-time, or '' when absent."""
+    if not value:
+        return ""
+    try:
+        return datetime.datetime.utcfromtimestamp(int(value)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _leak_period_end(sub: dict):
+    """current_period_end moved to the item level in recent API versions."""
+    val = sub.get("current_period_end")
+    if val:
+        return val
+    for item in ((sub.get("items") or {}).get("data") or []):
+        if item.get("current_period_end"):
+            return item["current_period_end"]
+    return None
+
+
+def _leak_fetch_stripe() -> list:
+    """Every subscription, all statuses, via cursor pagination."""
+    key = _leak_stripe_key()
+    subs, starting_after, page = [], None, 0
+    while True:
+        if _leak_stop_event.is_set():
+            raise ValueError("stopped by user")
+        params = {"status": "all", "limit": 100}
+        if starting_after:
+            params["starting_after"] = starting_after
+        # auth= puts the key in an Authorization header, never in argv.
+        resp = http_requests.get(STRIPE_API, params=params, auth=(key, ""), timeout=60)
+        if resp.status_code != 200:
+            raise ValueError(
+                f"Stripe {resp.status_code}: {_leak_scrub(resp.text, key)[:300]}")
+        body = resp.json()
+        data = body.get("data") or []
+        for s in data:
+            subs.append({
+                "customer_id": s.get("customer") or "",
+                "subscription_id": s.get("id") or "",
+                "status": (s.get("status") or "").lower(),
+                "cancel_at_period_end": bool(s.get("cancel_at_period_end")),
+                "created": _leak_ts(s.get("created")),
+                "canceled_at": _leak_ts(s.get("canceled_at")),
+                "ended_at": _leak_ts(s.get("ended_at")),
+                "current_period_end": _leak_ts(_leak_period_end(s)),
+                "price_ids": ",".join(
+                    i.get("price", {}).get("id", "")
+                    for i in ((s.get("items") or {}).get("data") or [])
+                ),
+            })
+        page += 1
+        _leak_log("info", f"Stripe page {page}: {len(subs)} subscription(s) so far")
+        if not body.get("has_more") or not data:
+            break
+        starting_after = data[-1].get("id")
+        if not starting_after:
+            break
+    return subs
+
+
+def _leak_query(cur, sql, label, params=None):
+    _leak_log("info", f"Querying {label}…")
+    cur.execute(sql if params is None else sql % params)
+    rows = [dict(r) for r in cur.fetchall()]
+    _leak_log("ok", f"{label}: {len(rows):,} row(s)")
+    return rows
+
+
+def _leak_db_side() -> dict:
+    """The four DB exports the cross-check needs."""
+    out = {}
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # The two big scans need more than the default timeout; both are
+            # bounded on created_at (an unbounded group-by on sp_traffic times out).
+            cur.execute("SET statement_timeout = '20min'")
+            out["mapping"] = _leak_query(cur, _LEAK_MAPPING_QUERY, "identity mapping")
+            out["sched"] = _leak_query(cur, _LEAK_SQP_SCHED_QUERY, "SQP scheduler config")
+            _leak_log("info", f"Scanning sp_traffic ({LEAK_TRAFFIC_DAYS}d) — this takes a few minutes…")
+            out["traffic"] = _leak_query(cur, _LEAK_TRAFFIC_QUERY,
+                                         f"sp_traffic last {LEAK_TRAFFIC_DAYS}d",
+                                         {"days": LEAK_TRAFFIC_DAYS})
+            _leak_log("info", f"Scanning sqp_by_asin ({LEAK_SQP_DAYS}d)…")
+            out["sqp"] = _leak_query(cur, _LEAK_SQP_INGEST_QUERY,
+                                     f"sqp_by_asin last {LEAK_SQP_DAYS}d",
+                                     {"days": LEAK_SQP_DAYS})
+    return out
+
+
+def _leak_classify(subs: list) -> tuple:
+    """Per customer: live (any live status) / canceled (all canceled) / neither."""
+    by_customer = {}
+    for s in subs:
+        by_customer.setdefault(s["customer_id"], []).append(s)
+
+    canceled, live = {}, set()
+    for cust, rows in by_customer.items():
+        statuses = {r["status"] for r in rows}
+        if statuses & LEAK_LIVE_STATUSES:
+            live.add(cust)
+        elif statuses == {"canceled"}:
+            stamps = [r["canceled_at"] or r["ended_at"] for r in rows]
+            canceled[cust] = max([x for x in stamps if x], default="")
+    return by_customer, canceled, live
+
+
+def _leak_history_init() -> None:
+    with _subs_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leak_runs (
+                run_at TEXT PRIMARY KEY, mapping_rows INTEGER, customers INTEGER,
+                canceled INTEGER, stream INTEGER, sqp INTEGER, no_sub INTEGER
+            )
+        """)
+
+
+def _leak_last_mapping_rows():
+    try:
+        _leak_history_init()
+        with _subs_db() as conn:
+            row = conn.execute(
+                "SELECT mapping_rows FROM leak_runs ORDER BY run_at DESC LIMIT 1"
+            ).fetchone()
+        return row["mapping_rows"] if row else None
+    except Exception:
+        return None
+
+
+def _leak_worker() -> None:
+    try:
+        _leak_log("info", "Subscription Leakage Check started (read-only; nothing is executed).")
+
+        # ── DB side ──────────────────────────────────────────────────────────
+        try:
+            db = _leak_db_side()
+        except Exception as exc:
+            _leak_log("error", f"Database step failed — {exc}")
+            return
+        if _leak_stop_event.is_set():
+            _leak_log("warn", "Stopped by user.")
+            return
+
+        mapping = db["mapping"]
+        previous = _leak_last_mapping_rows()
+        if previous:
+            swing = abs(len(mapping) - previous) / max(previous, 1) * 100
+            if swing > 10:
+                _leak_warn(f"Identity mapping changed {swing:.1f}% since the last run "
+                           f"({previous:,} → {len(mapping):,}) — check the join before acting.")
+
+        # ── Stripe side ──────────────────────────────────────────────────────
+        try:
+            subs = _leak_fetch_stripe()
+        except Exception as exc:
+            _leak_log("error", f"Stripe step failed — {exc}")
+            return
+        if _leak_stop_event.is_set():
+            _leak_log("warn", "Stopped by user.")
+            return
+
+        by_customer, canceled, live = _leak_classify(subs)
+        _leak_log("ok", f"Stripe: {len(subs):,} subscription(s) across {len(by_customer):,} customer(s)")
+
+        # Guardrail: Stripe defaults to active-only. Zero canceled rows among a
+        # non-empty result means status=all was lost, and every list would be
+        # silently empty.
+        if subs and not any(s["status"] == "canceled" for s in subs):
+            _leak_log("error", "No canceled subscriptions in the Stripe response at all — "
+                               "the status=all filter was not applied. Aborting rather than "
+                               "reporting empty lists.")
+            return
+
+        # ── Cross-check ──────────────────────────────────────────────────────
+        streaming = {r["advertiser_id"]: r for r in db["traffic"] if r.get("advertiser_id")}
+        sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in db["sqp"]
+                      if r.get("amazon_selling_partner_id") is not None}
+        sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in db["sched"]
+                       if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
+
+        stream_hits, sqp_hits, no_sub = [], [], []
+        for m in mapping:
+            cust = m.get("stripe_customer") or ""
+            sp_id = str(m.get("sp_id"))
+            plan = str(m.get("pricing_plan_id") or "")
+            base = {
+                "user_id": m.get("user_id"), "username": m.get("username") or "",
+                "stripe_customer": cust, "sp_id": m.get("sp_id"),
+                "selling_partner_id": m.get("selling_partner_id") or "",
+                "seller_name": m.get("seller_name") or "",
+                "region": m.get("region") or "",
+                "pricing_plan_id": plan,
+                "plan_name": LEAK_PLAN_NAMES.get(plan, plan),
+            }
+
+            if cust not in by_customer:
+                row = dict(base)
+                row["trial_started"] = str(m.get("trial_started") or "")
+                row["registered"] = str(m.get("registered") or "")
+                no_sub.append(row)
+                continue
+            if cust not in canceled:
+                continue   # live, or a status we deliberately leave alone
+
+            tokens = [t for t in (m.get("merchant_tokens") or "").split(",") if t]
+            hot = [t for t in tokens if t in streaming]
+            if hot:
+                row = dict(base)
+                row["canceled_at"] = canceled[cust]
+                row["merchant_tokens_streaming"] = ",".join(hot)
+                row["ad_marketplaces"] = m.get("ad_marketplaces") or ""
+                row["stream_rows_7d"] = sum(int(streaming[t]["n"]) for t in hot)
+                row["stream_last_ingest"] = max(str(streaming[t]["last_ingest"]) for t in hot)
+                stream_hits.append(row)
+
+            if sp_id in sqp_ingest or sp_id in sqp_enabled:
+                row = dict(base)
+                row["canceled_at"] = canceled[cust]
+                ing = sqp_ingest.get(sp_id)
+                row["sqp_scheduler_enabled"] = "yes" if sp_id in sqp_enabled else "no"
+                row["sqp_rows_14d"] = int(ing["n"]) if ing else 0
+                row["sqp_last_ingest"] = str(ing["last_ingest"]) if ing else ""
+                row["sqp_last_period"] = str(ing["last_period"]) if ing else ""
+                sqp_hits.append(row)
+
+        stream_hits.sort(key=lambda r: -r["stream_rows_7d"])
+        sqp_hits.sort(key=lambda r: -r["sqp_rows_14d"])
+
+        with _leak_lock:
+            _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits, "no_sub": no_sub}
+            _leak_state["counters"] = {
+                "customers": len(by_customer), "canceled": len(canceled),
+                "live": len(live), "mapping_rows": len(mapping),
+                "stream": len(stream_hits), "sqp": len(sqp_hits), "no_sub": len(no_sub),
+            }
+            _leak_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        try:
+            _leak_history_init()
+            with _subs_db() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO leak_runs VALUES (?,?,?,?,?,?,?)",
+                    (datetime.datetime.now().isoformat(), len(mapping), len(by_customer),
+                     len(canceled), len(stream_hits), len(sqp_hits), len(no_sub)))
+        except Exception as exc:
+            _leak_log("warn", f"Could not record run history — {exc}")
+
+        _leak_log("ok", f"A) canceled + Marketing Stream still arriving: {len(stream_hits):,} seller row(s)")
+        _leak_log("ok", f"B) canceled + SQP enabled or arriving:         {len(sqp_hits):,} seller row(s)")
+        _leak_log("info", f"Not actioned — no Stripe subscription at all: {len(no_sub):,} seller row(s)")
+        _leak_log("info", "Marketing Stream rows name the account but not the SNS subscription: "
+                          "the link table keys on advertising ENTITY ids, which do not join to the "
+                          "merchant tokens we hold. Resolving that needs the Ads API or AWS console.")
+        _leak_log("info", "Review the lists, then hand the SQP disable statements to a backend dev. "
+                          "Nothing here writes to the database.")
+    finally:
+        with _leak_lock:
+            _leak_state["running"] = False
+
+
+def _leak_disable_sql(rows: list) -> str:
+    ids = sorted({str(r["sp_id"]) for r in rows if r.get("sqp_scheduler_enabled") == "yes"})
+    if not ids:
+        return "-- No selected seller has an enabled SQP scheduler."
+    types = ", ".join(f"'{t}'" for t in LEAK_SQP_TYPES)
+    lines = ["-- SPB-629: disable SQP for Stripe-canceled accounts.",
+             "-- REVIEW FIRST. All three SQP types move together.",
+             "-- Requires write access; this dashboard is read-only.",
+             ""]
+    for sp in ids:
+        lines.append("update scheduler_config set is_enabled = false")
+        lines.append(f"where amazon_selling_partner_id = {sp}")
+        lines.append(f"  and type in ({types});")
+    return "\n".join(lines)
+
+
+@app.route("/api/leak/start", methods=["POST"])
+def leak_start():
+    with _leak_lock:
+        if _leak_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    try:
+        _leak_stripe_key()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    _leak_stop_event.clear()
+    with _leak_lock:
+        _leak_state["logs"] = []
+        _leak_state["warnings"] = []
+        # Clear previous results: a run that aborts must not leave last week's
+        # lists on screen where they could be read as current.
+        _leak_state["lists"] = {"stream": [], "sqp": [], "no_sub": []}
+        _leak_state["counters"] = {"customers": 0, "canceled": 0, "live": 0,
+                                   "mapping_rows": 0, "stream": 0, "sqp": 0, "no_sub": 0}
+        _leak_state["finished_at"] = ""
+        _leak_state["running"] = True
+    threading.Thread(target=_leak_worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leak/stop", methods=["POST"])
+def leak_stop():
+    _leak_stop_event.set()
+    _leak_log("warn", "Stop requested...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leak/state")
+def leak_state():
+    since = request.args.get("since", default=0, type=int)
+    with _leak_lock:
+        return jsonify({
+            "running": _leak_state["running"],
+            "counters": _leak_state["counters"],
+            "warnings": _leak_state["warnings"],
+            "finished_at": _leak_state["finished_at"],
+            "logs": [e for e in _leak_state["logs"] if e["i"] >= since],
+            "next": len(_leak_state["logs"]),
+            "lists": _leak_state["lists"],
+            "traffic_days": LEAK_TRAFFIC_DAYS,
+            "sqp_days": LEAK_SQP_DAYS,
+        })
+
+
+@app.route("/api/leak/sql")
+def leak_sql():
+    with _leak_lock:
+        rows = list(_leak_state["lists"]["sqp"])
+    return jsonify({"ok": True, "sql": _leak_disable_sql(rows)})
+
+
+@app.route("/api/leak/export.csv")
+def leak_export_csv():
+    which = (request.args.get("list") or "").strip()
+    columns = {
+        "stream": ["user_id", "username", "stripe_customer", "canceled_at", "sp_id",
+                   "selling_partner_id", "seller_name", "region", "pricing_plan_id",
+                   "plan_name", "merchant_tokens_streaming", "ad_marketplaces",
+                   "stream_rows_7d", "stream_last_ingest"],
+        "sqp": ["user_id", "username", "stripe_customer", "canceled_at", "sp_id",
+                "selling_partner_id", "seller_name", "region", "pricing_plan_id",
+                "plan_name", "sqp_scheduler_enabled", "sqp_rows_14d",
+                "sqp_last_ingest", "sqp_last_period"],
+        "no_sub": ["user_id", "username", "stripe_customer", "trial_started",
+                   "registered", "sp_id", "selling_partner_id", "seller_name",
+                   "region", "pricing_plan_id", "plan_name"],
+    }
+    if which not in columns:
+        return Response("error,unknown list\n", mimetype="text/csv", status=400)
+
+    import csv
+    import io
+    with _leak_lock:
+        rows = list(_leak_state["lists"][which])
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns[which], extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    stamp = datetime.date.today().isoformat()
+    return Response(buf.getvalue(), mimetype="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="spb629_{which}_{stamp}.csv"'})
+
+
 def _config_summary() -> None:
     """Print which card is configured, so missing .env values surface at boot."""
     def state(*names):

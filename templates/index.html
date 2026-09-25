@@ -229,6 +229,23 @@
     .sqp-list-wrap thead th { position: sticky; top: 0; z-index: 1; }
     a.btn { text-decoration: none; display: inline-block; line-height: 1.5; }
 
+    /* ── Subscription Leakage Check ── */
+    .leak-note { font-size: .78rem; color: #94a3b8; line-height: 1.55; background: #161827;
+      border: 1px solid #252a3a; border-radius: 9px; padding: .7rem .85rem; margin-bottom: .7rem; }
+    .leak-note code { color: #fbbf24; }
+    .leak-warn { background: #78350f33; border: 1px solid #92400e; color: #fbbf24;
+      border-radius: 8px; padding: .5rem .7rem; font-size: .76rem; margin-top: .5rem; }
+    .leak-gap { background: #1e3a8a22; border: 1px solid #1e40af; color: #93c5fd;
+      border-radius: 8px; padding: .55rem .75rem; font-size: .75rem; margin: .5rem 0 0; }
+    .leak-sec { border: 1px solid #1e2130; border-radius: 9px; background: #111320; margin-top: .8rem; }
+    .leak-sec-hdr { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .6rem .75rem; }
+    .leak-sec-title { font-size: .82rem; font-weight: 700; color: #f1f5f9; }
+    .leak-sec-sub { font-size: .72rem; color: #64748b; margin-right: auto; }
+    .leak-sec-body { padding: 0 .75rem .75rem; }
+    .leak-sql { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto;
+      background: #0b0d13; border: 1px solid #1e2130; border-radius: 8px; padding: .6rem .75rem;
+      font-family: monospace; font-size: .72rem; color: #93c5fd; margin-top: .5rem; }
+
     .hidden { display: none !important; }
 
     /* ── Reports PUT (Batch) card ── */
@@ -787,6 +804,57 @@
 
   </div><!-- /card-body: remover -->
 </div><!-- /card: remover -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Subscription Leakage Check (SPB-629)
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-leak">
+  <div class="card-hdr" onclick="toggleCard('leak')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">LEAKAGE</span>
+      <div>
+        <div class="card-title">Subscription Leakage Check</div>
+        <div class="card-desc">Stripe-canceled accounts still pulling paid Amazon data — review lists only, nothing is executed</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-leak">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-leak">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <div class="leak-note">
+          Joins the database (who is still consuming) with Stripe (who is still paying).
+          An account counts as canceled only when it has at least one subscription and
+          <em>every</em> subscription is canceled — <code>past_due</code> and
+          <code>unpaid</code> are deliberately left alone.
+          Takes about 5 minutes; the two data scans dominate.
+        </div>
+        <div class="ms-controls">
+          <button class="btn btn-primary" id="leak-go" onclick="leakGo()">Run Check</button>
+          <button class="btn btn-red" id="leak-stop" onclick="leakStop()" disabled>Stop</button>
+          <span class="status-pill"><span class="dot" id="leak-dot"></span><span id="leak-status">Idle</span></span>
+          <span class="ms-status-label" id="leak-finished"></span>
+        </div>
+        <div id="leak-err" class="ms-err"></div>
+        <div id="leak-warnings"></div>
+      </div>
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="leak-c-customers">0</div><div class="rep-k">Customers</div></div>
+          <div class="rep-stat"><div class="rep-n rep-ok" id="leak-c-live">0</div><div class="rep-k">Live</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="leak-c-canceled">0</div><div class="rep-k">Canceled</div></div>
+          <div class="rep-stat"><div class="rep-n" id="leak-c-stream" style="color:#fbbf24">0</div><div class="rep-k">A · Stream</div></div>
+          <div class="rep-stat"><div class="rep-n" id="leak-c-sqp" style="color:#fbbf24">0</div><div class="rep-k">B · SQP</div></div>
+        </div>
+        <div id="leak-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div id="leak-results"></div>
+
+  </div><!-- /card-body: leak -->
+</div><!-- /card: leak -->
 
 </div><!-- /cards -->
 
@@ -2465,6 +2533,165 @@ async function rmStop() { await fetch('/api/remove/stop', { method: 'POST' }); }
 
 setInterval(rmPoll, 1000);
 rmPoll();
+// ── Subscription Leakage Check (SPB-629) ──────────────────────────────────────
+let leakSince = 0;
+const leakOpen = { stream: false, sqp: false, no_sub: false };
+
+function leakToggle(which) {
+  leakOpen[which] = !leakOpen[which];
+  const b = document.getElementById(`leak-body-${which}`);
+  const t = document.getElementById(`leak-tog-${which}`);
+  if (b) b.classList.toggle('hidden', !leakOpen[which]);
+  if (t) t.textContent = leakOpen[which] ? 'Hide List' : 'Show List';
+}
+
+function leakTable(rows, cols) {
+  if (!rows.length) return `<span class="token-idle">No rows.</span>`;
+  const head = cols.map(c => `<th>${esc(c.label)}</th>`).join('');
+  const body = rows.map(r => '<tr>' + cols.map(c => {
+    const v = r[c.key];
+    if (c.key === 'sp_id' || c.key === 'selling_partner_id') {
+      return `<td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(v)}')">${esc(v)}</span></td>`;
+    }
+    if (c.num) return `<td class="mono">${Number(v || 0).toLocaleString()}</td>`;
+    return `<td class="${c.key === 'seller_name' || c.key === 'username' ? 'ms-name' : ''}" title="${esc(v || '')}">${esc(v === 0 ? '0' : (v || '—'))}</td>`;
+  }).join('') + '</tr>').join('');
+  return `<div class="sqp-list-wrap"><table class="ms-table">
+    <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+const LEAK_COLS = {
+  stream: [
+    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
+    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
+    { key: 'region', label: 'Region' }, { key: 'canceled_at', label: 'Canceled' },
+    { key: 'stream_rows_7d', label: 'Stream rows', num: true },
+    { key: 'stream_last_ingest', label: 'Last ingest' },
+    { key: 'merchant_tokens_streaming', label: 'Merchant token' },
+  ],
+  sqp: [
+    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
+    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
+    { key: 'region', label: 'Region' }, { key: 'canceled_at', label: 'Canceled' },
+    { key: 'sqp_scheduler_enabled', label: 'Scheduler' },
+    { key: 'sqp_rows_14d', label: 'SQP rows', num: true },
+    { key: 'sqp_last_ingest', label: 'Last ingest' },
+  ],
+  no_sub: [
+    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
+    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
+    { key: 'region', label: 'Region' }, { key: 'trial_started', label: 'Trial started' },
+    { key: 'registered', label: 'Registered' },
+  ],
+};
+
+function leakSection(which, title, sub, rows, extra) {
+  return `<div class="leak-sec">
+    <div class="leak-sec-hdr">
+      <span class="leak-sec-title">${title}</span>
+      <span class="leak-sec-sub">${sub}</span>
+      <button class="btn btn-sm btn-ghost" id="leak-tog-${which}" onclick="leakToggle('${which}')">
+        ${leakOpen[which] ? 'Hide List' : 'Show List'}</button>
+      <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=${which}"
+         title="Download as CSV (opens in Google Sheets)">⭳ Export CSV</a>
+      ${extra || ''}
+    </div>
+    <div class="leak-sec-body ${leakOpen[which] ? '' : 'hidden'}" id="leak-body-${which}">
+      ${leakTable(rows, LEAK_COLS[which])}
+    </div>
+  </div>`;
+}
+
+function leakRenderResults(s) {
+  const L = s.lists || { stream: [], sqp: [], no_sub: [] };
+  const c = s.counters || {};
+  if (!L.stream.length && !L.sqp.length && !L.no_sub.length && !s.finished_at) {
+    document.getElementById('leak-results').innerHTML = '';
+    return;
+  }
+  const sqlBtn = `<button class="btn btn-sm btn-ghost" onclick="leakCopySql(this)"
+      title="Copy the review-first UPDATE statements">⧉ Copy disable SQL</button>`;
+  document.getElementById('leak-results').innerHTML =
+    leakSection('stream', 'A · Canceled + Marketing Stream still arriving',
+      `${(c.stream || 0).toLocaleString()} seller row(s) · last ${s.traffic_days || 7} days`,
+      L.stream) +
+    `<div class="leak-gap"><strong>Known limitation:</strong> these rows name the account, but not the
+      SNS subscription to delete. The confirmation-link table keys on advertising
+      <code>ENTITY…</code> ids, which do not join to the merchant tokens we hold, so the
+      unsubscribe still needs the Ads API (<code>GET /v2/profiles</code>) or the AWS console.</div>` +
+    leakSection('sqp', 'B · Canceled + SQP enabled or arriving',
+      `${(c.sqp || 0).toLocaleString()} seller row(s) · last ${s.sqp_days || 14} days`,
+      L.sqp, sqlBtn) +
+    `<div id="leak-sql-box"></div>` +
+    leakSection('no_sub', 'Not actioned · no Stripe subscription at all',
+      `${(c.no_sub || 0).toLocaleString()} seller row(s) — trials that never converted; decide whether these count`,
+      L.no_sub);
+}
+
+async function leakCopySql(btn) {
+  const original = btn.textContent;
+  try {
+    const r = await fetch('/api/leak/sql');
+    const d = await r.json();
+    await sqpCopyText(d.sql);
+    document.getElementById('leak-sql-box').innerHTML =
+      `<div class="leak-sql">${esc(d.sql)}</div>`;
+    btn.textContent = 'copied ✓';
+  } catch (e) { btn.textContent = 'copy failed'; }
+  setTimeout(() => { btn.textContent = original; }, 1400);
+}
+
+async function leakPoll() {
+  try {
+    const r = await fetch('/api/leak/state?since=' + leakSince);
+    const s = await r.json();
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = '<span class="rt">' + e.t + '</span>' +
+                      '<span class="rl-' + e.level + '">' + esc(e.msg) + '</span>';
+      document.getElementById('leak-log').appendChild(div);
+      leakSince = e.i + 1;
+    }
+    if (s.logs.length) {
+      const l = document.getElementById('leak-log');
+      l.scrollTop = l.scrollHeight;
+    }
+    const c = s.counters || {};
+    document.getElementById('leak-c-customers').textContent = (c.customers || 0).toLocaleString();
+    document.getElementById('leak-c-live').textContent      = (c.live || 0).toLocaleString();
+    document.getElementById('leak-c-canceled').textContent  = (c.canceled || 0).toLocaleString();
+    document.getElementById('leak-c-stream').textContent    = (c.stream || 0).toLocaleString();
+    document.getElementById('leak-c-sqp').textContent       = (c.sqp || 0).toLocaleString();
+    document.getElementById('leak-go').disabled   = s.running;
+    document.getElementById('leak-stop').disabled = !s.running;
+    document.getElementById('leak-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('leak-status').textContent = s.running ? 'Running…' : 'Idle';
+    document.getElementById('leak-finished').textContent =
+      s.finished_at ? `last run ${s.finished_at}` : '';
+    document.getElementById('leak-warnings').innerHTML =
+      (s.warnings || []).map(w => `<div class="leak-warn">⚠ ${esc(w)}</div>`).join('');
+    if (s.lists) leakRenderResults(s);
+  } catch (_) {}
+}
+
+async function leakGo() {
+  const err = document.getElementById('leak-err');
+  err.textContent = '';
+  leakSince = 0;
+  document.getElementById('leak-log').innerHTML = '';
+  try {
+    const r = await fetch('/api/leak/start', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    leakPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function leakStop() { await fetch('/api/leak/stop', { method: 'POST' }); }
+
+setInterval(leakPoll, 2000);
+leakPoll();
 </script>
 </body>
 </html>
