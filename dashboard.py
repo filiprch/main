@@ -2079,6 +2079,11 @@ _LEAK_SQP_INGEST_QUERY = """
 
 LEAK_TRAFFIC_DAYS = int(os.environ.get("LEAK_TRAFFIC_DAYS", "7"))
 LEAK_SQP_DAYS = int(os.environ.get("LEAK_SQP_DAYS", "14"))
+# Accounts canceled within this many days are shown but held back from action,
+# so someone who just canceled and may reconsider is not cut off immediately.
+LEAK_GRACE_DAYS = int(os.environ.get("LEAK_GRACE_DAYS", "14"))
+# Unverified: /admin/scheduler/add exists, this is the presumed counterpart.
+LEAK_REMOVE_PATH = os.environ.get("LEAK_REMOVE_PATH", "/admin/scheduler/remove")
 
 _leak_lock = threading.Lock()
 _leak_stop_event = threading.Event()
@@ -2265,6 +2270,27 @@ def _leak_classify(subs: list) -> tuple:
     return by_customer, canceled, live
 
 
+def _leak_days_since(stamp: str):
+    """Whole days since an ISO timestamp, or None when it is absent."""
+    if not stamp:
+        return None
+    try:
+        dt = datetime.datetime.strptime(stamp[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+    return (datetime.datetime.now() - dt).days
+
+
+def _leak_grace(row: dict, grace_days: int) -> dict:
+    """Tag a row with how long ago it was canceled and whether it is held back."""
+    days = _leak_days_since(row.get("canceled_at", ""))
+    row["canceled_days"] = days
+    # An unknown cancellation date is treated as in-grace: better to hold an
+    # account back than to cut one whose timing we cannot establish.
+    row["in_grace"] = True if days is None else days < grace_days
+    return row
+
+
 def _leak_history_init() -> None:
     with _subs_db() as conn:
         conn.execute("""
@@ -2396,6 +2422,13 @@ def _leak_worker() -> None:
 
         stream_hits.sort(key=lambda r: -r["stream_rows_7d"])
         sqp_hits.sort(key=lambda r: -r["sqp_rows_14d"])
+        grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
+        for r in stream_hits:
+            _leak_grace(r, grace_days)
+        for r in sqp_hits:
+            _leak_grace(r, grace_days)
+        held = sum(1 for r in sqp_hits if r["in_grace"]) + \
+               sum(1 for r in stream_hits if r["in_grace"])
 
         with _leak_lock:
             _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits, "no_sub": no_sub}
@@ -2403,8 +2436,10 @@ def _leak_worker() -> None:
                 "customers": len(by_customer), "canceled": len(canceled),
                 "live": len(live), "mapping_rows": len(mapping),
                 "stream": len(stream_hits), "sqp": len(sqp_hits), "no_sub": len(no_sub),
+                "held_in_grace": held, "grace_days": grace_days,
             }
             _leak_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        _leak_save_results()
 
         try:
             _leak_history_init()
@@ -2493,13 +2528,276 @@ def leak_state():
             "lists": _leak_state["lists"],
             "traffic_days": LEAK_TRAFFIC_DAYS,
             "sqp_days": LEAK_SQP_DAYS,
+            "grace_days": _leak_setting_int("grace_days", LEAK_GRACE_DAYS),
+            "include_trials": _leak_setting("include_trials", "0") == "1",
+            "auto_enabled": _leak_setting("auto_enabled", "0") == "1",
+            "remove_path": LEAK_REMOVE_PATH,
         })
+
+
+def _leak_settings_init() -> None:
+    with _subs_db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS leak_settings "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS leak_results "
+                     "(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT, finished_at TEXT)")
+
+
+def _leak_setting(key: str, default: str = "") -> str:
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            row = conn.execute("SELECT value FROM leak_settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+    except Exception:
+        return default
+
+
+def _leak_setting_int(key: str, default: int) -> int:
+    try:
+        return int(_leak_setting(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _leak_set_setting(key: str, value) -> None:
+    _leak_settings_init()
+    with _subs_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO leak_settings VALUES (?,?)", (key, str(value)))
+
+
+def _leak_save_results() -> None:
+    """Persist the last run so the card shows findings without re-scanning."""
+    try:
+        _leak_settings_init()
+        with _leak_lock:
+            payload = json.dumps({"lists": _leak_state["lists"],
+                                  "counters": _leak_state["counters"],
+                                  "warnings": _leak_state["warnings"]})
+            finished = _leak_state["finished_at"]
+        with _subs_db() as conn:
+            conn.execute("INSERT OR REPLACE INTO leak_results VALUES (1,?,?)",
+                         (payload, finished))
+    except Exception as exc:
+        _leak_log("warn", f"Could not save results — {exc}")
+
+
+def _leak_load_results() -> None:
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            row = conn.execute("SELECT payload, finished_at FROM leak_results WHERE id=1").fetchone()
+        if not row:
+            return
+        data = json.loads(row["payload"])
+        with _leak_lock:
+            _leak_state["lists"] = data.get("lists", _leak_state["lists"])
+            _leak_state["counters"] = data.get("counters", _leak_state["counters"])
+            _leak_state["warnings"] = data.get("warnings", [])
+            _leak_state["finished_at"] = row["finished_at"] or ""
+    except Exception:
+        pass
+
+
+def _leak_selected_rows(sp_ids: list, include_trials: bool) -> list:
+    """Resolve selected seller ids to rows that are allowed to be actioned."""
+    wanted = {str(s) for s in sp_ids}
+    with _leak_lock:
+        pool = list(_leak_state["lists"]["sqp"])
+        if include_trials:
+            pool += list(_leak_state["lists"]["no_sub"])
+    out, blocked = [], []
+    for r in pool:
+        if str(r.get("sp_id")) not in wanted:
+            continue
+        # no_sub rows have no cancellation date and are only actionable when the
+        # trials toggle is on; canceled rows must be past the grace period.
+        if r.get("in_grace") and r.get("canceled_at"):
+            blocked.append(r)
+            continue
+        out.append(r)
+    return out, blocked
+
+
+def _leak_selection_is_trials(sp_ids: list) -> bool:
+    """True when the selection only matches rows in the trials bucket."""
+    wanted = {str(s) for s in sp_ids}
+    with _leak_lock:
+        return any(str(r.get("sp_id")) in wanted for r in _leak_state["lists"]["no_sub"])
+
+
+def _leak_remove_via_api(token: str, sp_id, method: str = "POST"):
+    """Call the presumed scheduler-remove endpoint for one seller.
+
+    The payload mirrors /admin/scheduler/add, which takes a JSON array of
+    scheduler rows. The shape is unverified — this is what the probe is for.
+    """
+    body = [{"sellerId": int(sp_id), "reportType": t} for t in LEAK_SQP_TYPES]
+    url = f"{REPORTS_PROD_HOST}{LEAK_REMOVE_PATH}"
+    kwargs = {"headers": {"Authorization": f"Bearer {token}",
+                          "Content-Type": "application/json"},
+              "json": body, "timeout": 60}
+    fn = http_requests.delete if method.upper() == "DELETE" else http_requests.post
+    resp = fn(url, **kwargs)
+    return url, body, resp
+
+
+@app.route("/api/leak/settings", methods=["GET", "POST"])
+def leak_settings_route():
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        for key in ("grace_days", "auto_enabled", "auto_weekday", "include_trials"):
+            if key in payload:
+                _leak_set_setting(key, payload[key])
+        return jsonify({"ok": True})
+    return jsonify({
+        "ok": True,
+        "grace_days": _leak_setting_int("grace_days", LEAK_GRACE_DAYS),
+        "auto_enabled": _leak_setting("auto_enabled", "0") == "1",
+        "auto_weekday": _leak_setting_int("auto_weekday", 0),   # 0 = Monday
+        "include_trials": _leak_setting("include_trials", "0") == "1",
+        "remove_path": LEAK_REMOVE_PATH,
+        "last_auto_run": _leak_setting("last_auto_run", ""),
+    })
+
+
+@app.route("/api/leak/remove-test", methods=["POST"])
+def leak_remove_test():
+    """Probe the scheduler-remove endpoint against ONE seller, chosen by the user.
+
+    This is a real call against production — it is deliberately one seller at a
+    time so the shape can be confirmed before anything is done in bulk.
+    """
+    payload = request.get_json(silent=True) or {}
+    sp_id = str(payload.get("sp_id", "")).strip()
+    method = (payload.get("method") or "POST").upper()
+    if not sp_id.isdigit():
+        return jsonify({"ok": False, "error": "A numeric seller id is required."}), 400
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+    try:
+        token = REPORTS_ACCESS_TOKEN if REPORTS_ACCESS_TOKEN else reports_api_login()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    try:
+        url, body, resp = _leak_remove_via_api(token, sp_id, method)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    text = (resp.text or "")[:800]
+    hint = ""
+    if resp.status_code == 404:
+        hint = ("404 — no endpoint at this path. The remove route either does not "
+                "exist or lives elsewhere; fall back to generating SQL.")
+    elif resp.status_code == 405:
+        hint = f"405 — the path exists but does not accept {method}. Try the other method."
+    elif resp.status_code in (400, 422):
+        hint = ("The endpoint exists but rejected this body shape. The response "
+                "should say which fields it wants.")
+    elif 200 <= resp.status_code < 300:
+        hint = ("Accepted. Confirm in the database that this seller's SQP scheduler "
+                "rows are now disabled before using it in bulk.")
+    return jsonify({"ok": True, "status": resp.status_code, "method": method,
+                    "url": url, "sent": body, "response": text, "hint": hint})
+
+
+@app.route("/api/leak/disable", methods=["POST"])
+def leak_disable():
+    """Disable SQP for the selected sellers, or emit the SQL for review."""
+    payload = request.get_json(silent=True) or {}
+    sp_ids = payload.get("sp_ids") or []
+    mode = (payload.get("mode") or "sql").lower()
+    method = (payload.get("method") or "POST").upper()
+    include_trials = bool(payload.get("include_trials"))
+    if not sp_ids:
+        return jsonify({"ok": False, "error": "Nothing selected."}), 400
+
+    rows, blocked = _leak_selected_rows(sp_ids, include_trials)
+    if not rows:
+        if blocked:
+            reason = (f"All {len(blocked)} selected account(s) are still inside the "
+                      "grace period and cannot be actioned yet.")
+        elif not include_trials and _leak_selection_is_trials(sp_ids):
+            reason = ("The selection is trial accounts with no Stripe subscription. "
+                      "Turn on 'Trials actionable' to include them.")
+        else:
+            reason = "Selected sellers are not in the current results — re-run the check."
+        return jsonify({"ok": False, "error": reason}), 400
+
+    if mode == "sql":
+        return jsonify({"ok": True, "mode": "sql", "sql": _leak_disable_sql(rows),
+                        "count": len(rows), "blocked": len(blocked)})
+
+    if not REPORTS_PROD_HOST:
+        return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
+    try:
+        token = REPORTS_ACCESS_TOKEN if REPORTS_ACCESS_TOKEN else reports_api_login()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Login failed: {exc}"}), 502
+
+    results, ok_n, fail_n = [], 0, 0
+    for r in rows:
+        sp_id = r.get("sp_id")
+        try:
+            _, _, resp = _leak_remove_via_api(token, sp_id, method)
+            good = 200 <= resp.status_code < 300
+            results.append({"sp_id": sp_id, "seller_name": r.get("seller_name", ""),
+                            "status": resp.status_code,
+                            "detail": (resp.text or "").strip()[:160]})
+            ok_n += 1 if good else 0
+            fail_n += 0 if good else 1
+        except Exception as exc:
+            results.append({"sp_id": sp_id, "seller_name": r.get("seller_name", ""),
+                            "status": 0, "detail": str(exc)[:160]})
+            fail_n += 1
+        time.sleep(0.1)
+    return jsonify({"ok": True, "mode": "api", "disabled": ok_n, "failed": fail_n,
+                    "blocked": len(blocked), "results": results})
+
+
+# ── Weekly auto-run ───────────────────────────────────────────────────────────
+
+def _leak_scheduler_loop() -> None:
+    """Run the check once a week on the configured weekday.
+
+    Only fires while the dashboard is running; a machine that is off on Monday
+    simply picks it up the next time the dashboard is open that day.
+    """
+    while True:
+        try:
+            time.sleep(300)
+            if _leak_setting("auto_enabled", "0") != "1":
+                continue
+            with _leak_lock:
+                if _leak_state["running"]:
+                    continue
+            now = datetime.datetime.now()
+            if now.weekday() != _leak_setting_int("auto_weekday", 0):
+                continue
+            if _leak_setting("last_auto_run", "")[:10] == now.strftime("%Y-%m-%d"):
+                continue      # already ran today
+            _leak_set_setting("last_auto_run", now.isoformat())
+            _leak_log("info", "Weekly auto-run starting.")
+            _leak_stop_event.clear()
+            with _leak_lock:
+                _leak_state["logs"] = []
+                _leak_state["running"] = True
+            _leak_worker()
+        except Exception:
+            continue
+
+
+def _leak_start_scheduler() -> None:
+    threading.Thread(target=_leak_scheduler_loop, daemon=True).start()
 
 
 @app.route("/api/leak/sql")
 def leak_sql():
     with _leak_lock:
         rows = list(_leak_state["lists"]["sqp"])
+    # Only offer statements for accounts that are actually actionable.
+    rows = [r for r in rows if not r.get("in_grace")]
     return jsonify({"ok": True, "sql": _leak_disable_sql(rows)})
 
 
@@ -2556,6 +2854,10 @@ def _config_summary() -> None:
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
+    # debug=True runs a reloader; only the child process should hold the timer.
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        _leak_load_results()
+        _leak_start_scheduler()
     _config_summary()
     print(f"Dashboard on http://{host}:{port}")
     app.run(debug=True, host=host, port=port)
