@@ -787,6 +787,23 @@ promised.
 person's Slack. Every reply from that seat then appears as that person,
 colleagues' included — right in testing, wrong in front of a customer.
 
+It is worse than it first looks, because the shared seat is also the
+**fallback** for anything that cannot be attributed. A YouTrack comment whose
+author has no Intercom seat goes out as the token owner — so if a person has
+authenticated that seat, **their** name and avatar appear on **someone else's**
+words. Confidently wrong, which beats vague only in the wrong direction.
+
+Two things guard against it, and only the first actually closes it:
+
+1. **Config, and this is the real fix:** the seat used as the service identity
+   must be one no person has authenticated. Humans reply from their own seats.
+2. **Code, as a safety net:** a reply that could not be attributed is prefixed
+   with the author's name in bold, so the text says who wrote it even when the
+   avatar cannot. The name is escaped before it is added — it is user data, and
+   a colleague's display name must not be able to inject markup into a message
+   going to a customer. Attributed replies are not prefixed, since they already
+   carry the right name.
+
 The email must match end to end, YouTrack account → Intercom teammate. Someone
 whose two addresses differ is silently unmatchable.
 

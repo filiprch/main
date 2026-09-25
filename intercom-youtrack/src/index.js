@@ -1069,8 +1069,21 @@ async function relayReply(rawBody, env) {
 
     const senderAdminId = await intercomAdminIdByEmail(env, comment.author?.email);
 
+    // Could not be attributed, so say in the text who wrote it.
+    //
+    // Unattributed replies go out as the token owner. If a human has
+    // authenticated their Slack account against THAT seat, the customer sees
+    // a colleague's name and avatar on someone else's words — the worst
+    // outcome available, because it is confidently wrong rather than vague.
+    // Naming the author in the body cannot prevent the avatar, but it stops
+    // the message itself from lying. The real fix is config: the service seat
+    // must not be one a person has authenticated.
+    const body = senderAdminId
+      ? message
+      : withAuthorName(message, comment.author?.fullName);
+
     try {
-      const partId = await postCustomerReply(env, conversationId, message, senderAdminId);
+      const partId = await postCustomerReply(env, conversationId, body, senderAdminId);
       // Ours — so the inbound mirror does not copy it back onto the ticket.
       if (partId) {
         await env.DEDUPE.put(kMirrored(partId), '1', { expirationTtl: MIRRORED_TTL_SECONDS });
@@ -1235,6 +1248,20 @@ async function postCustomerReply(env, conversationId, body, senderAdminId) {
  * raw markup. Everything else is escaped before any tag is added, so a
  * customer can never be sent markup an agent did not intend.
  */
+/**
+ * Prefix a reply with who wrote it.
+ *
+ * Only used when the author could not be matched to an Intercom teammate. An
+ * attributed reply already carries the right name and avatar, so repeating it
+ * in the text would just be noise.
+ */
+function withAuthorName(html, fullName) {
+  const name = String(fullName || '').trim();
+  if (!name || !html) return html;
+  const safe = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<b>${safe}</b><br>${html}`;
+}
+
 /**
  * Whether two HTML bodies say the same thing.
  *
