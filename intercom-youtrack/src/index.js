@@ -904,7 +904,10 @@ async function relayReply(rawBody, env) {
     // already carries, and cache it so this costs one call, once, per ticket.
     conversationId = await conversationFromDescription(env, issueId);
     if (!conversationId) {
-      console.error(`reply: no Intercom conversation recorded for ${issueId}`);
+      // Routine, not a failure — see the matching note in the Slack worker.
+      // Both workers hear about every comment; this one owns the Intercom
+      // conversations, so Slack-owned tickets stop here.
+      console.log(`reply: ${issueId} is not an Intercom-owned ticket — nothing to do`);
       return;
     }
     await env.DEDUPE.put(kConversation(issueId), conversationId, {

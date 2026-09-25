@@ -738,6 +738,27 @@ then caches it. The conversation id is already written down there and cannot
 drift, so no ticket is stranded by the mapping arriving late. A ticket with no
 such link is refused rather than guessed at.
 
+#### Which worker gets told about a comment
+
+The YouTrack rule tells **both workers** about every new comment and lets
+**ownership** decide which one acts. Each looks the ticket up in its own store;
+the one that recorded it relays the comment, the other logs a line and stops.
+
+It used to route on the `Channel` field, and that broke the moment Fin started
+answering in Slack. Such a ticket is **Slack to a human reading it and Intercom
+to the machinery that created it**, so `Channel = Slack` sent it to the Slack
+worker, which had never heard of the ticket and silently did nothing. The field
+cannot carry both meanings, so routing stopped using it.
+
+A Slack thread that Fin owns needs only the Intercom call: **Intercom posts an
+agent's reply straight into the Slack thread**, so one public comment appears in
+both places. Relaying it through the Slack worker as well would show the
+customer the same answer twice — which ownership prevents, because the Slack
+worker has no record of that ticket.
+
+"Not my ticket" is therefore normal rather than exceptional, and both workers
+log it at info level so that real failures remain visible.
+
 #### Fin in Slack — how it should behave (open design)
 
 **This is the project's current main focus.** The plumbing is proven (see the

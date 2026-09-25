@@ -466,7 +466,10 @@ async function relayReply(rawBody, env) {
 
   const target = await env.DEDUPE.get(kTicket(issueId));
   if (!target) {
-    console.error(`reply: no Slack thread recorded for ${issueId}`);
+    // Routine, not a failure: the YouTrack rule tells BOTH workers about every
+    // comment and lets ownership decide, so every Intercom-owned ticket lands
+    // here once. Logged at info level so real failures stay visible.
+    console.log(`reply: ${issueId} is not a Slack-owned ticket — nothing to do`);
     return;
   }
   const { channel, threadTs } = JSON.parse(target);

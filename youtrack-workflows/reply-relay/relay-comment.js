@@ -13,6 +13,18 @@
  * REST-side state, and a rule judging it here could publish an internal note
  * to a customer if it judged wrong. The workers fail closed instead.
  *
+ * It also does NOT decide WHICH worker owns the ticket. It used to route on
+ * the Channel field, which broke as soon as Fin began answering in Slack: such
+ * a ticket is Slack to a human reading it and Intercom to the machinery that
+ * created it, so Channel = Slack sent it to the Slack worker, which had never
+ * heard of it. Both workers are told instead, and each checks its own store —
+ * the one that recorded the ticket relays it, the other logs a line and stops.
+ * Ownership decides, so no field has to carry two meanings.
+ *
+ * A Slack thread that Fin owns needs only the Intercom call: Intercom posts an
+ * agent's reply straight into the Slack thread, so relaying it twice would
+ * show the customer the same answer twice.
+ *
  * INSTALL
  *   1. YouTrack → Administration → Workflows → the existing reply relay rule,
  *      or New workflow from this file, attached to project CS.
@@ -38,27 +50,36 @@ exports.rule = entities.Issue.onChange({
     if (!ctx.issue.comments.added.isNotEmpty()) return false;
     var channel = ctx.issue.fields.Channel;
     if (channel === null) return false;
+    // Gmail is left out: YouTrack mails the reporter itself.
     return channel.name === 'Slack' || channel.name === 'Intercom';
   },
 
   action: function (ctx) {
     var issue = ctx.issue;
-    var channel = issue.fields.Channel.name;
-    var url = channel === 'Slack' ? SLACK_WORKER_URL : INTERCOM_WORKER_URL;
+    var urls = [SLACK_WORKER_URL, INTERCOM_WORKER_URL];
 
     // One call per change, not per comment: the worker reads the ticket's
     // recent comments itself and sends whichever it has not sent before. That
     // keeps this rule free of any assumption about comment ids, and makes a
     // firing that arrives late or twice harmless.
-    var connection = new http.Connection(url);
-    connection.addHeader('Content-Type', 'application/json');
-    connection.addHeader('X-Helpdesk-Secret', SHARED_SECRET);
-    connection.postSync('', [], JSON.stringify({ issueId: issue.id }));
+    var body = JSON.stringify({ issueId: issue.id });
 
-    // Deliberately silent on failure. Writing the problem back as a comment
-    // would re-fire this rule, fail again, and comment again — unbounded while
-    // a worker is unreachable. Failures show in the worker logs and in
-    // YouTrack's own workflow error log.
+    for (var i = 0; i < urls.length; i++) {
+      // Each worker is told separately so that one being unreachable cannot
+      // stop the other from delivering. Without this, a Slack outage would
+      // silently hold back every Intercom reply as well.
+      try {
+        var connection = new http.Connection(urls[i]);
+        connection.addHeader('Content-Type', 'application/json');
+        connection.addHeader('X-Helpdesk-Secret', SHARED_SECRET);
+        connection.postSync('', [], body);
+      } catch (e) {
+        // Deliberately silent. Writing the problem back as a comment would
+        // re-fire this rule, fail again, and comment again — unbounded while a
+        // worker is unreachable. Failures show in the worker logs and in
+        // YouTrack's own workflow error log.
+      }
+    }
   },
 
   requirements: {
