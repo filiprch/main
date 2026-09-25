@@ -366,6 +366,7 @@ async function createTicketFor(env, conversationId) {
       finTried: finArticles(conversation),
       slackChannel: origin.slackChannel,
       slackWorkspace: origin.slackWorkspace,
+      slackLink: origin.slackLink,
     }),
     channel: origin.channel,
     type: 'Task',
@@ -636,6 +637,35 @@ function conversationLink(appId, conversationId) {
 // --------------------------------------------------------------------------
 
 /**
+ * The Slack thread this conversation mirrors, or ''.
+ *
+ * When Fin is triggered in Slack it opens the Intercom conversation with a
+ * NOTE containing the thread's permalink ("View this conversation in Slack:
+ * …/archives/<channel>/p<ts>?thread_ts=…"). That note is the only place the
+ * thread timestamp appears — the conversation's own fields carry the channel
+ * name but no timestamp, so this link cannot be reconstructed without it.
+ *
+ * Read from the notes rather than the customer's messages on purpose: a
+ * customer pasting a Slack link into their question must not be mistaken for
+ * the thread of record.
+ */
+function slackThreadLink(conversation) {
+  const parts = conversation?.conversation_parts?.conversation_parts || [];
+  const bodies = [];
+  for (const part of parts) {
+    if (part?.part_type === 'comment') continue;
+    if (part?.body) bodies.push(String(part.body));
+  }
+  for (const body of bodies) {
+    const href = /href="(https:\/\/[^"]*\.slack\.com\/archives\/[^"]*)"/i.exec(body);
+    const bare = href ? null : /(https:\/\/[a-z0-9._-]+\.slack\.com\/archives\/[^\s"'<>]+)/i.exec(body);
+    const url = href?.[1] || bare?.[1];
+    if (url) return url.replace(/&amp;/g, '&').replace(/&#39;/g, "'");
+  }
+  return '';
+}
+
+/**
  * Where the conversation actually started.
  *
  * Fin answers in Slack as well as in the Messenger, and a Slack thread becomes
@@ -649,19 +679,20 @@ function conversationOrigin(conversation) {
   const attrs = conversation?.custom_attributes || {};
   const slackChannel = String(attrs['Slack channel'] || '').trim();
   if (!slackChannel) {
-    return { source: 'INT', channel: 'Intercom', slackChannel: '', slackWorkspace: '' };
+    return { source: 'INT', channel: 'Intercom', slackChannel: '', slackWorkspace: '', slackLink: '' };
   }
   return {
     source: 'SLACK',
     channel: 'Slack',
     slackChannel: slackChannel.startsWith('#') ? slackChannel : `#${slackChannel}`,
     slackWorkspace: String(attrs['Slack workspace'] || '').trim(),
+    slackLink: slackThreadLink(conversation),
   };
 }
 
 function buildDescription({
   sender, email, link, escalatedReason, createdAt, said, attachments, finTried,
-  slackChannel, slackWorkspace,
+  slackChannel, slackWorkspace, slackLink,
 }) {
   const who = email && email !== sender ? `${sender} <${email}>` : sender;
   const lines = [
@@ -669,11 +700,15 @@ function buildDescription({
     `**Started:** ${formatUtc(createdAt)} UTC`,
   ];
   if (slackChannel) {
-    // Named rather than linked: Intercom records which channel the thread is
-    // in, but not its timestamp, and a Slack permalink cannot be built without
-    // one. The channel name plus the start time above is enough to find it.
+    // Slack first, then Intercom: the thread is where the customer actually
+    // is, and the Intercom conversation is the mirror of it. Falls back to
+    // naming the channel when Fin left no permalink note.
     const where = slackWorkspace ? `${slackChannel} (${slackWorkspace})` : slackChannel;
-    lines.push(`**Slack:** ${where}`);
+    lines.push(
+      slackLink
+        ? `**Slack:** [open the thread](${slackLink}) in ${slackChannel}`
+        : `**Slack:** ${where}`
+    );
   }
   if (escalatedReason) lines.push(`**Escalated:** ${escalatedReason}`);
   if (link) lines.push(`**Intercom:** [open the conversation](${link})`);

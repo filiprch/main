@@ -839,9 +839,23 @@ The contact is resolved by Fin, not by us: it arrives with
 person's email. So a Slack customer gets a real Intercom contact with history,
 which is more than the Slack worker can do on its own.
 
-The Slack thread is **named rather than linked**. Intercom records the channel
-but not the thread timestamp, and a Slack permalink cannot be built without
-one; the channel name plus the start time is enough to find it.
+The description links **Slack first, then Intercom** — the thread is where the
+customer actually is; the Intercom conversation is the mirror of it.
+
+The permalink comes from Fin itself. When triggered in Slack it opens the
+conversation with a **note**:
+
+```
+View this conversation in Slack:
+https://<workspace>.slack.com/archives/<channel>/p<ts>?thread_ts=<ts>&cid=<channel>
+```
+
+That note is the only place the thread timestamp appears — the conversation's
+own fields carry the channel name but no timestamp, so the link cannot be
+reconstructed from them. `slackThreadLink()` reads it from the **notes only**,
+never from the customer's own messages: someone pasting a Slack link into their
+question must not be mistaken for the thread of record. With no note, the
+description falls back to naming the channel.
 
 Comment text is converted to Intercom's HTML: the agent signature and any
 `![](image.png){...}` left by a pasted image are dropped, and everything is
