@@ -233,6 +233,14 @@
     .leak-note { font-size: .78rem; color: #94a3b8; line-height: 1.55; background: #161827;
       border: 1px solid #252a3a; border-radius: 9px; padding: .7rem .85rem; margin-bottom: .7rem; }
     .leak-note code { color: #fbbf24; }
+    .leak-note summary { cursor: pointer; color: #cbd5e1; list-style: revert; }
+    .leak-note[open] summary { margin-bottom: .4rem; }
+    /* Clickable column headers — one click sorts, another reverses. */
+    .leak-th { cursor: pointer; user-select: none; white-space: nowrap; }
+    .leak-th:hover { color: #e2e8f0; }
+    .leak-th-on { color: #60a5fa !important; }
+    .leak-hint { font-size: .72rem; color: #64748b; margin: 0 0 .45rem; }
+    .leak-hint code { color: #fbbf24; }
     .leak-warn { background: #78350f33; border: 1px solid #92400e; color: #fbbf24;
       border-radius: 8px; padding: .5rem .7rem; font-size: .76rem; margin-top: .5rem; }
     .leak-gap { background: #1e3a8a22; border: 1px solid #1e40af; color: #93c5fd;
@@ -814,7 +822,7 @@
       <span class="card-badge" style="background:#0d948822;color:#2dd4bf;border-color:#0d948844">INACTIVE USERS</span>
       <div>
         <div class="card-title">Disable Fetching for Inactive Users</div>
-        <div class="card-desc">Finds Stripe-canceled accounts still pulling paid Amazon data and prepares the disable statements — review first, nothing is executed</div>
+        <div class="card-desc">Canceled on Stripe, still pulling paid Amazon data — review, then switch it off</div>
       </div>
     </div>
     <button class="card-fold" id="fold-leak">▶</button>
@@ -823,13 +831,12 @@
 
     <div class="ms-top">
       <div class="ms-left">
-        <div class="leak-note">
-          Joins the database (who is still consuming) with Stripe (who is still paying).
+        <details class="leak-note">
+          <summary>How the list is built · takes ~5 min</summary>
           An account counts as canceled only when it has at least one subscription and
           <em>every</em> subscription is canceled — <code>past_due</code> and
-          <code>unpaid</code> are deliberately left alone.
-          Takes about 5 minutes; the two data scans dominate.
-        </div>
+          <code>unpaid</code> are left alone. Nothing is executed by the check itself.
+        </details>
         <div class="ms-controls">
           <button class="btn btn-primary" id="leak-go" onclick="leakGo()">Run Check</button>
           <button class="btn btn-red" id="leak-stop" onclick="leakStop()" disabled>Stop</button>
@@ -877,8 +884,9 @@
           <div class="rep-stat"><div class="rep-n" id="leak-c-customers">0</div><div class="rep-k">Customers</div></div>
           <div class="rep-stat"><div class="rep-n rep-ok" id="leak-c-live">0</div><div class="rep-k">Live</div></div>
           <div class="rep-stat"><div class="rep-n rep-fail" id="leak-c-canceled">0</div><div class="rep-k">Canceled</div></div>
-          <div class="rep-stat"><div class="rep-n" id="leak-c-stream" style="color:#fbbf24">0</div><div class="rep-k">A · Stream</div></div>
-          <div class="rep-stat"><div class="rep-n" id="leak-c-sqp" style="color:#fbbf24">0</div><div class="rep-k">B · SQP</div></div>
+          <div class="rep-stat" title="Seller rows with Marketing Stream data still arriving"><div class="rep-n" id="leak-c-stream" style="color:#fbbf24">0</div><div class="rep-k">Stream</div></div>
+          <div class="rep-stat" title="Profiles the Ads API confirms are still subscribed"><div class="rep-n" id="leak-c-subs" style="color:#2dd4bf">0</div><div class="rep-k">Live subs</div></div>
+          <div class="rep-stat" title="Seller rows with SQP enabled or still arriving"><div class="rep-n" id="leak-c-sqp" style="color:#fbbf24">0</div><div class="rep-k">SQP</div></div>
         </div>
         <div id="leak-log" class="ms-log"></div>
       </div>
@@ -2575,48 +2583,54 @@ function leakToggle(which) {
   const b = document.getElementById(`leak-body-${which}`);
   const t = document.getElementById(`leak-tog-${which}`);
   if (b) b.classList.toggle('hidden', !leakOpen[which]);
-  if (t) t.textContent = leakOpen[which] ? 'Hide List' : 'Show List';
+  if (t) t.textContent = leakOpen[which] ? 'Hide' : 'Show';
 }
 
-function leakTable(rows, cols) {
-  if (!rows.length) return `<span class="token-idle">No rows.</span>`;
-  const head = cols.map(c => `<th>${esc(c.label)}</th>`).join('');
-  const body = rows.map(r => '<tr>' + cols.map(c => {
-    const v = r[c.key];
-    if (c.key === 'sp_id' || c.key === 'selling_partner_id') {
-      return `<td class="mono"><span class="ms-copy" title="Click to copy" onclick="msCopySeller(this,'${esc(v)}')">${esc(v)}</span></td>`;
-    }
-    if (c.num) return `<td class="mono">${Number(v || 0).toLocaleString()}</td>`;
-    return `<td class="${c.key === 'seller_name' || c.key === 'username' ? 'ms-name' : ''}" title="${esc(v || '')}">${esc(v === 0 ? '0' : (v || '—'))}</td>`;
-  }).join('') + '</tr>').join('');
-  return `<div class="sqp-list-wrap"><table class="ms-table">
-    <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+// ── Column sorting ────────────────────────────────────────────────────────────
+// One click sorts ascending, a second click reverses. Held per list so sorting
+// one table does not disturb another, and so a re-render keeps the order.
+const leakSort = { stream: { k: '', d: 1 }, sqp: { k: '', d: 1 },
+                   no_sub: { k: '', d: 1 }, stream_active: { k: '', d: 1 } };
+
+function leakSortBy(which, key) {
+  const s = leakSort[which];
+  s.d = s.k === key ? -s.d : 1;
+  s.k = key;
+  leakRenderResults(leakLastState);
 }
 
-const LEAK_COLS = {
-  stream: [
-    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
-    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
-    { key: 'region', label: 'Region' }, { key: 'canceled_at', label: 'Canceled' },
-    { key: 'stream_rows_7d', label: 'Stream rows', num: true },
-    { key: 'stream_last_ingest', label: 'Last ingest' },
-    { key: 'merchant_tokens_streaming', label: 'Merchant token' },
-  ],
-  sqp: [
-    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
-    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
-    { key: 'region', label: 'Region' }, { key: 'canceled_at', label: 'Canceled' },
-    { key: 'sqp_scheduler_enabled', label: 'Scheduler' },
-    { key: 'sqp_rows_14d', label: 'SQP rows', num: true },
-    { key: 'sqp_last_ingest', label: 'Last ingest' },
-  ],
-  no_sub: [
-    { key: 'seller_name', label: 'Seller' }, { key: 'username', label: 'Account' },
-    { key: 'sp_id', label: 'SP ID' }, { key: 'plan_name', label: 'Plan' },
-    { key: 'region', label: 'Region' }, { key: 'trial_started', label: 'Trial started' },
-    { key: 'registered', label: 'Registered' },
-  ],
-};
+function leakTh(which, key, label, hint) {
+  const s = leakSort[which];
+  const on = s.k === key;
+  return `<th class="leak-th${on ? ' leak-th-on' : ''}" onclick="leakSortBy('${which}','${key}')"` +
+         (hint ? ` title="${esc(hint)}"` : '') + `>${label}${on ? (s.d > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+}
+
+// `get` maps a column key to the value to compare. Numbers sort numerically,
+// everything else as text; unsorted lists keep the order the server sent.
+function leakApplySort(which, rows, get) {
+  const s = leakSort[which];
+  if (!s.k || !get[s.k]) return rows;
+  const f = get[s.k];
+  return [...rows].sort((a, b) => {
+    const x = f(a), y = f(b);
+    if (typeof x === 'number' && typeof y === 'number') return (x - y) * s.d;
+    return String(x ?? '').localeCompare(String(y ?? ''), undefined, { numeric: true }) * s.d;
+  });
+}
+
+// Every action writes to the card's log, so the panel is a record of what was
+// done and not only of what the last scan found.
+function leakUiLog(level, msg) {
+  const log = document.getElementById('leak-log');
+  if (!log) return;
+  const div = document.createElement('div');
+  div.className = 'rep-line';
+  div.innerHTML = `<span class="rt">${new Date().toTimeString().slice(0, 8)}</span>` +
+                  `<span class="rl-${level}">${esc(msg)}</span>`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
 
 // "Protection" in the UI is the in_grace/grace_days fields below.
 // Selection is per ACCOUNT — one canceled customer can own several sellers, and
@@ -2650,22 +2664,46 @@ function leakActionable(which, g) {
 let leakIncludeTrials = false;
 let leakGraceDays = 14;
 
+// What the metric column holds, per list — also used as its sort value.
+function leakMetric(which, g) {
+  if (which === 'stream') return g.rows.reduce((a, r) => a + (r.stream_rows_7d || 0), 0);
+  if (which === 'sqp') return g.rows.reduce((a, r) => a + (r.sqp_rows_14d || 0), 0);
+  return g.rows[0].registered || '';
+}
+
+const LEAK_METRIC_HEAD = {
+  stream: ['Rows · 7d', 'Rows this account\'s sellers added to sp_traffic in the last 7 days. ' +
+                        'The smaller numbers beside it are those rows per day, oldest first — ' +
+                        'a steady row means a live stream, one spike means a backfill.'],
+  sqp: ['Rows · 14d', 'SQP rows this account\'s sellers received in the last 14 days.'],
+  no_sub: ['Registered', 'When the account was created.'],
+};
+
 function leakAcctRows(which, groups) {
   if (!groups.length) return `<span class="token-idle">No accounts.</span>`;
+  const [mLabel, mHint] = LEAK_METRIC_HEAD[which];
+  groups = leakApplySort(which, groups, {
+    username: g => g.username || '',
+    plan: g => g.plan || '',
+    canceled: g => g.canceled_at || '',
+    sellers: g => g.rows.length,
+    metric: g => leakMetric(which, g),
+    state: g => (g.in_grace ? 1 : 0),
+  });
   return `<div class="sqp-list-wrap"><table class="ms-table">
     <thead><tr>
       <th style="width:30px"><input type="checkbox" onchange="leakToggleAll('${which}',this)"></th>
-      <th>Account</th><th>Plan</th><th>Canceled</th><th>Sellers</th>
-      <th>${which === 'stream' ? 'Stream rows 7d' : which === 'sqp' ? 'SQP rows 14d' : 'Registered'}</th>
-      <th></th>
+      ${leakTh(which, 'username', 'Account', 'Click to copy the email')}
+      ${leakTh(which, 'plan', 'Plan')}
+      ${leakTh(which, 'canceled', 'Canceled', 'Date the last Stripe subscription was canceled, and how many days ago')}
+      ${leakTh(which, 'sellers', 'Sellers', 'Seller accounts owned by this customer')}
+      ${leakTh(which, 'metric', mLabel, mHint)}
+      ${leakTh(which, 'state', '')}
     </tr></thead><tbody>` + groups.map(g => {
       const can = leakActionable(which, g);
       const sel = leakSel[which] && leakSel[which].has(g.key);
-      const metric = which === 'stream'
-        ? g.rows.reduce((a, r) => a + (r.stream_rows_7d || 0), 0).toLocaleString()
-        : which === 'sqp'
-          ? g.rows.reduce((a, r) => a + (r.sqp_rows_14d || 0), 0).toLocaleString()
-          : (g.rows[0].registered || '—');
+      const m = leakMetric(which, g);
+      const metric = typeof m === 'number' ? m.toLocaleString() : (m || '—');
       const when = g.canceled_at
         ? `${esc(g.canceled_at.slice(0, 10))} <span class="upg-detail">${g.canceled_days ?? '?'}d</span>`
         : '<span class="upg-detail">no subscription</span>';
@@ -2677,7 +2715,8 @@ function leakAcctRows(which, groups) {
               onchange="leakToggleAcct('${which}','${esc(g.key)}',this)">`;
       const daily = (g.rows[0] && g.rows[0].stream_daily) || null;
       const spark = daily && daily.length
-        ? ` <span class="upg-detail" title="rows per day">${daily.map(d => d.n.toLocaleString()).join(' · ')}</span>`
+        ? ` <span class="upg-detail" title="Rows per day, oldest first: ${esc(daily.map(d =>
+              `${d.day} ${d.n}`).join(', '))}">${daily.map(d => d.n.toLocaleString()).join(' · ')}</span>`
         : '';
       return `<tr>
         <td class="center">${box}</td>
@@ -2708,13 +2747,19 @@ function leakStreamsAll(box) {
 
 async function leakStreamsCheck() {
   leakStrSince = 0;
+  leakUiLog('info', 'Asking the Ads API which canceled accounts are still subscribed…');
   const r = await fetch('/api/leak/streams/start', { method: 'POST' });
   const d = await r.json();
-  if (!d.ok) document.getElementById('leak-str-out').innerHTML =
-    `<div class="leak-warn">${esc(d.error)}</div>`;
+  if (!d.ok) {
+    document.getElementById('leak-str-out').innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+    leakUiLog('error', 'Stream check: ' + d.error);
+  }
 }
 
-async function leakStreamsStop() { await fetch('/api/leak/streams/stop', { method: 'POST' }); }
+async function leakStreamsStop() {
+  leakUiLog('warn', 'Stream check stopped.');
+  await fetch('/api/leak/streams/stop', { method: 'POST' });
+}
 
 async function leakStreamsPoll() {
   try {
@@ -2735,6 +2780,8 @@ async function leakStreamsPoll() {
     const sub = document.getElementById('leak-str-sub');
     if (go) go.disabled = s.running;
     if (st) st.disabled = !s.running;
+    const cnt = document.getElementById('leak-c-subs');
+    if (cnt) cnt.textContent = (s.rows || []).length.toLocaleString();
     if (sub) {
       const c = s.counters || {};
       sub.textContent = s.running
@@ -2774,11 +2821,16 @@ async function leakStreamsArchiveRun(probe, out) {
       `to confirm it actually stopped.`)) return;
   }
   out.innerHTML = `<span class="token-idle">Working… (each profile is re-read afterwards, so this takes a few seconds)</span>`;
+  leakUiLog('warn', `${probe ? 'Probe: archiving' : 'Archiving'} stream subscriptions for ` +
+                    `${probe ? 1 : rows.length} profile(s)…`);
   const d = await (await fetch('/api/leak/streams/archive', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ keys, probe }),
   })).json();
-  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+               leakUiLog('error', 'Archive: ' + d.error); return; }
+  leakUiLog(d.failed ? 'warn' : 'ok',
+            `Archive finished — ${d.archived} confirmed archived, ${d.failed} not.`);
   out.innerHTML = `<div class="${d.failed ? 'leak-warn' : 'leak-gap'}">
     ${d.probe ? 'Probe: ' : ''}${d.archived} archived, ${d.failed} failed` +
     (d.blocked ? `, ${d.blocked} protected` : '') + `</div>
@@ -2816,8 +2868,9 @@ function leakCopyEmails() {
       .forEach(g => out.push(g.username || g.key));
   });
   const uniq = [...new Set(out)];
-  if (!uniq.length) return;
+  if (!uniq.length) { leakUiLog('warn', 'Copy emails: nothing selected.'); return; }
   sqpCopyText(uniq.join('\n'));
+  leakUiLog('ok', `${uniq.length} email(s) copied to the clipboard.`);
   document.getElementById('leak-action-out').innerHTML =
     `<div class="leak-gap">${uniq.length} email(s) copied.</div><div class="leak-sql">${esc(uniq.join('\n'))}</div>`;
 }
@@ -2860,6 +2913,10 @@ async function leakSaveSettings() {
       auto_weekday: parseInt(document.getElementById('leak-weekday').value) || 0,
     }),
   });
+  const day = document.getElementById('leak-weekday');
+  leakUiLog('info', `Settings saved — protection ${leakGraceDays}d · trials ` +
+                    `${leakIncludeTrials ? 'actionable' : 'locked'} · auto-run ` +
+                    `${auto ? 'on ' + day.options[day.selectedIndex].text : 'off'}.`);
   if (leakLastState) leakRenderResults(leakLastState);
 }
 
@@ -2883,7 +2940,11 @@ async function leakLoadSettings() {
 async function leakStopFetching(mode) {
   const ids = leakSelectedSpIds();
   const out = document.getElementById('leak-action-out');
-  if (!ids.length) { out.innerHTML = `<div class="leak-warn">Nothing selected.</div>`; return; }
+  if (!ids.length) {
+    out.innerHTML = `<div class="leak-warn">Nothing selected — tick an account first.</div>`;
+    leakUiLog('warn', 'Stop fetching: nothing selected.');
+    return;
+  }
   if (mode === 'api') {
     // Name the accounts, not just a count — this delete cannot be undone.
     const picked = [];
@@ -2903,6 +2964,9 @@ async function leakStopFetching(mode) {
       `which ones were actually removed.`)) return;
   }
   out.innerHTML = `<span class="token-idle">Working…</span>`;
+  leakUiLog(mode === 'api' ? 'warn' : 'info',
+            mode === 'api' ? `Calling ${leakRemovePath} for ${ids.length} seller(s)…`
+                           : `Building disable SQL for ${ids.length} seller(s)…`);
   try {
     const r = await fetch('/api/leak/disable', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2910,33 +2974,49 @@ async function leakStopFetching(mode) {
                              include_trials: leakIncludeTrials }),
     });
     const d = await r.json();
-    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+                 leakUiLog('error', 'Stop fetching: ' + d.error); return; }
     if (d.mode === 'sql') {
       await sqpCopyText(d.sql);
+      leakUiLog('ok', `Disable SQL copied · ${d.count} seller(s)` +
+                      (d.blocked ? ` · ${d.blocked} protected` : ''));
       out.innerHTML = `<div class="leak-sql">${esc(d.sql)}</div>
         <div class="upg-detail">Copied to clipboard · ${d.count} seller(s)` +
         (d.blocked ? ` · ${d.blocked} protected` : '') + `</div>`;
     } else {
+      leakUiLog(d.failed ? 'warn' : 'ok',
+                `Stop fetching finished — ${d.disabled} disabled, ${d.failed} failed` +
+                (d.blocked ? `, ${d.blocked} protected` : '') + '.');
       out.innerHTML = `<div class="${d.failed ? 'leak-warn' : 'leak-gap'}">
         ${d.disabled} disabled, ${d.failed} failed${d.blocked ? `, ${d.blocked} protected` : ''}</div>
         <div class="leak-sql">${esc(d.results.map(x =>
           `${x.sp_id} ${x.seller_name} → ${x.status} ${x.detail}`).join('\\n'))}</div>`;
     }
-  } catch (e) { out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`; }
+  } catch (e) {
+    out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`;
+    leakUiLog('error', 'Stop fetching failed: ' + e.message);
+  }
 }
 
 async function leakTestRemove() {
   const sp = document.getElementById('leak-test-sp').value.trim();
   const out = document.getElementById('leak-action-out');
-  if (!sp) { out.innerHTML = `<div class="leak-warn">Enter one seller id to probe with.</div>`; return; }
+  if (!sp) { out.innerHTML = `<div class="leak-warn">Enter one seller id to probe with.</div>`;
+             leakUiLog('warn', 'Probe: no seller id entered.'); return; }
   out.innerHTML = `<span class="token-idle">Probing…</span>`;
+  leakUiLog('info', `Probing ${leakRemovePath} with seller ${sp}…`);
   try {
     const r = await fetch('/api/leak/remove-test', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sp_id: sp, method: document.getElementById('leak-method').value }),
     });
     const d = await r.json();
-    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+                 leakUiLog('error', 'Probe: ' + d.error); return; }
+    leakUiLog(d.status >= 200 && d.status < 300 ? 'ok' : 'error',
+              `Probe ${d.method} → ${d.status}` +
+              (d.rows_before !== null && d.rows_before !== undefined
+                ? ` · scheduler_config ${d.rows_before} → ${d.rows_after === null ? '?' : d.rows_after}` : ''));
     out.innerHTML =
       `<div class="${d.status >= 200 && d.status < 300 && d.rows_after === 0 ? 'leak-gap' : 'leak-warn'}">
          ${d.method} ${esc(d.url)} → <strong>${d.status}</strong>` +
@@ -2946,37 +3026,53 @@ async function leakTestRemove() {
        <div class="leak-sql">sent: ${esc(JSON.stringify(d.sent))}
 
 response: ${esc(d.response || '(empty)')}</div>`;
-  } catch (e) { out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`; }
+  } catch (e) {
+    out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`;
+    leakUiLog('error', 'Probe failed: ' + e.message);
+  }
 }
 
 let leakLastState = { lists: { stream: [], sqp: [], no_sub: [] }, counters: {} };
 let leakRemovePath = '/admin/scheduler/remove';
 
-function leakSection(which, title, sub, rows, extra) {
+function leakSection(which, title, sub, rows, extra, hint) {
   return `<div class="leak-sec">
     <div class="leak-sec-hdr">
       <span class="leak-sec-title">${title}</span>
       <span class="leak-sec-sub">${sub}</span>
       <button class="btn btn-sm btn-ghost" id="leak-tog-${which}" onclick="leakToggle('${which}')">
-        ${leakOpen[which] ? 'Hide List' : 'Show List'}</button>
+        ${leakOpen[which] ? 'Hide' : 'Show'}</button>
       <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=${which}"
-         title="Download as CSV (opens in Google Sheets)">⭳ Export CSV</a>
+         title="Download as CSV (opens in Google Sheets)">⭳ CSV</a>
       ${extra || ''}
     </div>
     <div class="leak-sec-body ${leakOpen[which] ? '' : 'hidden'}" id="leak-body-${which}">
+      ${hint ? `<p class="leak-hint">${hint}</p>` : ''}
       ${leakAcctRows(which, leakGroup(rows))}
     </div>
   </div>`;
 }
 
 function leakStreamsSection() {
-  const rows = (leakLastState.lists || {}).stream_active || [];
+  const all = (leakLastState.lists || {}).stream_active || [];
   const sel = leakSel.stream_active;
+  const rows = leakApplySort('stream_active', all, {
+    username: r => r.username || '',
+    canceled: r => r.canceled_at || '',
+    marketplace: r => r.marketplace_id || '',
+    profile: r => r.profile_id || '',
+    datasets: r => r.active_datasets || '',
+    state: r => (r.in_grace ? 1 : 0),
+  });
   const body = rows.length ? `<div class="sqp-list-wrap"><table class="ms-table">
     <thead><tr>
       <th style="width:30px"><input type="checkbox" onchange="leakStreamsAll(this)"></th>
-      <th>Account</th><th>Canceled</th><th>Marketplace</th><th>Profile</th>
-      <th>Live datasets</th><th></th>
+      ${leakTh('stream_active', 'username', 'Account')}
+      ${leakTh('stream_active', 'canceled', 'Canceled')}
+      ${leakTh('stream_active', 'marketplace', 'Marketplace')}
+      ${leakTh('stream_active', 'profile', 'Advertising profile id')}
+      ${leakTh('stream_active', 'datasets', 'Live datasets', 'Datasets the Ads API reports as ACTIVE right now')}
+      ${leakTh('stream_active', 'state', '')}
     </tr></thead><tbody>` + rows.map(r => `<tr>
       <td class="center"><input type="checkbox" ${sel.has(r.key) ? 'checked' : ''}
             ${r.in_grace ? 'disabled' : ''} onchange="leakStreamsToggle('${esc(r.key)}',this)"></td>
@@ -2989,19 +3085,23 @@ function leakStreamsSection() {
       <td><span class="ms-pill act">${esc(r.active_datasets || '')}</span></td>
       <td>${r.in_grace ? '<span class="ms-pill pend">PROTECTED</span>' : ''}</td>
     </tr>`).join('') + `</tbody></table></div>`
-    : `<span class="token-idle">Not checked yet — press Check streams.</span>`;
+    : `<span class="token-idle">Not checked yet — press Check.</span>`;
 
   return `<div class="leak-sec" style="border-color:#0d9488">
     <div class="leak-sec-hdr">
-      <span class="leak-sec-title">C · Canceled + LIVE stream subscription (Ads API)</span>
+      <span class="leak-sec-title">LIVE stream subscription (Ads API)</span>
       <span class="leak-sec-sub" id="leak-str-sub">${rows.length} profile(s) with an ACTIVE subscription</span>
-      <button class="btn btn-sm btn-primary" id="leak-str-go" onclick="leakStreamsCheck()">Check streams</button>
+      <button class="btn btn-sm btn-primary" id="leak-str-go" onclick="leakStreamsCheck()"
+        title="Ask the Ads API which of the canceled accounts are really subscribed">Check</button>
       <button class="btn btn-sm btn-ghost" id="leak-str-stop" onclick="leakStreamsStop()" disabled>Stop</button>
-      <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=stream_active">⭳ Export CSV</a>
-      <button class="btn btn-sm btn-ghost" onclick="leakStreamsArchive(true)">Archive one (probe)</button>
-      <button class="btn btn-sm btn-red" onclick="leakStreamsArchive(false)">Deactivate selected</button>
+      <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=stream_active">⭳ CSV</a>
+      <button class="btn btn-sm btn-ghost" onclick="leakStreamsArchive(true)"
+        title="Archive one selected profile first, to see what happens">Probe one</button>
+      <button class="btn btn-sm btn-red" onclick="leakStreamsArchive(false)"
+        title="Archive every live subscription of the selected profiles, then re-read to confirm">Deactivate</button>
     </div>
     <div class="leak-sec-body">
+      <p class="leak-hint">The authoritative list — and the only one that can be switched off from here.</p>
       <div id="leak-str-log" class="ms-log" style="height:110px;margin-bottom:.5rem"></div>
       ${body}
       <div id="leak-str-out"></div>
@@ -3022,22 +3122,19 @@ function leakActionBar() {
       <input type="text" id="leak-test-sp" class="ms-filter-input" style="width:130px"
              placeholder="seller id to probe">
       <button class="btn btn-sm btn-ghost" onclick="leakTestRemove()"
-        title="Probe the remove endpoint against one seller before acting in bulk">Test endpoint</button>
+        title="Probe the remove endpoint against one seller before acting in bulk">Probe</button>
       <button class="btn btn-sm btn-ghost" onclick="leakCopyEmails()"
-        title="Copy the email addresses of every selected account, from all three lists">⧉ Copy emails</button>
+        title="Copy the email addresses of every selected account, from all lists">⧉ Emails</button>
       <button class="btn btn-sm btn-ghost" onclick="leakStopFetching('sql')"
-        title="Copy UPDATE statements that set is_enabled = false — reversible, for a backend dev to run">⧉ Copy disable SQL</button>
+        title="Copy UPDATE statements that set is_enabled = false — reversible, for a backend dev to run">⧉ SQL</button>
       <button class="btn btn-sm btn-red" onclick="leakStopFetching('api')" ${n ? '' : 'disabled'}
-        title="Call the remove endpoint, which DELETES the scheduler_config rows">Stop fetching for selected</button>
+        title="Call the remove endpoint, which DELETES the scheduler_config rows">Stop fetching</button>
     </div>
     <div class="leak-sec-body">
-      <div class="leak-gap">The endpoint <strong>deletes</strong> the
-        <code>scheduler_config</code> rows; the SQL only sets
-        <code>is_enabled = false</code>, which is reversible. Whether the delete
-        matches depends on when the seller was added, so every call is checked
-        against <code>scheduler_config</code> afterwards rather than trusting the
-        HTTP status. <code>amazon_report_info</code> is not touched, so reports
-        already queued can still land.</div>
+      <p class="leak-hint">The endpoint <strong>deletes</strong> <code>scheduler_config</code>;
+        the SQL only disables it, which is reversible. Every call is verified against the
+        database afterwards. <code>amazon_report_info</code> is untouched, so already-queued
+        reports still land.</p>
       <div id="leak-action-out"></div>
     </div>
   </div>`;
@@ -3078,21 +3175,19 @@ function leakRenderResults(s) {
     return;
   }
   document.getElementById('leak-results').innerHTML =
-    leakSection('stream', 'A · Canceled + Marketing Stream still arriving',
+    leakSection('stream', 'Marketing Stream still arriving',
       `${(c.stream || 0).toLocaleString()} seller row(s) · last ${s.traffic_days || 7} days`,
-      L.stream) +
-    `<div class="leak-gap">List A infers "still streaming" from rows that landed in
-      <code>sp_traffic</code>, which a backfill can also produce. Section C below asks the
-      Ads API what is <em>actually subscribed</em> — that is the authoritative list, and the
-      only one that can be archived.</div>` +
+      L.stream,
+      '', `Inferred from rows landing in <code>sp_traffic</code>, which a backfill also
+           produces — the list below is the one that settles it.`) +
     leakStreamsSection() +
-    leakSection('sqp', 'B · Canceled + SQP enabled or arriving',
+    leakSection('sqp', 'SQP enabled or arriving',
       `${(c.sqp || 0).toLocaleString()} seller row(s) · last ${s.sqp_days || 14} days`,
       L.sqp) +
     leakActionBar() +
-    leakSection('no_sub', 'Not actioned · no Stripe subscription at all',
-      `${(c.no_sub || 0).toLocaleString()} seller row(s) — trials that never converted` +
-      (leakIncludeTrials ? ' · actionable' : ' · enable the toggle to action these'),
+    leakSection('no_sub', 'Trials that never converted',
+      `${(c.no_sub || 0).toLocaleString()} seller row(s) · no Stripe subscription at all` +
+      (leakIncludeTrials ? ' · actionable' : ' · switch on Trials actionable to select these'),
       L.no_sub);
   [...document.querySelectorAll('#leak-results .sqp-list-wrap')]
     .forEach((el, i) => { if (scrolls[i] !== undefined) el.scrollTop = scrolls[i]; });
@@ -3172,7 +3267,10 @@ async function leakGo() {
   } catch (e) { err.textContent = e.message; }
 }
 
-async function leakStop() { await fetch('/api/leak/stop', { method: 'POST' }); }
+async function leakStop() {
+  leakUiLog('warn', 'Stop requested.');
+  await fetch('/api/leak/stop', { method: 'POST' });
+}
 
 leakLoadSettings();
 setInterval(leakStreamsPoll, 2000);
