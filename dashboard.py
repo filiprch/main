@@ -2136,6 +2136,9 @@ _leak_state = {
     "lists": {"stream": [], "sqp": [], "no_sub": [], "stream_active": []},
     "candidates": [],
     "warnings": [],
+    # Mapping + Stripe verdicts from the last full run, so one list can be
+    # refreshed on its own. Empty until a full run has completed.
+    "cache": {},
 }
 
 
@@ -2357,6 +2360,122 @@ def _leak_last_mapping_rows():
         return None
 
 
+def _leak_index_traffic(rows: list) -> dict:
+    """Roll sp_traffic rows up per advertiser, keeping the per-day series."""
+    streaming = {}
+    for r in rows:
+        adv = r.get("advertiser_id")
+        if not adv:
+            continue
+        cur = streaming.setdefault(adv, {"n": 0, "last_ingest": "", "days": {}})
+        cur["n"] += int(r["n"])
+        cur["days"][str(r["day"])] = int(r["n"])
+        li = str(r["last_ingest"])
+        if li > cur["last_ingest"]:
+            cur["last_ingest"] = li
+    return streaming
+
+
+def _leak_split_mapping(mapping: list, by_customer, canceled) -> tuple:
+    """Split the identity mapping into canceled sellers and never-subscribed ones.
+
+    Returns (pairs, no_sub): `pairs` is [(mapping row, base row)] for customers
+    whose every subscription is canceled — the input both lists are built from.
+    """
+    pairs, no_sub = [], []
+    for m in mapping:
+        cust = m.get("stripe_customer") or ""
+        plan = str(m.get("pricing_plan_id") or "")
+        base = {
+            "user_id": m.get("user_id"), "username": m.get("username") or "",
+            "stripe_customer": cust, "sp_id": m.get("sp_id"),
+            "selling_partner_id": m.get("selling_partner_id") or "",
+            "seller_name": m.get("seller_name") or "",
+            "region": m.get("region") or "",
+            "pricing_plan_id": plan,
+            "plan_name": LEAK_PLAN_NAMES.get(plan, plan),
+        }
+        if cust not in by_customer:
+            row = dict(base)
+            row["trial_started"] = str(m.get("trial_started") or "")
+            row["registered"] = str(m.get("registered") or "")
+            no_sub.append(row)
+            continue
+        if cust not in canceled:
+            continue   # live, or a status we deliberately leave alone
+        pairs.append((m, base))
+    return pairs, no_sub
+
+
+def _leak_stream_rows(pairs: list, canceled: dict, streaming: dict, grace_days: int) -> list:
+    """Canceled sellers whose merchant tokens still show up in sp_traffic."""
+    out = []
+    for m, base in pairs:
+        tokens = [t for t in (m.get("merchant_tokens") or "").split(",") if t]
+        hot = [t for t in tokens if t in streaming]
+        if not hot:
+            continue
+        row = dict(base)
+        row["canceled_at"] = canceled[base["stripe_customer"]]
+        row["merchant_tokens_streaming"] = ",".join(hot)
+        row["ad_marketplaces"] = m.get("ad_marketplaces") or ""
+        row["stream_rows_7d"] = sum(int(streaming[t]["n"]) for t in hot)
+        row["stream_last_ingest"] = max(str(streaming[t]["last_ingest"]) for t in hot)
+        # Merge the daily series across this seller's tokens, so the UI can
+        # show whether it is a steady stream or a one-off backfill burst.
+        daily = {}
+        for t in hot:
+            for day, n in streaming[t]["days"].items():
+                daily[day] = daily.get(day, 0) + n
+        row["stream_daily"] = [{"day": d, "n": daily[d]} for d in sorted(daily)]
+        out.append(row)
+    out.sort(key=lambda r: -r["stream_rows_7d"])
+    for r in out:
+        _leak_grace(r, grace_days)
+    return out
+
+
+def _leak_sqp_rows(pairs: list, canceled: dict, sqp_ingest: dict,
+                   sqp_enabled: set, grace_days: int) -> list:
+    """Canceled sellers with an SQP scheduler on, or SQP rows still landing."""
+    out = []
+    for _m, base in pairs:
+        sp_id = str(base["sp_id"])
+        if sp_id not in sqp_ingest and sp_id not in sqp_enabled:
+            continue
+        row = dict(base)
+        row["canceled_at"] = canceled[base["stripe_customer"]]
+        ing = sqp_ingest.get(sp_id)
+        row["sqp_scheduler_enabled"] = "yes" if sp_id in sqp_enabled else "no"
+        row["sqp_rows_14d"] = int(ing["n"]) if ing else 0
+        row["sqp_last_ingest"] = str(ing["last_ingest"]) if ing else ""
+        row["sqp_last_period"] = str(ing["last_period"]) if ing else ""
+        out.append(row)
+    out.sort(key=lambda r: -r["sqp_rows_14d"])
+    for r in out:
+        _leak_grace(r, grace_days)
+    return out
+
+
+def _leak_stream_candidates(pairs: list, canceled: dict, grace_days: int) -> list:
+    """Every canceled seller that has an advertising profile.
+
+    The input for the Ads API check, which asks what is actually subscribed
+    rather than inferring it from data that happened to arrive.
+    """
+    out = []
+    for m, base in pairs:
+        tokens = [t for t in (m.get("merchant_tokens") or "").split(",") if t]
+        marketplaces = [x for x in (m.get("ad_marketplaces") or "").split(",") if x]
+        if not (tokens and marketplaces):
+            continue
+        cand = dict(base)
+        cand["canceled_at"] = canceled[base["stripe_customer"]]
+        cand["ad_marketplaces"] = ",".join(marketplaces)
+        out.append(_leak_grace(cand, grace_days))
+    return out
+
+
 def _leak_worker() -> None:
     try:
         _leak_log("info", "Disable Fetching for Inactive Users — started (read-only; nothing is executed).")
@@ -2413,100 +2532,28 @@ def _leak_worker() -> None:
             return
 
         # ── Cross-check ──────────────────────────────────────────────────────
-        streaming = {}
-        for r in db["traffic"]:
-            adv = r.get("advertiser_id")
-            if not adv:
-                continue
-            cur = streaming.setdefault(adv, {"n": 0, "last_ingest": "", "days": {}})
-            cur["n"] += int(r["n"])
-            cur["days"][str(r["day"])] = int(r["n"])
-            li = str(r["last_ingest"])
-            if li > cur["last_ingest"]:
-                cur["last_ingest"] = li
+        streaming = _leak_index_traffic(db["traffic"])
         sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in db["sqp"]
                       if r.get("amazon_selling_partner_id") is not None}
         sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in db["sched"]
                        if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
 
-        stream_hits, sqp_hits, no_sub = [], [], []
-        # Every canceled seller that has an advertising profile — the input for
-        # the Ads API stream check, which asks what is actually subscribed rather
-        # than inferring it from data that happened to arrive.
-        stream_candidates = []
-        for m in mapping:
-            cust = m.get("stripe_customer") or ""
-            sp_id = str(m.get("sp_id"))
-            plan = str(m.get("pricing_plan_id") or "")
-            base = {
-                "user_id": m.get("user_id"), "username": m.get("username") or "",
-                "stripe_customer": cust, "sp_id": m.get("sp_id"),
-                "selling_partner_id": m.get("selling_partner_id") or "",
-                "seller_name": m.get("seller_name") or "",
-                "region": m.get("region") or "",
-                "pricing_plan_id": plan,
-                "plan_name": LEAK_PLAN_NAMES.get(plan, plan),
-            }
-
-            if cust not in by_customer:
-                row = dict(base)
-                row["trial_started"] = str(m.get("trial_started") or "")
-                row["registered"] = str(m.get("registered") or "")
-                no_sub.append(row)
-                continue
-            if cust not in canceled:
-                continue   # live, or a status we deliberately leave alone
-
-            tokens = [t for t in (m.get("merchant_tokens") or "").split(",") if t]
-            marketplaces = [x for x in (m.get("ad_marketplaces") or "").split(",") if x]
-            if tokens and marketplaces:
-                cand = dict(base)
-                cand["canceled_at"] = canceled[cust]
-                cand["ad_marketplaces"] = ",".join(marketplaces)
-                stream_candidates.append(cand)
-            hot = [t for t in tokens if t in streaming]
-            if hot:
-                row = dict(base)
-                row["canceled_at"] = canceled[cust]
-                row["merchant_tokens_streaming"] = ",".join(hot)
-                row["ad_marketplaces"] = m.get("ad_marketplaces") or ""
-                row["stream_rows_7d"] = sum(int(streaming[t]["n"]) for t in hot)
-                row["stream_last_ingest"] = max(str(streaming[t]["last_ingest"]) for t in hot)
-                # Merge the daily series across this seller's tokens, so the UI can
-                # show whether it is a steady stream or a one-off backfill burst.
-                daily = {}
-                for t in hot:
-                    for day, n in streaming[t]["days"].items():
-                        daily[day] = daily.get(day, 0) + n
-                row["stream_daily"] = [{"day": d, "n": daily[d]} for d in sorted(daily)]
-                stream_hits.append(row)
-
-            if sp_id in sqp_ingest or sp_id in sqp_enabled:
-                row = dict(base)
-                row["canceled_at"] = canceled[cust]
-                ing = sqp_ingest.get(sp_id)
-                row["sqp_scheduler_enabled"] = "yes" if sp_id in sqp_enabled else "no"
-                row["sqp_rows_14d"] = int(ing["n"]) if ing else 0
-                row["sqp_last_ingest"] = str(ing["last_ingest"]) if ing else ""
-                row["sqp_last_period"] = str(ing["last_period"]) if ing else ""
-                sqp_hits.append(row)
-
-        stream_hits.sort(key=lambda r: -r["stream_rows_7d"])
-        sqp_hits.sort(key=lambda r: -r["sqp_rows_14d"])
         grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
-        for r in stream_hits:
-            _leak_grace(r, grace_days)
-        for r in sqp_hits:
-            _leak_grace(r, grace_days)
+        pairs, no_sub = _leak_split_mapping(mapping, by_customer, canceled)
+        stream_hits = _leak_stream_rows(pairs, canceled, streaming, grace_days)
+        sqp_hits = _leak_sqp_rows(pairs, canceled, sqp_ingest, sqp_enabled, grace_days)
+        stream_candidates = _leak_stream_candidates(pairs, canceled, grace_days)
         held = sum(1 for r in sqp_hits if r["in_grace"]) + \
                sum(1 for r in stream_hits if r["in_grace"])
 
-        for r in stream_candidates:
-            _leak_grace(r, grace_days)
         with _leak_lock:
             _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits,
                                     "no_sub": no_sub, "stream_active": []}
             _leak_state["candidates"] = stream_candidates
+            # Kept so a single list can be refreshed later without paying for
+            # the Stripe pass and the scan belonging to the other list.
+            _leak_state["cache"] = {"mapping": mapping, "canceled": canceled,
+                                    "by_customer": set(by_customer)}
             _leak_state["counters"] = {
                 "customers": len(by_customer), "canceled": len(canceled),
                 "live": len(live), "mapping_rows": len(mapping),
@@ -2515,6 +2562,7 @@ def _leak_worker() -> None:
             }
             _leak_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         _leak_save_results()
+        _leak_save_cache()
 
         try:
             _leak_history_init()
@@ -2593,6 +2641,78 @@ def leak_stop():
     return jsonify({"ok": True})
 
 
+def _leak_refresh_worker(which: str) -> None:
+    """Re-run one list's scan against the cached mapping and Stripe verdicts.
+
+    A full run costs the Stripe pass plus both multi-minute scans. Refreshing
+    one list re-reads only that list's table, so the numbers move without the
+    wait — at the cost of the Stripe side being as old as the last full run,
+    which is what the log says.
+    """
+    label = "Marketing Stream" if which == "stream" else "SQP"
+    try:
+        with _leak_lock:
+            cache = _leak_state.get("cache") or {}
+        mapping, canceled = cache.get("mapping"), cache.get("canceled")
+        by_customer = cache.get("by_customer")
+        if not mapping:
+            _leak_log("error", "Nothing cached yet — run the full check once first.")
+            return
+        grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
+        pairs, _no_sub = _leak_split_mapping(mapping, by_customer, canceled)
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SET statement_timeout = '20min'")
+                if which == "stream":
+                    _leak_log("info", f"Re-scanning sp_traffic ({LEAK_TRAFFIC_DAYS}d)…")
+                    traffic = _leak_query(cur, _LEAK_TRAFFIC_QUERY,
+                                          f"sp_traffic last {LEAK_TRAFFIC_DAYS}d",
+                                          {"days": LEAK_TRAFFIC_DAYS})
+                    rows = _leak_stream_rows(pairs, canceled,
+                                             _leak_index_traffic(traffic), grace_days)
+                else:
+                    _leak_log("info", f"Re-scanning sqp_by_asin ({LEAK_SQP_DAYS}d)…")
+                    sched = _leak_query(cur, _LEAK_SQP_SCHED_QUERY, "SQP scheduler config")
+                    ingest = _leak_query(cur, _LEAK_SQP_INGEST_QUERY,
+                                         f"sqp_by_asin last {LEAK_SQP_DAYS}d",
+                                         {"days": LEAK_SQP_DAYS})
+                    sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in ingest
+                                  if r.get("amazon_selling_partner_id") is not None}
+                    sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in sched
+                                   if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
+                    rows = _leak_sqp_rows(pairs, canceled, sqp_ingest, sqp_enabled, grace_days)
+        with _leak_lock:
+            before = len(_leak_state["lists"].get(which) or [])
+            _leak_state["lists"][which] = rows
+            _leak_state["counters"][which] = len(rows)
+        _leak_save_results()
+        _leak_log("ok", f"{label} list refreshed: {before:,} → {len(rows):,} seller row(s). "
+                        "Stripe statuses are from the last full run.")
+    except Exception as exc:
+        _leak_log("error", f"{label} refresh failed — {str(exc)[:200]}")
+    finally:
+        with _leak_lock:
+            _leak_state["running"] = False
+
+
+@app.route("/api/leak/refresh", methods=["POST"])
+def leak_refresh():
+    which = (request.get_json(silent=True) or {}).get("list", "")
+    if which not in ("stream", "sqp"):
+        return jsonify({"ok": False, "error": "Unknown list."}), 400
+    with _leak_lock:
+        if _leak_state["running"]:
+            return jsonify({"ok": False, "error": "A run is already in progress."}), 409
+        if not (_leak_state.get("cache") or {}).get("mapping"):
+            return jsonify({"ok": False, "error":
+                            "Run the full check once first — a refresh reuses its "
+                            "Stripe results."}), 400
+        _leak_state["running"] = True
+        _leak_state["started_at"] = time.time()
+    threading.Thread(target=_leak_refresh_worker, args=(which,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/leak/state")
 def leak_state():
     since = request.args.get("since", default=0, type=int)
@@ -2654,13 +2774,53 @@ def _leak_save_results() -> None:
         with _leak_lock:
             payload = json.dumps({"lists": _leak_state["lists"],
                                   "counters": _leak_state["counters"],
-                                  "warnings": _leak_state["warnings"]})
+                                  "warnings": _leak_state["warnings"],
+                                  "candidates": _leak_state["candidates"]})
             finished = _leak_state["finished_at"]
         with _subs_db() as conn:
             conn.execute("INSERT OR REPLACE INTO leak_results VALUES (1,?,?)",
                          (payload, finished))
     except Exception as exc:
         _leak_log("warn", f"Could not save results — {exc}")
+
+
+def _leak_save_cache() -> None:
+    """Persist the mapping + Stripe verdicts a per-list refresh reuses.
+
+    Kept apart from the results row: it is the bulky part and only a refresh
+    needs it, so it is written once per full run rather than on every save.
+    """
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS leak_cache "
+                         "(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT)")
+            with _leak_lock:
+                cache = _leak_state.get("cache") or {}
+                payload = json.dumps({"mapping": cache.get("mapping") or [],
+                                      "canceled": cache.get("canceled") or {},
+                                      "by_customer": sorted(cache.get("by_customer") or [])})
+            conn.execute("INSERT OR REPLACE INTO leak_cache VALUES (1,?)", (payload,))
+    except Exception as exc:
+        _leak_log("warn", f"Could not save the refresh cache — {exc}")
+
+
+def _leak_load_cache() -> None:
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS leak_cache "
+                         "(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT)")
+            row = conn.execute("SELECT payload FROM leak_cache WHERE id=1").fetchone()
+        if not row:
+            return
+        data = json.loads(row["payload"])
+        with _leak_lock:
+            _leak_state["cache"] = {"mapping": data.get("mapping") or [],
+                                    "canceled": data.get("canceled") or {},
+                                    "by_customer": set(data.get("by_customer") or [])}
+    except Exception:
+        pass
 
 
 def _leak_load_results() -> None:
@@ -2675,7 +2835,9 @@ def _leak_load_results() -> None:
             _leak_state["lists"] = data.get("lists", _leak_state["lists"])
             _leak_state["counters"] = data.get("counters", _leak_state["counters"])
             _leak_state["warnings"] = data.get("warnings", [])
+            _leak_state["candidates"] = data.get("candidates", [])
             _leak_state["finished_at"] = row["finished_at"] or ""
+        _leak_load_cache()
     except Exception:
         pass
 
@@ -2851,8 +3013,8 @@ def leak_disable():
             reason = (f"All {len(blocked)} selected account(s) are still protected "
                       "(canceled too recently) and cannot be actioned yet.")
         elif not include_trials and _leak_selection_is_trials(sp_ids):
-            reason = ("The selection is trial accounts with no Stripe subscription. "
-                      "Turn on 'Trials actionable' to include them.")
+            reason = ("The selection is trial accounts that never had a Stripe "
+                      "subscription — those are not actioned from this card.")
         else:
             reason = "Selected sellers are not in the current results — re-run the check."
         return jsonify({"ok": False, "error": reason}), 400
@@ -2977,6 +3139,57 @@ def _lst_log(level: str, msg: str) -> None:
         })
 
 
+def _lst_checks_init() -> None:
+    with _subs_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leak_stream_checks (
+                key TEXT PRIMARY KEY, sp_id TEXT, username TEXT,
+                checked_at TEXT, active INTEGER, datasets TEXT
+            )
+        """)
+
+
+def _lst_record_check(key: str, sp_id: str, username: str,
+                      active: bool, datasets: str = "") -> None:
+    """Remember that this seller/profile was asked about, and what came back."""
+    try:
+        _lst_checks_init()
+        with _subs_db() as conn:
+            conn.execute("INSERT OR REPLACE INTO leak_stream_checks VALUES (?,?,?,?,?,?)",
+                         (key, str(sp_id), username,
+                          datetime.datetime.now().isoformat(), 1 if active else 0, datasets))
+    except Exception:
+        pass
+
+
+def _lst_checked_since(days: int) -> dict:
+    """Seller ids checked within the last `days` days → when they were checked."""
+    if days <= 0:
+        return {}
+    try:
+        _lst_checks_init()
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+        with _subs_db() as conn:
+            rows = conn.execute(
+                "SELECT sp_id, MAX(checked_at) AS checked_at FROM leak_stream_checks "
+                "WHERE key LIKE 'seller:%' AND checked_at >= ? GROUP BY sp_id",
+                (cutoff,)).fetchall()
+        return {str(r["sp_id"]): r["checked_at"] for r in rows}
+    except Exception:
+        return {}
+
+
+def _lst_checked_total() -> int:
+    try:
+        _lst_checks_init()
+        with _subs_db() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM leak_stream_checks "
+                               "WHERE key LIKE 'seller:%'").fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
 def _lst_worker(candidates: list) -> None:
     cache, rows = {}, []
     try:
@@ -3007,7 +3220,10 @@ def _lst_worker(candidates: list) -> None:
                     row["active_ids"] = [s["subscriptionId"] for s in active if s["subscriptionId"]]
                     row["any_active"] = bool(active)
                     row["key"] = f"{sid}|{mp_id}"
+                    row["checked_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                     rows.append(row)
+                    _lst_record_check(f"profile:{row['key']}", sid, cand.get("username", ""),
+                                      bool(active), row["active_datasets"])
                     with _lst_lock:
                         _lst_state["counters"]["active" if active else "inactive"] += 1
                     if active:
@@ -3018,17 +3234,29 @@ def _lst_worker(candidates: list) -> None:
                         _lst_state["counters"]["errors"] += 1
                     _lst_log("error", f"{cand.get('username','')} ({sid}): {str(exc)[:140]}")
                 time.sleep(0.12)
+            # Remember the seller either way, so the next run can skip it.
+            _lst_record_check(f"seller:{sid}", sid, cand.get("username", ""),
+                              any(r["key"].startswith(f"{sid}|") and r["any_active"]
+                                  for r in rows))
             with _lst_lock:
                 _lst_state["counters"]["checked"] += 1
 
+        # A scoped run only speaks for what it looked at: anything checked
+        # earlier and not re-checked now stays on the list.
         active_rows = [r for r in rows if r["any_active"]]
-        active_rows.sort(key=lambda r: (r.get("canceled_days") or 0), reverse=True)
+        looked_at = {r["key"] for r in rows}
         with _leak_lock:
-            _leak_state["lists"]["stream_active"] = active_rows
+            kept = [r for r in (_leak_state["lists"].get("stream_active") or [])
+                    if r.get("key") not in looked_at]
+            merged = kept + active_rows
+            merged.sort(key=lambda r: (r.get("canceled_days") or 0), reverse=True)
+            _leak_state["lists"]["stream_active"] = merged
         _leak_save_results()
         c = _lst_state["counters"]
         _lst_log("ok", f"Done. {c['active']} profile(s) with a LIVE stream subscription, "
                        f"{c['inactive']} with none, {c['errors']} error(s).")
+        if kept:
+            _lst_log("info", f"{len(kept)} profile(s) from earlier runs kept on the list.")
         if c["active"]:
             _lst_log("info", "These are canceled accounts that Amazon still has an ACTIVE "
                              "subscription for — the authoritative list to archive.")
@@ -3037,8 +3265,29 @@ def _lst_worker(candidates: list) -> None:
             _lst_state["running"] = False
 
 
+def _lst_scope(candidates: list, max_days: int, skip_days: int) -> tuple:
+    """Narrow the candidate list so a run does not repeat the whole thing.
+
+    `max_days` keeps only accounts canceled that recently; `skip_days` drops
+    accounts already asked about within that many days.
+    """
+    out, old, seen = [], 0, 0
+    recent = _lst_checked_since(skip_days)
+    for c in candidates:
+        days = c.get("canceled_days")
+        if max_days > 0 and (days is None or days > max_days):
+            old += 1
+            continue
+        if skip_days > 0 and str(c.get("sp_id")) in recent:
+            seen += 1
+            continue
+        out.append(c)
+    return out, old, seen
+
+
 @app.route("/api/leak/streams/start", methods=["POST"])
 def leak_streams_start():
+    payload = request.get_json(silent=True) or {}
     with _lst_lock:
         if _lst_state["running"]:
             return jsonify({"ok": False, "error": "A stream check is already running."}), 409
@@ -3050,13 +3299,37 @@ def leak_streams_start():
     if not ADS_CLIENT_ID:
         return jsonify({"ok": False, "error": "ADS_CLIENT_ID is not set in .env."}), 400
 
+    try:
+        max_days = max(int(payload.get("max_days", 0) or 0), 0)
+        skip_days = max(int(payload.get("skip_days", 0) or 0), 0)
+    except (TypeError, ValueError):
+        max_days = skip_days = 0
+    _leak_set_setting("str_max_days", max_days)
+    _leak_set_setting("str_skip_days", skip_days)
+
+    total = len(candidates)
+    scoped, out_of_range, already = _lst_scope(candidates, max_days, skip_days)
+    if not scoped:
+        return jsonify({"ok": False, "error": (
+            f"Nothing left to check: of {total:,} candidate(s), {out_of_range:,} fall "
+            f"outside the {max_days}-day window and {already:,} were checked recently. "
+            "Widen the window, or press Forget checked.")}), 400
+
     _lst_stop.clear()
     with _lst_lock:
         _lst_state["logs"] = []
         _lst_state["started_at"] = time.time()
         _lst_state["running"] = True
-    threading.Thread(target=_lst_worker, args=(candidates,), daemon=True).start()
-    return jsonify({"ok": True, "count": len(candidates)})
+    scope_note = []
+    if max_days:
+        scope_note.append(f"canceled in the last {max_days}d — {out_of_range:,} older skipped")
+    if skip_days:
+        scope_note.append(f"{already:,} checked in the last {skip_days}d skipped")
+    _lst_log("info", f"Scope: {len(scoped):,} of {total:,} candidate(s)"
+                     + (" · " + " · ".join(scope_note) if scope_note else " (no filter)"))
+    threading.Thread(target=_lst_worker, args=(scoped,), daemon=True).start()
+    return jsonify({"ok": True, "count": len(scoped), "total": total,
+                    "out_of_range": out_of_range, "already_checked": already})
 
 
 @app.route("/api/leak/streams/stop", methods=["POST"])
@@ -3064,6 +3337,19 @@ def leak_streams_stop():
     _lst_stop.set()
     _lst_log("warn", "Stop requested...")
     return jsonify({"ok": True})
+
+
+@app.route("/api/leak/streams/forget", methods=["POST"])
+def leak_streams_forget():
+    """Clear the record of what has been checked, so the next run covers all."""
+    try:
+        _lst_checks_init()
+        with _subs_db() as conn:
+            conn.execute("DELETE FROM leak_stream_checks")
+        _lst_log("warn", "Check history cleared — the next run starts from scratch.")
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 500
 
 
 @app.route("/api/leak/streams/state")
@@ -3076,10 +3362,18 @@ def leak_streams_state():
         elapsed = int(time.time() - _lst_state["started_at"]) if running else 0
     with _leak_lock:
         rows = list(_leak_state["lists"].get("stream_active") or [])
-        candidates = len(_leak_state.get("candidates") or [])
+        candidates = list(_leak_state.get("candidates") or [])
+    max_days = _leak_setting_int("str_max_days", 0)
+    skip_days = _leak_setting_int("str_skip_days", 0)
+    # What the current scope would actually ask about, so the header can say so
+    # before the run rather than after.
+    scoped, out_of_range, already = _lst_scope(candidates, max_days, skip_days)
     return jsonify({"running": running, "counters": counters, "logs": logs,
                     "next": nxt, "elapsed": elapsed, "rows": rows,
-                    "candidates": candidates})
+                    "candidates": len(candidates), "in_scope": len(scoped),
+                    "out_of_range": out_of_range, "already_checked": already,
+                    "max_days": max_days, "skip_days": skip_days,
+                    "checked_total": _lst_checked_total()})
 
 
 @app.route("/api/leak/streams/archive", methods=["POST"])
