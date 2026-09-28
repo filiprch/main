@@ -254,6 +254,23 @@
       background: #0b0d13; border: 1px solid #1e2130; border-radius: 8px; padding: .6rem .75rem;
       font-family: monospace; font-size: .72rem; color: #93c5fd; margin-top: .5rem; }
 
+    /* ── Duplicates ── */
+    .dup-row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      border: 1px solid #1e2130; border-radius: 9px; background: #111320;
+      padding: .6rem .75rem; margin-top: .5rem; }
+    .dup-row.dirty { border-color: #7f1d1d; background: #1a1220; }
+    .dup-row.clean { border-color: #14532d55; }
+    .dup-n { width: 1.5rem; color: #475569; font-size: .8rem; font-weight: 700; }
+    .dup-id { min-width: 240px; }
+    .dup-table-name { font-size: .82rem; font-weight: 700; color: #f1f5f9; font-family: monospace; }
+    .dup-keys { font-size: .7rem; color: #64748b; font-family: monospace; }
+    .dup-note { font-size: .7rem; color: #a78bfa; }
+    .dup-res { margin-left: auto; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    .dup-ok { color: #4ade80; font-size: .78rem; font-weight: 700; }
+    .dup-bad { color: #f87171; font-size: .78rem; font-weight: 700; }
+    .dup-idle { color: #475569; font-size: .78rem; }
+    .dup-count { font-size: .72rem; color: #94a3b8; }
+
     .hidden { display: none !important; }
 
     /* ── Reports PUT (Batch) card ── */
@@ -896,6 +913,75 @@
 
   </div><!-- /card-body: leak -->
 </div><!-- /card: leak -->
+
+<!-- ══════════════════════════════════════════════════════════
+     CARD: Duplicates
+     ══════════════════════════════════════════════════════════ -->
+<div class="card" id="card-dup">
+  <div class="card-hdr" onclick="toggleCard('dup')">
+    <div class="card-hdr-left">
+      <span class="card-badge" style="background:#7c3aed22;color:#c4b5fd;border-color:#7c3aed44">DUPLICATES</span>
+      <div>
+        <div class="card-title">Duplicates</div>
+        <div class="card-desc">Checks the six listing and client-input tables and writes the DELETE statements for you to run</div>
+      </div>
+    </div>
+    <button class="card-fold" id="fold-dup">▶</button>
+  </div>
+  <div class="card-body hidden" id="body-dup">
+
+    <div class="ms-top">
+      <div class="ms-left">
+        <div class="ms-controls">
+          <button class="btn btn-primary" id="dup-go" onclick="dupGo()">Run Check</button>
+          <button class="btn btn-red" id="dup-stop" onclick="dupStop()" disabled>Stop</button>
+          <button class="btn btn-ghost" id="dup-all" onclick="dupCopyAll()" disabled
+            title="Copy one script with the DELETEs for every table that has duplicates, in the order they must be run">⧉ Delete all</button>
+          <button class="btn btn-ghost hidden" id="dup-send" onclick="dupSend('all')"
+            title="POST the script to the endpoint configured in DUP_FIX_URL">↗ Send to endpoint</button>
+          <span class="status-pill"><span class="dot" id="dup-dot"></span><span id="dup-status">Idle</span></span>
+          <span class="ms-status-label" id="dup-finished"></span>
+        </div>
+        <div class="ms-controls">
+          <div class="rep-safety-wrap" title="Run the check automatically while the dashboard is open">
+            <span style="color:#475569">Auto-run weekly</span>
+            <span class="rep-sw-side rep-sw-active" id="dup-auto-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="dup-auto" onchange="dupSaveSettings()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side" id="dup-auto-on">ON</span>
+          </div>
+          <select id="dup-weekday" class="ms-filter-input" style="width:110px" onchange="dupSaveSettings()">
+            <option value="0">Monday</option><option value="1">Tuesday</option>
+            <option value="2">Wednesday</option><option value="3">Thursday</option>
+            <option value="4">Friday</option><option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+          <span style="color:#475569;font-size:.78rem">from</span>
+          <input type="number" id="dup-hour" class="ms-filter-input" style="width:64px"
+                 min="0" max="23" value="6" onchange="dupSaveSettings()">
+          <span style="color:#475569;font-size:.78rem">:00</span>
+          <span class="ms-status-label" id="dup-auto-note"></span>
+        </div>
+        <div id="dup-err" class="ms-err"></div>
+      </div>
+      <div class="ms-right">
+        <div class="ms-counters">
+          <div class="rep-stat"><div class="rep-n" id="dup-c-checked">0</div><div class="rep-k">Checked</div></div>
+          <div class="rep-stat"><div class="rep-n rep-ok" id="dup-c-clean">0</div><div class="rep-k">Clean</div></div>
+          <div class="rep-stat"><div class="rep-n rep-fail" id="dup-c-dirty">0</div><div class="rep-k">With dupes</div></div>
+          <div class="rep-stat"><div class="rep-n" id="dup-c-rows" style="color:#fbbf24">0</div><div class="rep-k">Extra rows</div></div>
+        </div>
+        <div id="dup-log" class="ms-log"></div>
+      </div>
+    </div>
+
+    <div id="dup-rows"></div>
+    <div id="dup-out"></div>
+
+  </div><!-- /card-body: dup -->
+</div><!-- /card: dup -->
 
 </div><!-- /cards -->
 
@@ -3276,6 +3362,236 @@ leakLoadSettings();
 setInterval(leakStreamsPoll, 2000);
 setInterval(leakPoll, 2000);
 leakPoll();
+
+// ── Duplicates ────────────────────────────────────────────────────────────────
+// The dashboard is read-only: this card runs the SELECTs and hands back the
+// DELETE statements. Nothing here deletes anything.
+let dupSince = 0;
+let dupSteps = [];
+const dupOpen = {};      // step id -> duplicate rows visible
+
+function dupLog(level, msg) {
+  const log = document.getElementById('dup-log');
+  if (!log) return;
+  const div = document.createElement('div');
+  div.className = 'rep-line';
+  div.innerHTML = `<span class="rt">${new Date().toTimeString().slice(0, 8)}</span>` +
+                  `<span class="rl-${level}">${esc(msg)}</span>`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function dupBadge(s) {
+  if (s.status === 'running') return `<span class="dup-idle">Checking…</span>`;
+  if (s.status === 'error') return `<span class="dup-bad" title="${esc(s.error)}">Error</span>`;
+  if (s.status === 'clean') return `<span class="dup-ok">✓ No duplicates</span>`;
+  if (s.status === 'duplicates') {
+    return `<span class="dup-bad">${s.groups.toLocaleString()} duplicate${s.groups === 1 ? '' : 's'}</span>` +
+           `<span class="dup-count">${s.extra_rows.toLocaleString()} extra row(s) · ` +
+           `${s.owners.length.toLocaleString()} ${esc(s.owner)}(s)</span>`;
+  }
+  return `<span class="dup-idle">Not checked</span>`;
+}
+
+function dupRenderRows(steps) {
+  dupSteps = steps;
+  document.getElementById('dup-rows').innerHTML = steps.map((s, i) => {
+    const cls = s.status === 'duplicates' ? ' dirty' : s.status === 'clean' ? ' clean' : '';
+    const acts = s.status === 'duplicates'
+      ? `<button class="btn btn-sm btn-red" onclick="dupCopy('${esc(s.id)}')"
+             title="Copy the DELETE statements for this table, with the ids filled in">⧉ Copy DELETE</button>
+         <button class="btn btn-sm btn-ghost" onclick="dupShow('${esc(s.id)}')"
+             id="dup-tog-${esc(s.id)}">${dupOpen[s.id] ? 'Hide' : 'Show'} rows</button>
+         <a class="btn btn-sm btn-ghost" href="/api/dup/export.csv?step=${encodeURIComponent(s.id)}">⭳ CSV</a>`
+      : `<button class="btn btn-sm btn-ghost" onclick="dupCopyCheck('${esc(s.id)}')"
+             title="Copy the SELECT this step runs">⧉ Check SQL</button>`;
+    return `<div class="dup-row${cls}">
+      <span class="dup-n">${i + 1}</span>
+      <div class="dup-id">
+        <div class="dup-table-name">${esc(s.table)}</div>
+        <div class="dup-keys">${esc(s.keys || '')}</div>
+        ${s.note ? `<div class="dup-note">${esc(s.note)}</div>` : ''}
+      </div>
+      <div class="dup-res">
+        ${dupBadge(s)}
+        ${s.seconds ? `<span class="dup-count">${s.seconds}s</span>` : ''}
+        ${acts}
+      </div>
+      <div class="${dupOpen[s.id] ? '' : 'hidden'}" style="flex-basis:100%" id="dup-rows-${esc(s.id)}">
+        ${dupOpen[s.id] ? dupSample(s) : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function dupSample(s) {
+  if (!s.sample || !s.sample.length) return `<span class="token-idle">No rows kept.</span>`;
+  const cols = Object.keys(s.sample[0]);
+  return `<div class="sqp-list-wrap" style="margin-top:.5rem"><table class="ms-table">
+    <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+    <tbody>${s.sample.map(r => '<tr>' + cols.map(c =>
+      `<td class="mono">${esc(r[c])}</td>`).join('') + '</tr>').join('')}</tbody>
+    </table></div>` +
+    (s.truncated ? `<div class="dup-count">Showing the first ${s.sample.length} group(s);
+      the DELETE covers all ${s.groups.toLocaleString()}.</div>` : '');
+}
+
+function dupShow(id) {
+  dupOpen[id] = !dupOpen[id];
+  dupRenderRows(dupSteps);
+}
+
+async function dupCopy(id) {
+  const step = dupSteps.find(s => s.id === id) || {};
+  const d = await (await fetch('/api/dup/sql?step=' + encodeURIComponent(id))).json();
+  const out = document.getElementById('dup-out');
+  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+               dupLog('error', `${step.table || id}: ${d.error}`); return; }
+  await sqpCopyText(d.sql);
+  dupLog('ok', `DELETE for ${step.table || id} copied — run it with write access.`);
+  out.innerHTML = `<div class="leak-gap">DELETE for <code>${esc(step.table || id)}</code>
+    copied to the clipboard.</div><div class="leak-sql">${esc(d.sql)}</div>`;
+  out.scrollIntoView({ block: 'nearest' });
+}
+
+async function dupCopyCheck(id) {
+  const d = await (await fetch('/api/dup/check-sql?step=' + encodeURIComponent(id))).json();
+  const out = document.getElementById('dup-out');
+  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+  await sqpCopyText(d.sql);
+  dupLog('info', `Check query for ${id} copied.`);
+  out.innerHTML = `<div class="leak-sql">${esc(d.sql)}</div>`;
+}
+
+async function dupCopyAll() {
+  const d = await (await fetch('/api/dup/sql?step=all')).json();
+  const out = document.getElementById('dup-out');
+  if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`; return; }
+  await sqpCopyText(d.sql);
+  const n = dupSteps.filter(s => s.status === 'duplicates').length;
+  dupLog('ok', `Full cleanup script copied — ${n} table(s), statements in run order.`);
+  out.innerHTML = `<div class="leak-gap">Copied — ${n} table(s). Run the statements in the
+    order shown; <code>amazon_merchant_listing</code> must keep its status pass first.</div>
+    <div class="leak-sql">${esc(d.sql)}</div>`;
+  out.scrollIntoView({ block: 'nearest' });
+}
+
+async function dupSend(step) {
+  if (!confirm('Send the cleanup script to the configured endpoint?\n\n' +
+               'The dashboard never runs a DELETE itself — this hands the statements ' +
+               'to whatever DUP_FIX_URL points at.')) return;
+  const out = document.getElementById('dup-out');
+  out.innerHTML = `<span class="token-idle">Sending…</span>`;
+  try {
+    const d = await (await fetch('/api/dup/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ step }),
+    })).json();
+    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
+                 dupLog('error', 'Send failed: ' + d.error); return; }
+    dupLog(d.status >= 200 && d.status < 300 ? 'ok' : 'error', `Endpoint replied ${d.status}.`);
+    out.innerHTML = `<div class="${d.status >= 200 && d.status < 300 ? 'leak-gap' : 'leak-warn'}">
+      ${d.tables.join(', ')} → HTTP <strong>${d.status}</strong></div>
+      <div class="leak-sql">${esc(d.response || '(empty response)')}</div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`;
+    dupLog('error', 'Send failed: ' + e.message);
+  }
+}
+
+async function dupSaveSettings() {
+  const auto = document.getElementById('dup-auto').checked;
+  const day = document.getElementById('dup-weekday');
+  const hour = parseInt(document.getElementById('dup-hour').value);
+  document.getElementById('dup-auto-off').classList.toggle('rep-sw-active', !auto);
+  document.getElementById('dup-auto-on').classList.toggle('rep-sw-active', auto);
+  await fetch('/api/dup/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_enabled: auto ? 1 : 0,
+                           auto_weekday: parseInt(day.value) || 0,
+                           auto_hour: isNaN(hour) ? 6 : hour }),
+  });
+  dupLog('info', auto
+    ? `Auto-run on ${day.options[day.selectedIndex].text} from ${isNaN(hour) ? 6 : hour}:00.`
+    : 'Auto-run off.');
+}
+
+async function dupLoadSettings() {
+  try {
+    const d = await (await fetch('/api/dup/settings')).json();
+    document.getElementById('dup-auto').checked = d.auto_enabled;
+    document.getElementById('dup-weekday').value = d.auto_weekday;
+    document.getElementById('dup-hour').value = d.auto_hour;
+    document.getElementById('dup-auto-off').classList.toggle('rep-sw-active', !d.auto_enabled);
+    document.getElementById('dup-auto-on').classList.toggle('rep-sw-active', d.auto_enabled);
+  } catch (_) {}
+}
+
+let dupRenderedSig = '';
+
+async function dupPoll() {
+  try {
+    const s = await (await fetch('/api/dup/state?since=' + dupSince)).json();
+    const log = document.getElementById('dup-log');
+    for (const e of s.logs) {
+      const div = document.createElement('div');
+      div.className = 'rep-line';
+      div.innerHTML = `<span class="rt">${e.t}</span><span class="rl-${e.level}">${esc(e.msg)}</span>`;
+      log.appendChild(div);
+      dupSince = e.i + 1;
+    }
+    if (s.logs.length) log.scrollTop = log.scrollHeight;
+
+    const steps = s.steps || [];
+    const dirty = steps.filter(x => x.status === 'duplicates');
+    document.getElementById('dup-c-checked').textContent =
+      steps.filter(x => x.status !== 'pending' && x.status !== 'running').length;
+    document.getElementById('dup-c-clean').textContent = steps.filter(x => x.status === 'clean').length;
+    document.getElementById('dup-c-dirty').textContent = dirty.length;
+    document.getElementById('dup-c-rows').textContent =
+      dirty.reduce((a, x) => a + (x.extra_rows || 0), 0).toLocaleString();
+    document.getElementById('dup-go').disabled = s.running;
+    document.getElementById('dup-stop').disabled = !s.running;
+    document.getElementById('dup-all').disabled = s.running || !dirty.length;
+    document.getElementById('dup-dot').className = 'dot ' + (s.running ? 'spin' : '');
+    document.getElementById('dup-status').textContent =
+      s.running ? `Running… ${leakElapsed(s.elapsed)}` : 'Idle';
+    document.getElementById('dup-finished').textContent =
+      s.finished_at ? `last run ${s.finished_at}` : '';
+    document.getElementById('dup-send').classList.toggle('hidden', !s.fix_url || !dirty.length);
+    document.getElementById('dup-auto-note').textContent =
+      s.auto_enabled && s.last_auto_run ? `auto ${s.last_auto_run.slice(0, 16).replace('T', ' ')}` : '';
+
+    // Only touch the DOM when something actually changed, so an open row list
+    // and its scroll position survive the 2s poll.
+    const sig = steps.map(x => `${x.status}:${x.groups}:${x.seconds}`).join('|') +
+                '|' + Object.keys(dupOpen).filter(k => dupOpen[k]).join(',');
+    if (sig !== dupRenderedSig) { dupRenderedSig = sig; dupRenderRows(steps); }
+    else dupSteps = steps;
+  } catch (_) {}
+}
+
+async function dupGo() {
+  const err = document.getElementById('dup-err');
+  err.textContent = '';
+  dupSince = 0;
+  document.getElementById('dup-log').innerHTML = '';
+  document.getElementById('dup-out').innerHTML = '';
+  try {
+    const d = await (await fetch('/api/dup/start', { method: 'POST' })).json();
+    if (!d.ok) { err.textContent = d.error || 'Failed to start.'; return; }
+    dupPoll();
+  } catch (e) { err.textContent = e.message; }
+}
+
+async function dupStop() {
+  dupLog('warn', 'Stop requested.');
+  await fetch('/api/dup/stop', { method: 'POST' });
+}
+
+dupLoadSettings();
+setInterval(dupPoll, 2000);
+dupPoll();
 </script>
 </body>
 </html>

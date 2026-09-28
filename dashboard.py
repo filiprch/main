@@ -3202,6 +3202,524 @@ def leak_export_csv():
         "Content-Disposition": f'attachment; filename="spb629_{which}_{stamp}.csv"'})
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Duplicates monitoring
+#
+# Six checks transcribed from the "Duplicates monitoring" spec. Listing and
+# client-input duplicates are not prevented at write time, so they have to be
+# found and cleared by hand.
+#
+# This card NEVER executes a DELETE. The dashboard connects as a read-only
+# user; it runs the SELECTs, and hands back the DELETE statements with the
+# affected owner ids filled into the empty `in ()` for someone with write
+# access to run. Step 1 has two DELETEs and their order matters: the status
+# pass must run first so 'Active' listings survive, then the id pass clears
+# what is left.
+# ══════════════════════════════════════════════════════════════════════════════
+
+DUP_TIMEOUT_MS = int(os.environ.get("DUP_TIMEOUT_MS", "300000"))
+# Optional forward hook: when set, the card offers to POST the generated SQL to
+# this URL instead of only copying it. Nothing is sent unless it is configured.
+DUP_FIX_URL = os.environ.get("DUP_FIX_URL", "")
+DUP_SAMPLE_ROWS = 200      # how many duplicate groups to keep for display
+
+DUP_STEPS = [
+    {
+        "id": "amazon_merchant_listing",
+        "table": "amazon_merchant_listing",
+        "keys": "seller_id · marketplace_id · seller_sku",
+        "note": "Two DELETEs, in order: the status pass keeps 'Active' listings, then the id pass clears the rest.",
+        "owner": "seller_id",
+        "check": """SELECT seller_id, marketplace_id, seller_sku, COUNT(*)
+FROM amazon_merchant_listing
+GROUP by seller_id, marketplace_id, seller_sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "1 · keep 'Active' listings",
+             "sql": """-- Delete sorting by status, meaning that 'Active' listings will be stored first
+DELETE FROM amazon_merchant_listing ao1 USING amazon_merchant_listing ao2
+WHERE ao1.status > ao2.status
+AND ao1.seller_id = ao2.seller_id
+AND ao1.marketplace_id = ao2.marketplace_id
+AND ao1.seller_sku = ao2.seller_sku
+AND ao1.seller_id in ({ids});"""},
+            {"label": "2 · delete the remaining duplicates",
+             "sql": """-- Delete duplicates
+DELETE FROM amazon_merchant_listing ao1 USING amazon_merchant_listing ao2
+WHERE ao1.id < ao2.id
+AND ao1.seller_id = ao2.seller_id
+AND ao1.marketplace_id = ao2.marketplace_id
+AND ao1.seller_sku = ao2.seller_sku
+AND ao1.seller_id in ({ids});"""},
+        ],
+    },
+    {
+        "id": "amazon_referral",
+        "table": "amazon_referral",
+        "keys": "seller_id · marketplace_id · sku",
+        "note": "",
+        "owner": "seller_id",
+        "check": """SELECT seller_id, marketplace_id, sku, COUNT(*)
+FROM amazon_referral
+GROUP by seller_id, marketplace_id, sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "delete duplicates",
+             "sql": """DELETE FROM amazon_referral ao1 USING amazon_referral ao2
+WHERE ao1.id < ao2.id
+AND ao1.seller_id = ao2.seller_id
+AND ao1.marketplace_id = ao2.marketplace_id
+AND ao1.sku = ao2.sku
+AND ao1.seller_id in ({ids});"""},
+        ],
+    },
+    {
+        "id": "amazon_fba_estimated",
+        "table": "amazon_fba_estimated",
+        "keys": "seller_id · marketplace_id · sku",
+        "note": "Rows with no marketplace_id are ignored.",
+        "owner": "seller_id",
+        "check": """SELECT seller_id, marketplace_id, sku, COUNT(*)
+FROM amazon_fba_estimated WHERE marketplace_id IS NOT NULL
+GROUP by seller_id, marketplace_id, sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "delete duplicates",
+             "sql": """DELETE FROM amazon_fba_estimated ao1 USING amazon_fba_estimated ao2
+WHERE ao1.id < ao2.id
+AND ao1.seller_id = ao2.seller_id
+AND ao1.marketplace_id = ao2.marketplace_id
+AND ao1.marketplace_id IS NOT NULL
+AND ao1.sku = ao2.sku
+AND ao1.seller_id in ({ids});"""},
+        ],
+    },
+    {
+        "id": "amazon_product_tags",
+        "table": "amazon_product_tags",
+        "keys": "amazon_selling_partner_id · amazon_marketplace_id · category · sku",
+        "note": "",
+        "owner": "amazon_selling_partner_id",
+        "check": """SELECT amazon_selling_partner_id, amazon_marketplace_id, category, sku, COUNT(*)
+FROM amazon_product_tags
+GROUP by amazon_selling_partner_id, amazon_marketplace_id, category, sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "delete duplicates",
+             "sql": """DELETE FROM amazon_product_tags apt1 USING amazon_product_tags apt2
+WHERE apt1.id < apt2.id
+AND apt1.amazon_selling_partner_id = apt2.amazon_selling_partner_id
+AND apt1.amazon_marketplace_id = apt2.amazon_marketplace_id
+AND apt1.category = apt2.category
+AND apt1.sku = apt2.sku
+AND apt1.amazon_selling_partner_id in ({ids});"""},
+        ],
+    },
+    {
+        "id": "amazon_sku_to_cogs",
+        "table": "amazon_sku_to_cogs",
+        "keys": "seller_id · marketplace_id · sku",
+        "note": "Fed by /cogs/v2/csv/download.",
+        "owner": "seller_id",
+        "check": """SELECT seller_id, marketplace_id, sku, COUNT(*)
+FROM amazon_sku_to_cogs
+GROUP by seller_id, marketplace_id, sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "delete duplicates",
+             "sql": """DELETE FROM amazon_sku_to_cogs ao1 USING amazon_sku_to_cogs ao2
+WHERE ao1.id < ao2.id
+AND ao1.seller_id = ao2.seller_id
+AND ao1.marketplace_id = ao2.marketplace_id
+AND ao1.sku = ao2.sku
+AND ao1.seller_id in ({ids});"""},
+        ],
+    },
+    {
+        "id": "amazon_sku_to_vat",
+        "table": "amazon_sku_to_vat",
+        "keys": "amazon_selling_partner_id · amazon_marketplace_id · sku",
+        "note": "Fed by /vat/csv/upload.",
+        "owner": "amazon_selling_partner_id",
+        "check": """SELECT amazon_selling_partner_id, amazon_marketplace_id, sku, COUNT(*)
+FROM amazon_sku_to_vat
+GROUP by amazon_selling_partner_id, amazon_marketplace_id, sku
+HAVING COUNT(*)>1;""",
+        "deletes": [
+            {"label": "delete duplicates",
+             "sql": """DELETE FROM amazon_sku_to_vat ao1 USING amazon_sku_to_vat ao2
+WHERE ao1.id < ao2.id
+AND ao1.amazon_selling_partner_id = ao2.amazon_selling_partner_id
+AND ao1.amazon_marketplace_id = ao2.amazon_marketplace_id
+AND ao1.sku = ao2.sku
+AND ao1.amazon_selling_partner_id in ({ids});"""},
+        ],
+    },
+]
+
+DUP_BY_ID = {s["id"]: s for s in DUP_STEPS}
+
+_dup_lock = threading.Lock()
+_dup_stop = threading.Event()
+
+
+def _dup_blank_step(step: dict) -> dict:
+    return {"id": step["id"], "table": step["table"], "owner": step["owner"],
+            "keys": step["keys"], "note": step["note"],
+            "status": "pending", "groups": 0, "extra_rows": 0, "owners": [],
+            "sample": [], "error": "", "seconds": 0.0, "truncated": False}
+
+
+_dup_state = {"running": False, "logs": [], "started_at": 0.0, "finished_at": "",
+              "steps": [_dup_blank_step(s) for s in DUP_STEPS]}
+
+
+def _dup_log(level: str, msg: str) -> None:
+    with _dup_lock:
+        _dup_state["logs"].append({
+            "i": len(_dup_state["logs"]), "level": level, "msg": msg,
+            "t": datetime.datetime.now().strftime("%H:%M:%S")})
+        if len(_dup_state["logs"]) > 800:
+            del _dup_state["logs"][:-800]
+
+
+def _dup_literal(value) -> str:
+    """Render one owner id for an IN list.
+
+    Numeric ids stay bare so the statement reads like the spec; anything else
+    is quoted, with embedded quotes doubled the way Postgres expects.
+    """
+    text = str(value)
+    if re.fullmatch(r"-?\d+", text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _dup_id_list(owners: list) -> str:
+    return ", ".join(_dup_literal(o) for o in owners)
+
+
+def _dup_step_sql(step: dict, owners: list) -> str:
+    """The DELETE(s) for one step, in the order they must be run."""
+    ids = _dup_id_list(owners)
+    parts = [d["sql"].format(ids=ids) for d in step["deletes"]]
+    return "\n\n".join(parts)
+
+
+def _dup_all_sql(results: list) -> str:
+    """Every step that found duplicates, as one script.
+
+    Steps keep their spec order, and within a step the DELETEs keep theirs —
+    for amazon_merchant_listing the status pass has to precede the id pass or
+    the wrong row survives.
+    """
+    blocks = ["-- Duplicate cleanup generated by the dashboard on "
+              + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+              "-- Run in order. Statements are grouped per table; within a table",
+              "-- the order matters (amazon_merchant_listing keeps 'Active' first).",
+              "-- Review before running: this deletes rows.", ""]
+    found = False
+    for step in DUP_STEPS:
+        res = next((r for r in results if r["id"] == step["id"]), None)
+        if not res or not res.get("owners"):
+            continue
+        found = True
+        blocks.append(f"-- ── {step['table']} · {res['groups']} duplicate group(s), "
+                      f"{len(res['owners'])} {step['owner']}(s) ─────────────")
+        blocks.append(_dup_step_sql(step, res["owners"]))
+        blocks.append("")
+    if not found:
+        return "-- No duplicates found in the last check — nothing to delete."
+    return "\n".join(blocks)
+
+
+def _dup_worker() -> None:
+    """Run the six checks. Read-only: only the SELECTs ever touch the DB."""
+    conn = None
+    try:
+        _dup_log("info", f"Checking {len(DUP_STEPS)} tables for duplicates…")
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = %s", (DUP_TIMEOUT_MS,))
+        for idx, step in enumerate(DUP_STEPS):
+            if _dup_stop.is_set():
+                _dup_log("warn", "Stopped before finishing.")
+                break
+            with _dup_lock:
+                _dup_state["steps"][idx]["status"] = "running"
+            started = time.time()
+            try:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(step["check"])
+                    rows = cur.fetchall()
+                owners, seen = [], set()
+                extra = 0
+                for r in rows:
+                    o = r.get(step["owner"])
+                    if o is not None and o not in seen:
+                        seen.add(o)
+                        owners.append(o)
+                    extra += max(int(r.get("count") or 1) - 1, 0)
+                result = {
+                    "id": step["id"], "table": step["table"], "owner": step["owner"],
+                    "keys": step["keys"], "note": step["note"],
+                    "status": "duplicates" if rows else "clean",
+                    "groups": len(rows), "extra_rows": extra,
+                    "owners": [str(o) for o in owners],
+                    "sample": [{k: (str(v) if v is not None else "") for k, v in r.items()}
+                               for r in rows[:DUP_SAMPLE_ROWS]],
+                    "truncated": len(rows) > DUP_SAMPLE_ROWS,
+                    "error": "", "seconds": round(time.time() - started, 1),
+                }
+                _dup_log("ok" if not rows else "error",
+                         f"{step['table']}: " + ("no duplicates."
+                            if not rows else
+                            f"{len(rows)} duplicate group(s), {extra} extra row(s), "
+                            f"{len(owners)} {step['owner']}(s)."))
+            except Exception as exc:
+                conn.rollback()
+                result = _dup_blank_step(step)
+                result["status"] = "error"
+                result["error"] = str(exc)[:300]
+                result["seconds"] = round(time.time() - started, 1)
+                _dup_log("error", f"{step['table']}: {str(exc)[:200]}")
+            with _dup_lock:
+                _dup_state["steps"][idx] = result
+    except Exception as exc:
+        _dup_log("error", f"Check failed — {str(exc)[:200]}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        with _dup_lock:
+            _dup_state["running"] = False
+            _dup_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            dirty = [s for s in _dup_state["steps"] if s["status"] == "duplicates"]
+        _dup_save_results()
+        _dup_log("info", "No duplicates anywhere." if not dirty else
+                 f"{len(dirty)} table(s) need cleaning: "
+                 + ", ".join(s["table"] for s in dirty))
+
+
+@app.route("/api/dup/start", methods=["POST"])
+def dup_start():
+    with _dup_lock:
+        if _dup_state["running"]:
+            return jsonify({"ok": False, "error": "A check is already running."}), 409
+    if not DB_CONFIG["password"]:
+        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _dup_stop.clear()
+    with _dup_lock:
+        _dup_state["logs"] = []
+        _dup_state["steps"] = [_dup_blank_step(s) for s in DUP_STEPS]
+        _dup_state["finished_at"] = ""
+        _dup_state["started_at"] = time.time()
+        _dup_state["running"] = True
+    threading.Thread(target=_dup_worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/dup/stop", methods=["POST"])
+def dup_stop():
+    _dup_stop.set()
+    _dup_log("warn", "Stop requested…")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/dup/state")
+def dup_state():
+    since = request.args.get("since", default=0, type=int)
+    with _dup_lock:
+        steps = [dict(s) for s in _dup_state["steps"]]
+        running = _dup_state["running"]
+        return jsonify({
+            "running": running,
+            "finished_at": _dup_state["finished_at"],
+            "elapsed": int(time.time() - _dup_state["started_at"])
+                       if running and _dup_state["started_at"] else 0,
+            "logs": [e for e in _dup_state["logs"] if e["i"] >= since],
+            "next": len(_dup_state["logs"]),
+            "steps": steps,
+            "fix_url": bool(DUP_FIX_URL),
+            "auto_enabled": _leak_setting("dup_auto_enabled", "0") == "1",
+            "auto_weekday": _leak_setting_int("dup_auto_weekday", 0),
+            "auto_hour": _leak_setting_int("dup_auto_hour", 6),
+            "last_auto_run": _leak_setting("dup_last_auto_run", ""),
+        })
+
+
+@app.route("/api/dup/sql")
+def dup_sql():
+    """The DELETE script — for one step, or for every step that found rows."""
+    step_id = request.args.get("step", "")
+    with _dup_lock:
+        results = [dict(s) for s in _dup_state["steps"]]
+    if not step_id or step_id == "all":
+        return jsonify({"ok": True, "step": "all", "sql": _dup_all_sql(results)})
+    step = DUP_BY_ID.get(step_id)
+    if not step:
+        return jsonify({"ok": False, "error": "Unknown step."}), 400
+    res = next((r for r in results if r["id"] == step_id), None)
+    if not res or not res.get("owners"):
+        return jsonify({"ok": False, "error": "No duplicates recorded for this table."}), 400
+    return jsonify({"ok": True, "step": step_id,
+                    "sql": _dup_step_sql(step, res["owners"])})
+
+
+@app.route("/api/dup/check-sql")
+def dup_check_sql():
+    step = DUP_BY_ID.get(request.args.get("step", ""))
+    if not step:
+        return jsonify({"ok": False, "error": "Unknown step."}), 400
+    return jsonify({"ok": True, "sql": step["check"]})
+
+
+@app.route("/api/dup/export.csv")
+def dup_export():
+    """The duplicate groups of one step, as found by its SELECT."""
+    step_id = request.args.get("step", "")
+    with _dup_lock:
+        res = next((dict(s) for s in _dup_state["steps"] if s["id"] == step_id), None)
+    if not res or not res.get("sample"):
+        return Response("error,no rows for that step\n", mimetype="text/csv", status=400)
+
+    import csv
+    import io
+    cols = list(res["sample"][0].keys())
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    writer.writeheader()
+    for r in res["sample"]:
+        writer.writerow(r)
+    stamp = datetime.date.today().isoformat()
+    return Response(buf.getvalue(), mimetype="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="duplicates_{step_id}_{stamp}.csv"'})
+
+
+@app.route("/api/dup/send", methods=["POST"])
+def dup_send():
+    """POST the generated SQL to DUP_FIX_URL, when one is configured.
+
+    The hook exists so this can be automated later. It hands the statements to
+    whatever service is configured — the dashboard itself still never runs a
+    DELETE against the database.
+    """
+    if not DUP_FIX_URL:
+        return jsonify({"ok": False, "error":
+                        "No endpoint configured. Set DUP_FIX_URL in .env first."}), 400
+    step_id = (request.get_json(silent=True) or {}).get("step", "all")
+    with _dup_lock:
+        results = [dict(s) for s in _dup_state["steps"]]
+    if step_id == "all":
+        sql = _dup_all_sql(results)
+        tables = [r["table"] for r in results if r["status"] == "duplicates"]
+    else:
+        step = DUP_BY_ID.get(step_id)
+        res = next((r for r in results if r["id"] == step_id), None)
+        if not step or not res or not res.get("owners"):
+            return jsonify({"ok": False, "error": "No duplicates recorded for this table."}), 400
+        sql, tables = _dup_step_sql(step, res["owners"]), [step["table"]]
+    if not tables:
+        return jsonify({"ok": False, "error": "Nothing to send — no duplicates found."}), 400
+    _dup_log("warn", f"Sending cleanup for {', '.join(tables)} to the configured endpoint…")
+    try:
+        resp = http_requests.post(DUP_FIX_URL, json={"sql": sql, "tables": tables},
+                                  timeout=60)
+        _dup_log("ok" if 200 <= resp.status_code < 300 else "error",
+                 f"Endpoint replied {resp.status_code}: {(resp.text or '').strip()[:160]}")
+        return jsonify({"ok": True, "status": resp.status_code,
+                        "response": (resp.text or "").strip()[:2000], "tables": tables})
+    except Exception as exc:
+        _dup_log("error", f"Endpoint call failed — {str(exc)[:200]}")
+        return jsonify({"ok": False, "error": str(exc)[:300]}), 502
+
+
+@app.route("/api/dup/settings", methods=["GET", "POST"])
+def dup_settings():
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        for key in ("auto_enabled", "auto_weekday", "auto_hour"):
+            if key in payload:
+                _leak_set_setting("dup_" + key, payload[key])
+    return jsonify({
+        "auto_enabled": _leak_setting("dup_auto_enabled", "0") == "1",
+        "auto_weekday": _leak_setting_int("dup_auto_weekday", 0),
+        "auto_hour": _leak_setting_int("dup_auto_hour", 6),
+        "last_auto_run": _leak_setting("dup_last_auto_run", ""),
+        "fix_url": bool(DUP_FIX_URL),
+    })
+
+
+def _dup_save_results() -> None:
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS dup_results "
+                         "(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT, finished_at TEXT)")
+            with _dup_lock:
+                payload = json.dumps(_dup_state["steps"])
+                finished = _dup_state["finished_at"]
+            conn.execute("INSERT OR REPLACE INTO dup_results VALUES (1,?,?)",
+                         (payload, finished))
+    except Exception as exc:
+        _dup_log("warn", f"Could not save results — {exc}")
+
+
+def _dup_load_results() -> None:
+    try:
+        _leak_settings_init()
+        with _subs_db() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS dup_results "
+                         "(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT, finished_at TEXT)")
+            row = conn.execute("SELECT payload, finished_at FROM dup_results WHERE id=1").fetchone()
+        if not row:
+            return
+        saved = {s["id"]: s for s in json.loads(row["payload"])}
+        with _dup_lock:
+            # Rebuild from the spec so a step added since the last run appears.
+            _dup_state["steps"] = [saved.get(s["id"], _dup_blank_step(s)) for s in DUP_STEPS]
+            _dup_state["finished_at"] = row["finished_at"] or ""
+    except Exception:
+        pass
+
+
+def _dup_scheduler_loop() -> None:
+    """Run the check on the configured weekday and hour, while the app is up."""
+    while True:
+        try:
+            time.sleep(300)
+            if _leak_setting("dup_auto_enabled", "0") != "1":
+                continue
+            with _dup_lock:
+                if _dup_state["running"]:
+                    continue
+            now = datetime.datetime.now()
+            if now.weekday() != _leak_setting_int("dup_auto_weekday", 0):
+                continue
+            if now.hour < _leak_setting_int("dup_auto_hour", 6):
+                continue
+            if _leak_setting("dup_last_auto_run", "")[:10] == now.strftime("%Y-%m-%d"):
+                continue
+            _leak_set_setting("dup_last_auto_run", now.isoformat())
+            _dup_log("info", "Scheduled duplicate check starting.")
+            _dup_stop.clear()
+            with _dup_lock:
+                _dup_state["logs"] = []
+                _dup_state["steps"] = [_dup_blank_step(s) for s in DUP_STEPS]
+                _dup_state["finished_at"] = ""
+                _dup_state["started_at"] = time.time()
+                _dup_state["running"] = True
+            _dup_worker()
+        except Exception:
+            continue
+
+
+def _dup_start_scheduler() -> None:
+    threading.Thread(target=_dup_scheduler_loop, daemon=True).start()
+
+
 def _config_summary() -> None:
     """Print which card is configured, so missing .env values surface at boot."""
     def state(*names):
@@ -3214,6 +3732,8 @@ def _config_summary() -> None:
     print(f"  Batch Reports PUT     : {state('PROD_HOST')}"
           f"{'' if os.environ.get('ACCESS_TOKEN') or os.environ.get('API_PASSWORD') else ' + ACCESS_TOKEN or API_PASSWORD'}")
     print(f"  Marketing Streams     : {state('DB_PASSWORD', 'ADS_CLIENT_ID')}")
+    print(f"  Duplicates            : {state('DB_PASSWORD')}"
+          f"{'' if DUP_FIX_URL else '  (no DUP_FIX_URL — copy-only)'}")
     if LWA_CLIENT_ID and ADS_CLIENT_ID and LWA_CLIENT_ID == ADS_CLIENT_ID:
         print("  ! LWA_CLIENT_ID and ADS_CLIENT_ID are identical — SP-API and the "
               "Advertising API normally use different apps.")
@@ -3226,6 +3746,8 @@ if __name__ == "__main__":
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         _leak_load_results()
         _leak_start_scheduler()
+        _dup_load_results()
+        _dup_start_scheduler()
     _config_summary()
     print(f"Dashboard on http://{host}:{port}")
     app.run(debug=True, host=host, port=port)
