@@ -3515,9 +3515,10 @@ def leak_export_csv():
                    "registered", "sp_id", "selling_partner_id", "seller_name",
                    "region", "pricing_plan_id", "plan_name"],
         "flow": ["username", "sp_id", "selling_partner_id", "seller_name", "region",
-                 "plan_name", "canceled_at", "canceled_days", "total_rows",
-                 "source_names", "last_row", "sched_on", "sched_total",
-                 "sched_types", "sp_api_connected", "ads_connected"],
+                 "plan_name", "canceled_at", "canceled_days", "has_data",
+                 "total_rows", "found_in", "source_names", "last_row",
+                 "sched_on", "sched_total", "sched_types",
+                 "sp_api_connected", "ads_connected"],
         "stream_active": ["user_id", "username", "stripe_customer", "canceled_at",
                           "canceled_days", "sp_id", "selling_partner_id",
                           "seller_name", "region", "plan_name", "marketplace_id",
@@ -3566,7 +3567,7 @@ FLOW_SKIP_TABLES = {
 }
 
 _FLOW_DISCOVER_QUERY = """
-    select c.table_name, c.column_name
+    select c.table_name, c.column_name, c.data_type
     from information_schema.columns c
     join information_schema.tables t
       on t.table_schema = c.table_schema and t.table_name = c.table_name
@@ -3596,7 +3597,8 @@ _flow_lock = threading.Lock()
 _flow_stop = threading.Event()
 _flow_state = {"running": False, "logs": [], "started_at": 0.0, "finished_at": "",
                "tables": [], "sources": [], "rows": [], "days": LEAK_FLOW_DAYS,
-               "counters": {"scanned": 0, "total": 0, "accounts": 0, "rows": 0}}
+               "counters": {"scanned": 0, "total": 0, "accounts": 0, "rows": 0,
+                            "found": 0}}
 
 
 def _flow_log(level: str, msg: str) -> None:
@@ -3617,7 +3619,7 @@ def _flow_discover() -> list:
             cur.execute("SET statement_timeout = '60s'")
             cur.execute(_FLOW_DISCOVER_QUERY, {"cols": cols})
             for r in cur.fetchall():
-                found.setdefault(r["table_name"], set()).add(r["column_name"])
+                found.setdefault(r["table_name"], {})[r["column_name"]] = r["data_type"]
             cur.execute(_FLOW_SIZE_QUERY)
             for r in cur.fetchall():
                 sizes[r["table_name"]] = (int(r["est_rows"] or 0), int(r["bytes"] or 0))
@@ -3632,9 +3634,31 @@ def _flow_discover() -> list:
             continue
         est, size = sizes.get(table, (0, 0))
         out.append({"table": table, "owner_col": owner, "ts_col": ts,
+                    "owner_type": present.get(owner, ""),
                     "est_rows": est, "bytes": size})
     out.sort(key=lambda r: -r["est_rows"])
     return out
+
+
+FLOW_NUMERIC_TYPES = {"integer", "bigint", "smallint", "numeric", "real",
+                      "double precision"}
+
+
+def _flow_id_list(ids, owner_type: str) -> list:
+    """The id array to bind, matched to the column's type.
+
+    A numeric column will not compare against text, and vice versa; getting
+    this wrong turns an index lookup into an error or a sequential scan.
+    """
+    if (owner_type or "").lower() in FLOW_NUMERIC_TYPES:
+        out = []
+        for i in ids:
+            try:
+                out.append(int(i))
+            except (TypeError, ValueError):
+                continue
+        return out
+    return [str(i) for i in ids]
 
 
 def _flow_owner_index(cache: dict) -> tuple:
@@ -3677,8 +3701,15 @@ def _flow_index_for(owner_col: str, by_sp, by_spid, by_token) -> dict:
     return by_sp
 
 
-def _flow_worker(tables: list, days: int) -> None:
-    """Count recent rows per canceled seller across the chosen tables."""
+def _flow_worker(tables: list, days: int, keep_going: bool = False) -> None:
+    """Which canceled sellers still have data arriving, across the chosen tables.
+
+    The query is restricted to the canceled sellers' own ids rather than
+    grouping the whole table: on a 480-million-row table the difference is an
+    index lookup for a thousand ids against a scan of everything written in the
+    window. Once a seller is known to be receiving data its id is dropped from
+    the list, so each table after the first is cheaper than the last.
+    """
     try:
         with _leak_lock:
             cache = dict(_leak_state.get("cache") or {})
@@ -3688,6 +3719,9 @@ def _flow_worker(tables: list, days: int) -> None:
         by_sp, by_spid, by_token = _flow_owner_index(cache)
         _flow_log("info", f"{len(by_sp):,} canceled seller(s) to watch for, "
                           f"across {len(tables)} table(s), last {days} day(s).")
+        # The ids still worth asking about, per kind of owner column. Sellers
+        # already found are removed unless every table is being scanned.
+        pending = {"sp": set(by_sp), "spid": set(by_spid), "token": set(by_token)}
 
         hits = {}          # account key -> {"acct": rec, "sources": {table: {...}}}
         sources = []       # per-table summary
@@ -3716,17 +3750,30 @@ def _flow_worker(tables: list, days: int) -> None:
                         break
                     table, owner, ts = spec["table"], spec["owner_col"], spec["ts_col"]
                     index = _flow_index_for(owner, by_sp, by_spid, by_token)
+                    kind = ("spid" if owner == "selling_partner_id"
+                            else "token" if owner == "advertiser_id" else "sp")
                     started = time.time()
-                    _flow_log("info", f"[{i}/{len(tables)}] {table} — grouping by {owner}…")
+                    ids = _flow_id_list(pending[kind], spec.get("owner_type", ""))
+                    if not ids:
+                        sources.append({"table": table, "owner_col": owner, "ts_col": ts,
+                                        "accounts": 0, "rows": 0, "seconds": 0.0,
+                                        "error": "", "skipped": True})
+                        with _flow_lock:
+                            _flow_state["counters"]["scanned"] += 1
+                            _flow_state["sources"] = list(sources)
+                        continue
+                    _flow_log("info", f"[{i}/{len(tables)}] {table} — {len(ids):,} id(s) "
+                                      f"against {owner}…")
                     query = psycopg2.sql.SQL(
                         "select {owner} as owner_id, count(*) as n, max({ts}) as last_row "
-                        "from {table} where {ts} >= now() - %(cut)s::interval "
+                        "from {table} "
+                        "where {owner} = ANY(%(ids)s) and {ts} >= now() - %(cut)s::interval "
                         "group by 1"
                     ).format(owner=psycopg2.sql.Identifier(owner),
                              ts=psycopg2.sql.Identifier(ts),
                              table=psycopg2.sql.Identifier(table))
                     try:
-                        cur.execute(query, {"cut": f"{int(days)} days"})
+                        cur.execute(query, {"ids": ids, "cut": f"{int(days)} days"})
                         rows = cur.fetchall()
                     except Exception as exc:
                         conn.rollback()
@@ -3743,7 +3790,7 @@ def _flow_worker(tables: list, days: int) -> None:
                     for r in rows:
                         rec = index.get(str(r["owner_id"]))
                         if not rec:
-                            continue      # live account, or an id we cannot resolve
+                            continue      # an id we cannot resolve back to an account
                         key = str(rec["sp_id"])
                         hit = hits.setdefault(key, {"acct": rec, "sources": {}})
                         src = hit["sources"].setdefault(table, {"n": 0, "last_row": ""})
@@ -3753,15 +3800,37 @@ def _flow_worker(tables: list, days: int) -> None:
                             src["last_row"] = last
                         n_acc += 1
                         n_rows += int(r["n"] or 0)
+                        if not keep_going:
+                            # Answered for this seller; stop asking about it.
+                            pending["sp"].discard(key)
+                            pending["spid"].discard(rec["selling_partner_id"])
+                            for t in (rec["merchant_tokens"] or "").split(","):
+                                pending["token"].discard(t)
                     sources.append({"table": table, "owner_col": owner, "ts_col": ts,
                                     "accounts": n_acc, "rows": n_rows,
                                     "seconds": round(time.time() - started, 1), "error": ""})
                     _flow_log("ok" if not n_acc else "error",
                               f"{table}: {n_acc:,} canceled seller(s), {n_rows:,} row(s) "
-                              f"in {round(time.time() - started, 1)}s")
+                              f"in {round(time.time() - started, 1)}s"
+                              + ("" if keep_going else
+                                 f" · {len(pending['sp']):,} seller(s) still unanswered"))
                     with _flow_lock:
                         _flow_state["counters"]["scanned"] += 1
+                        _flow_state["counters"]["found"] = len(hits)
                         _flow_state["sources"] = list(sources)
+                    if not keep_going and not (pending["sp"] or pending["spid"] or pending["token"]):
+                        rest = tables[i:]
+                        for spec2 in rest:
+                            sources.append({"table": spec2["table"],
+                                            "owner_col": spec2["owner_col"],
+                                            "ts_col": spec2["ts_col"], "accounts": 0,
+                                            "rows": 0, "seconds": 0.0, "error": "",
+                                            "skipped": True})
+                        with _flow_lock:
+                            _flow_state["sources"] = list(sources)
+                        _flow_log("ok", "Every seller has been answered — "
+                                        f"{len(rest)} table(s) left untouched.")
+                        break
 
         grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
         out = []
@@ -3775,6 +3844,10 @@ def _flow_worker(tables: list, days: int) -> None:
             row["source_names"] = ", ".join(s["table"] for s in row["sources"])
             row["total_rows"] = sum(s["n"] for s in row["sources"])
             row["last_row"] = max((s["last_row"] for s in row["sources"]), default="")
+            row["has_data"] = bool(row["total_rows"])
+            # Which table answered first. With early exit that is the only one
+            # checked, so it is "where we found it", not "the only source".
+            row["found_in"] = row["sources"][0]["table"] if row["sources"] else ""
             row["sched_on"] = sc["on"]
             row["sched_total"] = sc["total"]
             row["sched_types"] = ", ".join(sorted(set(sc["types"])))
@@ -3822,7 +3895,8 @@ def flow_tables():
     chosen = _leak_setting("flow_tables", "")
     return jsonify({"ok": True, "tables": tables,
                     "selected": [t for t in chosen.split(",") if t],
-                    "days": _leak_setting_int("flow_days", LEAK_FLOW_DAYS)})
+                    "days": _leak_setting_int("flow_days", LEAK_FLOW_DAYS),
+                    "keep_going": _leak_setting("flow_keep_going", "0") == "1"})
 
 
 @app.route("/api/leak/flow/start", methods=["POST"])
@@ -3844,11 +3918,15 @@ def flow_start():
         days = max(int(payload.get("days") or LEAK_FLOW_DAYS), 1)
     except (TypeError, ValueError):
         days = LEAK_FLOW_DAYS
+    keep_going = bool(payload.get("keep_going"))
     _leak_set_setting("flow_tables", ",".join(wanted))
     _leak_set_setting("flow_days", days)
+    _leak_set_setting("flow_keep_going", 1 if keep_going else 0)
 
     _flow_stop.clear()
-    specs = [known[t] for t in wanted]
+    # Smallest first: cheap tables answer for most sellers, which shrinks the
+    # id list before the expensive ones are reached.
+    specs = sorted((known[t] for t in wanted), key=lambda s: s.get("est_rows") or 0)
     with _flow_lock:
         _flow_state["logs"] = []
         _flow_state["sources"] = []
@@ -3858,8 +3936,9 @@ def flow_start():
         _flow_state["running"] = True
         _flow_state["days"] = days
         _flow_state["counters"] = {"scanned": 0, "total": len(specs),
-                                   "accounts": 0, "rows": 0}
-    threading.Thread(target=_flow_worker, args=(specs, days), daemon=True).start()
+                                   "accounts": 0, "rows": 0, "found": 0}
+    threading.Thread(target=_flow_worker, args=(specs, days, keep_going),
+                     daemon=True).start()
     return jsonify({"ok": True, "count": len(specs)})
 
 
@@ -3885,6 +3964,7 @@ def flow_state():
             "counters": _flow_state["counters"],
             "sources": _flow_state["sources"],
             "days": _flow_state["days"],
+            "keep_going": _leak_setting("flow_keep_going", "0") == "1",
         })
 
 

@@ -3326,6 +3326,7 @@ function leakSqpOffSection(c, s) {
 let flowTables = [];        // [{table, owner_col, ts_col, est_rows, bytes}]
 let flowPicked = new Set();
 let flowLoaded = false;
+let flowShowTables = false;
 let flowSince = 0;
 
 function leakFlowSection(c, s) {
@@ -3336,7 +3337,6 @@ function leakFlowSection(c, s) {
     seller: r => String(r.sp_id || ''),
     canceled: r => r.canceled_at || '',
     rows: r => r.total_rows || 0,
-    sources: r => (r.sources || []).length,
     last: r => r.last_row || '',
     sched: r => r.sched_on || 0,
     apis: r => (r.sp_api_connected ? 2 : 0) + (r.ads_connected ? 1 : 0),
@@ -3345,11 +3345,10 @@ function leakFlowSection(c, s) {
     <thead><tr>
       ${leakTh('flow', 'username', 'Account')}
       ${leakTh('flow', 'seller', 'Seller ID')}
-      ${leakTh('flow', 'canceled', 'Canceled', 'When the last Stripe subscription was canceled')}
-      ${leakTh('flow', 'rows', 'Rows', 'Rows written for this seller in the window, across every scanned table')}
-      ${leakTh('flow', 'sources', 'Coming from', 'Which tables the rows landed in, largest first')}
+      ${leakTh('flow', 'canceled', 'Inactive for', 'How long since the last Stripe subscription was canceled')}
+      ${leakTh('flow', 'rows', 'Data arriving', 'Whether any row was written for this seller in the window')}
       ${leakTh('flow', 'last', 'Last row')}
-      ${leakTh('flow', 'sched', 'Schedulers', 'Schedulers still enabled, of how many exist')}
+      ${leakTh('flow', 'sched', 'Schedulers', 'Schedulers still enabled, of how many exist. Hover for their names.')}
       ${leakTh('flow', 'apis', 'APIs', 'Whether the seller still has SP-API and Advertising credentials stored')}
       ${leakTh('flow', 'state', '')}
     </tr></thead><tbody>` + rows.map(r => `<tr>
@@ -3357,22 +3356,22 @@ function leakFlowSection(c, s) {
             onclick="leakCopyText(this,'${esc(r.username || '')}')">${esc(r.username || '—')}</span></td>
       <td class="mono"><span class="ms-copy" title="${esc(r.seller_name || '')} ${esc(r.region || '')}"
             onclick="msCopySeller(this,'${esc(r.sp_id)}')">${esc(r.sp_id)}</span></td>
-      <td class="mono">${esc((r.canceled_at || '').slice(0, 10))}
-          <span class="upg-detail">${r.canceled_days ?? '?'}d</span></td>
-      <td class="mono">${(r.total_rows || 0).toLocaleString()}</td>
-      <td>${(r.sources || []).map(x =>
-            `<span class="flow-src" title="last row ${esc(x.last_row || '')}">${esc(x.table)}
-               <span class="upg-detail">${x.n.toLocaleString()}</span></span>`).join('')}</td>
+      <td class="mono">${r.canceled_days ?? '?'}d
+          <span class="upg-detail">${esc((r.canceled_at || '').slice(0, 10))}</span></td>
+      <td><span class="dup-bad">YES</span>
+          <span class="upg-detail" title="${esc(r.source_names || '')}">${
+            (r.total_rows || 0).toLocaleString()} rows · ${esc(r.found_in || '')}</span></td>
       <td class="mono">${esc((r.last_row || '').slice(0, 16))}</td>
       <td class="mono" title="${esc(r.sched_types || 'none enabled')}">
         <span class="${r.sched_on ? 'leak-on' : 'leak-off'}">${r.sched_on}</span>
         <span class="upg-detail">/${r.sched_total}</span></td>
       <td>${r.sp_api_connected ? '<span class="ms-pill act">SP-API</span>'
                                : '<span class="ms-pill na">no SP-API</span>'}
-          ${r.ads_connected ? '<span class="ms-pill act">Ads</span>' : ''}</td>
+          ${r.ads_connected ? '<span class="ms-pill act">Ads</span>'
+                            : '<span class="ms-pill na">no Ads</span>'}</td>
       <td>${r.in_grace ? '<span class="ms-pill pend">PROTECTED</span>' : ''}</td>
     </tr>`).join('') + `</tbody></table></div>`
-    : `<span class="token-idle">Not scanned yet — pick the tables and press Scan.</span>`;
+    : `<span class="token-idle">Not scanned yet — press Scan.</span>`;
 
   return `<div class="leak-sec">
     <div class="leak-sec-hdr">
@@ -3381,25 +3380,32 @@ function leakFlowSection(c, s) {
         still receiving data</span>
       <span class="leak-scope">last
         <input type="number" id="leak-flow-days" min="1" max="365" value="7"
-               title="How far back to count rows in each table">d</span>
-      <button class="btn btn-sm btn-ghost" onclick="flowPickAll(true)">All</button>
-      <button class="btn btn-sm btn-ghost" onclick="flowPickAll(false)">None</button>
-      <button class="btn btn-sm btn-ghost" onclick="flowLoadTables(true)"
-        title="Ask the database again which tables can hold seller data">↻ Tables</button>
+               title="How far back to look for rows">d</span>
+      <label class="leak-scope" title="Keep checking every table even after a seller
+        is known to be receiving data. Slower, and only useful to see every source.">
+        <input type="checkbox" id="leak-flow-all" style="width:auto">every source</label>
       <button class="btn btn-sm btn-primary" id="leak-flow-go" onclick="flowStart()">Scan</button>
       <button class="btn btn-sm btn-ghost" id="leak-flow-stop" onclick="flowStop()" disabled>Stop</button>
       <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=flow">⭳ CSV</a>
+      <button class="btn btn-sm btn-ghost" onclick="flowToggleTables()"
+        id="leak-flow-pick">Tables</button>
     </div>
     <div class="leak-sec-body">
-      <p class="leak-hint">Every table with an owner column and a timestamp is a place
-        data can land. Pick the ones to count — the estimate next to each is its whole
-        size, so the big ones take minutes.</p>
-      <div id="leak-flow-tables" class="flow-tables"></div>
+      <p class="leak-hint">Asks each table only about the canceled sellers, and stops
+        asking about one as soon as its answer is known — so this is a few index lookups
+        per table, not a scan of everything written this week.</p>
+      <div id="leak-flow-tables" class="flow-tables ${flowShowTables ? '' : 'hidden'}"></div>
       <div id="leak-flow-log" class="ms-log" style="height:110px;margin:.5rem 0"></div>
       <div id="leak-flow-sources"></div>
       ${body}
     </div>
   </div>`;
+}
+
+function flowToggleTables() {
+  flowShowTables = !flowShowTables;
+  const box = document.getElementById('leak-flow-tables');
+  if (box) box.classList.toggle('hidden', !flowShowTables);
 }
 
 function flowSize(t) {
@@ -3413,11 +3419,17 @@ function flowSize(t) {
 function flowRenderTables() {
   const box = document.getElementById('leak-flow-tables');
   if (!box) return;
+  const head = `<div style="flex-basis:100%;margin-bottom:.25rem">
+    <span class="leak-hint">Where to look. Untick anything that is not a data source.</span>
+    <button class="btn btn-sm btn-ghost" onclick="flowPickAll(true)">All</button>
+    <button class="btn btn-sm btn-ghost" onclick="flowPickAll(false)">None</button>
+    <button class="btn btn-sm btn-ghost" onclick="flowLoadTables(true)"
+      title="Ask the database again which tables can hold seller data">↻ Rediscover</button></div>`;
   if (!flowTables.length) {
-    box.innerHTML = `<span class="token-idle">No scannable tables found.</span>`;
+    box.innerHTML = head + `<span class="token-idle">No scannable tables found.</span>`;
     return;
   }
-  box.innerHTML = flowTables.map(t => `
+  box.innerHTML = head + flowTables.map(t => `
     <label class="flow-table${flowPicked.has(t.table) ? ' on' : ''}"
            title="owner ${esc(t.owner_col)} · time ${esc(t.ts_col)} · ${flowSize(t)}">
       <input type="checkbox" ${flowPicked.has(t.table) ? 'checked' : ''}
@@ -3448,6 +3460,8 @@ async function flowLoadTables(refresh) {
       flowPicked = new Set((d.selected || []).length ? d.selected : flowTables.map(t => t.table));
       const el = document.getElementById('leak-flow-days');
       if (el && el.value === '7') el.value = d.days;
+      const all = document.getElementById('leak-flow-all');
+      if (all) all.checked = !!d.keep_going;
       flowLoaded = true;
     }
     flowRenderTables();
@@ -3457,13 +3471,14 @@ async function flowLoadTables(refresh) {
 
 async function flowStart() {
   const days = parseInt((document.getElementById('leak-flow-days') || {}).value) || 7;
+  const keep = !!(document.getElementById('leak-flow-all') || {}).checked;
   leakUiLog('info', `Scanning ${flowPicked.size} table(s) for data still arriving, last ${days}d…`);
   flowSince = 0;
   const log = document.getElementById('leak-flow-log');
   if (log) log.innerHTML = '';
   const d = await (await fetch('/api/leak/flow/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tables: [...flowPicked], days }),
+    body: JSON.stringify({ tables: [...flowPicked], days, keep_going: keep }),
   })).json();
   if (!d.ok) leakUiLog('error', 'Flow scan: ' + d.error);
 }
@@ -3481,6 +3496,7 @@ function flowRenderSources(sources) {
     <span class="flow-src ${x.error ? 'bad' : x.accounts ? 'hit' : ''}"
           title="${esc(x.error || `${x.owner_col} · ${x.seconds}s`)}">
       ${esc(x.table)} <span class="upg-detail">${x.error ? 'error'
+        : x.skipped ? 'skipped'
         : x.accounts ? `${x.accounts} seller(s) · ${x.rows.toLocaleString()}` : 'clean'}</span>
     </span>`).join('') + `</div>`;
 }
@@ -3507,7 +3523,8 @@ async function flowPoll() {
     const c = s.counters || {};
     if (sub) {
       sub.textContent = s.running
-        ? `scanning ${c.scanned}/${c.total} table(s) · ${leakElapsed(s.elapsed)}`
+        ? `table ${c.scanned}/${c.total} · ${(c.found || 0).toLocaleString()} found · ` +
+          leakElapsed(s.elapsed)
         : `${(c.accounts || 0).toLocaleString()} canceled seller(s) still receiving data` +
           (c.rows ? ` · ${c.rows.toLocaleString()} row(s) in ${s.days}d` : '');
     }
