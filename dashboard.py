@@ -2132,8 +2132,9 @@ _leak_state = {
     "started_at": 0.0,
     "finished_at": "",
     "counters": {"customers": 0, "canceled": 0, "live": 0, "mapping_rows": 0,
-                 "stream": 0, "sqp": 0, "no_sub": 0},
-    "lists": {"stream": [], "sqp": [], "no_sub": [], "stream_active": []},
+                 "stream": 0, "sqp": 0, "sqp_off": 0, "no_sub": 0},
+    "lists": {"stream": [], "sqp": [], "sqp_off": [], "no_sub": [],
+              "stream_active": []},
     "candidates": [],
     "warnings": [],
     # Mapping + Stripe verdicts from the last full run, so one list can be
@@ -2435,26 +2436,53 @@ def _leak_stream_rows(pairs: list, canceled: dict, streaming: dict, grace_days: 
     return out
 
 
+def _leak_sched_state(sched_rows: list) -> dict:
+    """Per seller: how many of its SQP schedulers are on, and how many exist.
+
+    Distinct from _leak_sched_counts below, which asks the database how many
+    scheduler rows a seller has left after a removal.
+    """
+    counts = {}
+    for r in sched_rows:
+        sp = r.get("amazon_selling_partner_id")
+        if sp is None:
+            continue
+        c = counts.setdefault(str(sp), {"on": 0, "total": 0})
+        c["total"] += 1
+        if r.get("is_enabled") is True or r.get("is_enabled") == "t":
+            c["on"] += 1
+    return counts
+
+
 def _leak_sqp_rows(pairs: list, canceled: dict, sqp_ingest: dict,
-                   sqp_enabled: set, grace_days: int) -> list:
-    """Canceled sellers with an SQP scheduler on, or SQP rows still landing."""
-    out = []
+                   sched: dict, grace_days: int) -> tuple:
+    """Canceled sellers with an SQP scheduler on, or SQP rows still landing.
+
+    Returns (still_on, all_off). A seller with nothing left enabled has nothing
+    for this card to switch off, so it is split into its own list rather than
+    padding the actionable one.
+    """
+    on_rows, off_rows = [], []
     for _m, base in pairs:
         sp_id = str(base["sp_id"])
-        if sp_id not in sqp_ingest and sp_id not in sqp_enabled:
+        counts = sched.get(sp_id, {"on": 0, "total": 0})
+        if sp_id not in sqp_ingest and not counts["total"]:
             continue
         row = dict(base)
         row["canceled_at"] = canceled[base["stripe_customer"]]
         ing = sqp_ingest.get(sp_id)
-        row["sqp_scheduler_enabled"] = "yes" if sp_id in sqp_enabled else "no"
+        row["sqp_sched_on"] = counts["on"]
+        row["sqp_sched_total"] = counts["total"]
+        row["sqp_scheduler_enabled"] = "yes" if counts["on"] else "no"
         row["sqp_rows_14d"] = int(ing["n"]) if ing else 0
         row["sqp_last_ingest"] = str(ing["last_ingest"]) if ing else ""
         row["sqp_last_period"] = str(ing["last_period"]) if ing else ""
-        out.append(row)
-    out.sort(key=lambda r: -r["sqp_rows_14d"])
-    for r in out:
-        _leak_grace(r, grace_days)
-    return out
+        (on_rows if counts["on"] else off_rows).append(row)
+    for group in (on_rows, off_rows):
+        group.sort(key=lambda r: -r["sqp_rows_14d"])
+        for r in group:
+            _leak_grace(r, grace_days)
+    return on_rows, off_rows
 
 
 def _leak_stream_candidates(pairs: list, canceled: dict, grace_days: int) -> list:
@@ -2535,20 +2563,20 @@ def _leak_worker() -> None:
         streaming = _leak_index_traffic(db["traffic"])
         sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in db["sqp"]
                       if r.get("amazon_selling_partner_id") is not None}
-        sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in db["sched"]
-                       if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
+        sched = _leak_sched_state(db["sched"])
 
         grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
         pairs, no_sub = _leak_split_mapping(mapping, by_customer, canceled)
         stream_hits = _leak_stream_rows(pairs, canceled, streaming, grace_days)
-        sqp_hits = _leak_sqp_rows(pairs, canceled, sqp_ingest, sqp_enabled, grace_days)
+        sqp_hits, sqp_off = _leak_sqp_rows(pairs, canceled, sqp_ingest, sched, grace_days)
         stream_candidates = _leak_stream_candidates(pairs, canceled, grace_days)
         held = sum(1 for r in sqp_hits if r["in_grace"]) + \
                sum(1 for r in stream_hits if r["in_grace"])
 
         with _leak_lock:
             _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits,
-                                    "no_sub": no_sub, "stream_active": []}
+                                    "sqp_off": sqp_off, "no_sub": no_sub,
+                                    "stream_active": []}
             _leak_state["candidates"] = stream_candidates
             # Kept so a single list can be refreshed later without paying for
             # the Stripe pass and the scan belonging to the other list.
@@ -2557,7 +2585,8 @@ def _leak_worker() -> None:
             _leak_state["counters"] = {
                 "customers": len(by_customer), "canceled": len(canceled),
                 "live": len(live), "mapping_rows": len(mapping),
-                "stream": len(stream_hits), "sqp": len(sqp_hits), "no_sub": len(no_sub),
+                "stream": len(stream_hits), "sqp": len(sqp_hits),
+                "sqp_off": len(sqp_off), "no_sub": len(no_sub),
                 "held_in_grace": held, "grace_days": grace_days,
             }
             _leak_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -2623,10 +2652,12 @@ def leak_start():
         _leak_state["warnings"] = []
         # Clear previous results: a run that aborts must not leave last week's
         # lists on screen where they could be read as current.
-        _leak_state["lists"] = {"stream": [], "sqp": [], "no_sub": [], "stream_active": []}
+        _leak_state["lists"] = {"stream": [], "sqp": [], "sqp_off": [],
+                                "no_sub": [], "stream_active": []}
         _leak_state["candidates"] = []
         _leak_state["counters"] = {"customers": 0, "canceled": 0, "live": 0,
-                                   "mapping_rows": 0, "stream": 0, "sqp": 0, "no_sub": 0}
+                                   "mapping_rows": 0, "stream": 0, "sqp": 0,
+                                   "sqp_off": 0, "no_sub": 0}
         _leak_state["finished_at"] = ""
         _leak_state["started_at"] = time.time()
         _leak_state["running"] = True
@@ -2678,13 +2709,15 @@ def _leak_refresh_worker(which: str) -> None:
                                          {"days": LEAK_SQP_DAYS})
                     sqp_ingest = {str(r["amazon_selling_partner_id"]): r for r in ingest
                                   if r.get("amazon_selling_partner_id") is not None}
-                    sqp_enabled = {str(r["amazon_selling_partner_id"]) for r in sched
-                                   if r.get("is_enabled") is True or r.get("is_enabled") == "t"}
-                    rows = _leak_sqp_rows(pairs, canceled, sqp_ingest, sqp_enabled, grace_days)
+                    rows, off_rows = _leak_sqp_rows(pairs, canceled, sqp_ingest,
+                                                    _leak_sched_state(sched), grace_days)
         with _leak_lock:
             before = len(_leak_state["lists"].get(which) or [])
             _leak_state["lists"][which] = rows
             _leak_state["counters"][which] = len(rows)
+            if which == "sqp":
+                _leak_state["lists"]["sqp_off"] = off_rows
+                _leak_state["counters"]["sqp_off"] = len(off_rows)
         _leak_save_results()
         _leak_log("ok", f"{label} list refreshed: {before:,} → {len(rows):,} seller row(s). "
                         "Stripe statuses are from the last full run.")
@@ -3469,8 +3502,14 @@ def leak_export_csv():
                    "stream_rows_7d", "stream_last_ingest"],
         "sqp": ["user_id", "username", "stripe_customer", "canceled_at", "sp_id",
                 "selling_partner_id", "seller_name", "region", "pricing_plan_id",
-                "plan_name", "sqp_scheduler_enabled", "sqp_rows_14d",
+                "plan_name", "sqp_scheduler_enabled", "sqp_sched_on",
+                "sqp_sched_total", "sqp_rows_14d",
                 "sqp_last_ingest", "sqp_last_period"],
+        "sqp_off": ["user_id", "username", "stripe_customer", "canceled_at", "sp_id",
+                    "selling_partner_id", "seller_name", "region", "pricing_plan_id",
+                    "plan_name", "sqp_scheduler_enabled", "sqp_sched_on",
+                    "sqp_sched_total", "sqp_rows_14d",
+                    "sqp_last_ingest", "sqp_last_period"],
         "no_sub": ["user_id", "username", "stripe_customer", "trial_started",
                    "registered", "sp_id", "selling_partner_id", "seller_name",
                    "region", "pricing_plan_id", "plan_name"],

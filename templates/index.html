@@ -247,6 +247,8 @@
       align-items: center; gap: .3rem; }
     .leak-scope input { width: 58px; background: #0b0d13; border: 1px solid #252a3a;
       border-radius: 6px; color: #e2e8f0; font-size: .74rem; padding: .25rem .35rem; }
+    .leak-on { color: #fbbf24; font-weight: 700; }
+    .leak-off { color: #4ade80; font-weight: 700; }
     .leak-more { cursor: pointer; color: #60a5fa; border-bottom: 1px dotted #60a5fa55; }
     .leak-more:hover { color: #93c5fd; }
     .leak-sub td { background: #0d0f18; }
@@ -879,6 +881,16 @@
                  value="14" min="0" onchange="leakSaveSettings()">
           <span style="color:#475569;font-size:.78rem">days — accounts canceled more
             recently than this cannot be actioned</span>
+          <div class="sep"></div>
+          <div class="rep-safety-wrap" title="Hide the accounts that are still inside the protection window">
+            <span style="color:#475569">Hide protected</span>
+            <span class="rep-sw-side rep-sw-active" id="leak-hp-off">OFF</span>
+            <label class="rep-toggle">
+              <input type="checkbox" id="leak-hide-protected" onchange="leakToggleProtected()">
+              <span class="rep-toggle-track"><span class="rep-toggle-thumb"></span></span>
+            </label>
+            <span class="rep-sw-side" id="leak-hp-on">ON</span>
+          </div>
         </div>
         <div class="ms-controls">
           <div class="rep-safety-wrap" title="Run the check automatically once a week while the dashboard is open">
@@ -2666,9 +2678,20 @@ setInterval(rmPoll, 1000);
 rmPoll();
 // ── Disable Fetching for Inactive Users (SPB-629) ─────────────────────────────
 let leakSince = 0;
-const leakOpen = { stream: false, sqp: false };
+const leakOpen = { stream: false, sqp: false, sqp_off: false };
+// Protected accounts cannot be actioned, so hiding them makes the lists show
+// only what there is something to do about. Purely a view filter.
+let leakHideProtected = false;
+
+function leakToggleProtected() {
+  leakHideProtected = document.getElementById('leak-hide-protected').checked;
+  document.getElementById('leak-hp-off').classList.toggle('rep-sw-active', !leakHideProtected);
+  document.getElementById('leak-hp-on').classList.toggle('rep-sw-active', leakHideProtected);
+  leakUiLog('info', leakHideProtected ? 'Protected accounts hidden.' : 'Showing protected accounts.');
+  leakRenderResults(leakLastState);
+}
 // Accounts whose seller-id list is expanded, per list.
-const leakRowOpen = { stream: new Set(), sqp: new Set() };
+const leakRowOpen = { stream: new Set(), sqp: new Set(), sqp_off: new Set() };
 
 function leakToggle(which) {
   leakOpen[which] = !leakOpen[which];
@@ -2682,7 +2705,7 @@ function leakToggle(which) {
 // One click sorts ascending, a second click reverses. Held per list so sorting
 // one table does not disturb another, and so a re-render keeps the order.
 const leakSort = { stream: { k: '', d: 1 }, sqp: { k: '', d: 1 },
-                   stream_active: { k: '', d: 1 } };
+                   sqp_off: { k: '', d: 1 }, stream_active: { k: '', d: 1 } };
 
 function leakSortBy(which, key) {
   const s = leakSort[which];
@@ -2727,7 +2750,8 @@ function leakUiLog(level, msg) {
 // "Protection" in the UI is the in_grace/grace_days fields below.
 // Selection is per ACCOUNT — one canceled customer can own several sellers, and
 // the decision is made about the account, not each seller row.
-const leakSel = { stream: new Set(), sqp: new Set(), stream_active: new Set() };
+const leakSel = { stream: new Set(), sqp: new Set(), sqp_off: new Set(),
+                  stream_active: new Set() };
 
 function leakAcctKey(r) { return String(r.stripe_customer || r.username || r.user_id); }
 
@@ -2766,27 +2790,55 @@ const LEAK_METRIC_HEAD = {
                         'The smaller numbers beside it are those rows per day, oldest first — ' +
                         'a steady row means a live stream, one spike means a backfill.'],
   sqp: ['Rows · 14d', 'SQP rows this account\'s sellers received in the last 14 days.'],
+  sqp_off: ['Rows · 14d', 'SQP rows that still landed in the last 14 days, although every '
+                          + 'scheduler is off — already-queued reports do that.'],
 };
 
-function leakAcctRows(which, groups) {
-  if (!groups.length) return `<span class="token-idle">No accounts.</span>`;
+// Accounts the select-all box speaks for: protected ones cannot be actioned,
+// so leaving them out is what makes "all selected" reachable and clearable.
+function leakSelectable(which, groups) {
+  return groups.filter(g => leakActionable(which, g));
+}
+
+function leakAcctRows(which, groups, opts) {
+  opts = opts || {};
+  if (leakHideProtected) groups = groups.filter(g => !g.in_grace);
+  if (!groups.length) {
+    return `<span class="token-idle">No accounts${leakHideProtected ? ' (protected ones are hidden)' : ''}.</span>`;
+  }
   const [mLabel, mHint] = LEAK_METRIC_HEAD[which];
+  const sched = which === 'sqp' || which === 'sqp_off';
   groups = leakApplySort(which, groups, {
     username: g => g.username || '',
     plan: g => g.plan || '',
     canceled: g => g.canceled_at || '',
     sellers: g => g.rows.length,
+    sched: g => leakSchedOn(g),
     metric: g => leakMetric(which, g),
     state: g => (g.in_grace ? 1 : 0),
   });
+  // Render the header box checked when everything selectable is selected, so
+  // one click clears it. Without this it always drew unchecked, and clicking
+  // it re-selected everything instead of unselecting.
+  const pick = leakSelectable(which, groups);
+  const chosen = pick.filter(g => leakSel[which] && leakSel[which].has(g.key)).length;
+  const allOn = pick.length > 0 && chosen === pick.length;
+  const someOn = chosen > 0 && !allOn;
+  const head = opts.selectable === false ? '<th style="width:30px"></th>'
+    : `<th style="width:30px"><input type="checkbox" ${allOn ? 'checked' : ''}
+         ${pick.length ? '' : 'disabled'} onchange="leakToggleAll('${which}',this)"
+         title="${allOn ? 'Clear the selection' : 'Select every account that can be actioned'}"
+         ${someOn ? 'data-some="1"' : ''}></th>`;
   return `<div class="sqp-list-wrap"><table class="ms-table">
     <thead><tr>
-      <th style="width:30px"><input type="checkbox" onchange="leakToggleAll('${which}',this)"></th>
+      ${head}
       ${leakTh(which, 'username', 'Account', 'Click to copy the email')}
       ${leakTh(which, 'plan', 'Plan')}
       ${leakTh(which, 'canceled', 'Canceled', 'Date the last Stripe subscription was canceled, and how many days ago')}
       ${leakTh(which, 'sellers', 'Seller ID', 'The seller this row is about. An account ' +
         'with several sellers shows a count — click it to list them.')}
+      ${sched ? leakTh(which, 'sched', 'SQP on', 'How many of this account\'s SQP ' +
+        'schedulers are enabled, out of how many exist.') : ''}
       ${leakTh(which, 'metric', mLabel, mHint)}
       ${leakTh(which, 'state', '')}
     </tr></thead><tbody>` + groups.map(g => {
@@ -2800,7 +2852,8 @@ function leakAcctRows(which, groups) {
       const badge = g.in_grace && g.canceled_at
         ? `<span class="ms-pill pend" title="Canceled less than ${leakGraceDays} days ago — protected from action">PROTECTED</span>`
         : '';
-      const box = `<input type="checkbox" ${sel ? 'checked' : ''} ${can ? '' : 'disabled'}
+      const box = opts.selectable === false ? ''
+        : `<input type="checkbox" ${sel ? 'checked' : ''} ${can ? '' : 'disabled'}
               onchange="leakToggleAcct('${which}','${esc(g.key)}',this)">`;
       const daily = (g.rows[0] && g.rows[0].stream_daily) || null;
       const spark = daily && daily.length
@@ -2815,10 +2868,25 @@ function leakAcctRows(which, groups) {
         <td>${esc(g.plan || '—')}</td>
         <td class="mono">${when}</td>
         <td class="mono">${leakSellerCell(which, g, open)}</td>
+        ${sched ? `<td class="mono">${leakSchedCell(g)}</td>` : ''}
         <td class="mono">${metric}${spark}</td>
         <td>${badge}</td>
-      </tr>` + (open ? leakSellerRow(which, g) : '');
+      </tr>` + (open ? leakSellerRow(which, g, sched) : '');
     }).join('') + `</tbody></table></div>`;
+}
+
+// How many SQP schedulers this account still has switched on, out of how many
+// exist — the number the Stop fetching call actually has to remove.
+function leakSchedOn(g) {
+  return g.rows.reduce((a, r) => a + (r.sqp_sched_on || 0), 0);
+}
+
+function leakSchedCell(g) {
+  const on = leakSchedOn(g);
+  const total = g.rows.reduce((a, r) => a + (r.sqp_sched_total || 0), 0);
+  if (!total) return `<span class="upg-detail" title="No SQP scheduler rows at all">none</span>`;
+  return `<span class="${on ? 'leak-on' : 'leak-off'}">${on}</span>` +
+         `<span class="upg-detail">/${total}</span>`;
 }
 
 // One seller: show its id, click to copy. Several: a count that expands, since
@@ -2833,15 +2901,16 @@ function leakSellerCell(which, g, open) {
             title="Show this account's seller ids">${g.rows.length} sellers ${open ? '▾' : '▸'}</span>`;
 }
 
-function leakSellerRow(which, g) {
+function leakSellerRow(which, g, sched) {
   const metricKey = which === 'stream' ? 'stream_rows_7d' : 'sqp_rows_14d';
-  return `<tr class="leak-sub"><td></td><td colspan="6">
+  return `<tr class="leak-sub"><td></td><td colspan="${sched ? 7 : 6}">
     <div class="leak-seller-list">${g.rows.map(r => `
       <span class="leak-seller">
         <span class="ms-copy" title="Click to copy the seller id"
               onclick="msCopySeller(this,'${esc(r.sp_id)}')">${esc(r.sp_id)}</span>
         <span class="upg-detail">${esc(r.seller_name || '')}${r.region ? ' · ' + esc(r.region) : ''}
-          · ${Number(r[metricKey] || 0).toLocaleString()} rows</span>
+          · ${Number(r[metricKey] || 0).toLocaleString()} rows${
+          sched ? ` · SQP ${r.sqp_sched_on || 0}/${r.sqp_sched_total || 0}` : ''}</span>
       </span>`).join('')}</div>
   </td></tr>`;
 }
@@ -3162,40 +3231,6 @@ async function leakStopFetching(mode) {
   }
 }
 
-async function leakTestRemove() {
-  const sp = document.getElementById('leak-test-sp').value.trim();
-  const out = document.getElementById('leak-action-out');
-  if (!sp) { out.innerHTML = `<div class="leak-warn">Enter one seller id to probe with.</div>`;
-             leakUiLog('warn', 'Probe: no seller id entered.'); return; }
-  out.innerHTML = `<span class="token-idle">Probing…</span>`;
-  leakUiLog('info', `Probing ${leakRemovePath} with seller ${sp}…`);
-  try {
-    const r = await fetch('/api/leak/remove-test', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sp_id: sp, method: document.getElementById('leak-method').value }),
-    });
-    const d = await r.json();
-    if (!d.ok) { out.innerHTML = `<div class="leak-warn">${esc(d.error)}</div>`;
-                 leakUiLog('error', 'Probe: ' + d.error); return; }
-    leakUiLog(d.status >= 200 && d.status < 300 ? 'ok' : 'error',
-              `Probe ${d.method} → ${d.status}` +
-              (d.rows_before !== null && d.rows_before !== undefined
-                ? ` · scheduler_config ${d.rows_before} → ${d.rows_after === null ? '?' : d.rows_after}` : ''));
-    out.innerHTML =
-      `<div class="${d.status >= 200 && d.status < 300 && d.rows_after === 0 ? 'leak-gap' : 'leak-warn'}">
-         ${d.method} ${esc(d.url)} → <strong>${d.status}</strong>` +
-         (d.rows_before !== null && d.rows_before !== undefined
-           ? ` · scheduler_config rows ${d.rows_before} → ${d.rows_after === null ? '?' : d.rows_after}` : '') +
-         `<br>${esc(d.hint)}</div>
-       <div class="leak-sql">sent: ${esc(JSON.stringify(d.sent))}
-
-response: ${esc(d.response || '(empty)')}</div>`;
-  } catch (e) {
-    out.innerHTML = `<div class="leak-warn">${esc(e.message)}</div>`;
-    leakUiLog('error', 'Probe failed: ' + e.message);
-  }
-}
-
 let leakLastState = { lists: { stream: [], sqp: [] }, counters: {} };
 let leakRemovePath = '/admin/scheduler/remove';
 
@@ -3236,8 +3271,6 @@ function leakStreamSection(c, s) {
         title="Ask the Ads API which of the canceled accounts are really subscribed">Check</button>
       <button class="btn btn-sm btn-ghost" id="leak-str-stop" onclick="leakStreamsStop()" disabled>Stop</button>
       <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=stream_active">⭳ CSV</a>
-      <button class="btn btn-sm btn-ghost" onclick="leakStreamsArchive(true)"
-        title="Archive one selected profile first, to see what happens">Probe one</button>
       <button class="btn btn-sm btn-red" onclick="leakStreamsArchive(false)"
         title="Archive every live subscription of the selected profiles, then re-read to confirm">Deactivate</button>
     </div>
@@ -3250,9 +3283,36 @@ function leakStreamSection(c, s) {
   </div>`;
 }
 
+// Sellers whose every SQP scheduler is already off. They still show SQP rows
+// from the last 14 days, but there is nothing here to switch off, so they are
+// listed apart rather than padding the actionable list.
+function leakSqpOffSection(c, s) {
+  const rows = (s.lists || {}).sqp_off || [];
+  return `<div class="leak-sec-body leak-subpanel">
+    <div class="leak-sec-hdr" style="padding:0 0 .5rem">
+      <span class="leak-sec-title" style="color:#64748b">Disabled</span>
+      <span class="leak-sec-sub">${(c.sqp_off || rows.length || 0).toLocaleString()}
+        seller row(s) · every SQP scheduler already off</span>
+      <button class="btn btn-sm btn-ghost" id="leak-tog-sqp_off" onclick="leakToggle('sqp_off')">
+        ${leakOpen.sqp_off ? 'Hide' : 'Show'}</button>
+      <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=sqp_off">⭳ CSV</a>
+    </div>
+    <div class="leak-sec-body ${leakOpen.sqp_off ? '' : 'hidden'}" id="leak-body-sqp_off"
+         style="padding:0">
+      <p class="leak-hint">Nothing to stop here — these appear only because SQP rows
+        landed in the last ${s.sqp_days || 14} days, which already-queued reports can
+        still do after the scheduler is gone.</p>
+      ${leakAcctRows('sqp_off', leakGroup(rows), { selectable: false })}
+    </div>
+  </div>`;
+}
+
 function leakStreamsSection() {
-  const all = (leakLastState.lists || {}).stream_active || [];
+  let all = (leakLastState.lists || {}).stream_active || [];
+  if (leakHideProtected) all = all.filter(r => !r.in_grace);
   const sel = leakSel.stream_active;
+  const pick = all.filter(r => !r.in_grace);
+  const allOn = pick.length > 0 && pick.every(r => sel.has(r.key));
   const rows = leakApplySort('stream_active', all, {
     username: r => r.username || '',
     canceled: r => r.canceled_at || '',
@@ -3263,7 +3323,9 @@ function leakStreamsSection() {
   });
   const body = rows.length ? `<div class="sqp-list-wrap"><table class="ms-table">
     <thead><tr>
-      <th style="width:30px"><input type="checkbox" onchange="leakStreamsAll(this)"></th>
+      <th style="width:30px"><input type="checkbox" ${allOn ? 'checked' : ''}
+            ${pick.length ? '' : 'disabled'} onchange="leakStreamsAll(this)"
+            title="${allOn ? 'Clear the selection' : 'Select every profile that can be archived'}"></th>
       ${leakTh('stream_active', 'username', 'Account')}
       ${leakTh('stream_active', 'canceled', 'Canceled')}
       ${leakTh('stream_active', 'marketplace', 'Marketplace')}
@@ -3311,10 +3373,6 @@ function leakSqpSection(c, s) {
       <select id="leak-method" class="ms-filter-input" style="width:90px">
         <option value="POST">POST</option><option value="DELETE">DELETE</option>
       </select>
-      <input type="text" id="leak-test-sp" class="ms-filter-input" style="width:130px"
-             placeholder="seller id to probe">
-      <button class="btn btn-sm btn-ghost" onclick="leakTestRemove()"
-        title="Probe the remove endpoint against one seller before acting in bulk">Probe</button>
       <button class="btn btn-sm btn-ghost" onclick="leakCopyEmails()"
         title="Copy the email addresses of every selected account, from all lists">⧉ Emails</button>
       <button class="btn btn-sm btn-ghost" onclick="leakStopFetching('sql')"
@@ -3325,6 +3383,7 @@ function leakSqpSection(c, s) {
     <div class="leak-sec-body ${leakOpen.sqp ? '' : 'hidden'}" id="leak-body-sqp">
       ${leakAcctRows('sqp', leakGroup((s.lists || {}).sqp || []))}
     </div>
+    ${leakSqpOffSection(c, s)}
     <div class="leak-sec-body leak-subpanel">
       <p class="leak-hint">The endpoint <strong>deletes</strong> <code>scheduler_config</code>;
         the SQL only disables it, which is reversible. Every call is verified against the
@@ -3339,10 +3398,11 @@ let leakRenderedSig = '';
 
 function leakSig(s) {
   const c = s.counters || {};
-  return [s.finished_at, s.running, c.stream, c.sqp, s.grace_days,
-          leakSel.stream.size, leakSel.sqp.size,
-          leakOpen.stream, leakOpen.sqp,
-          leakRowOpen.stream.size, leakRowOpen.sqp.size].join('|');
+  return [s.finished_at, s.running, c.stream, c.sqp, c.sqp_off, s.grace_days,
+          leakSel.stream.size, leakSel.sqp.size, leakHideProtected,
+          leakOpen.stream, leakOpen.sqp, leakOpen.sqp_off,
+          leakRowOpen.stream.size, leakRowOpen.sqp.size,
+          leakRowOpen.sqp_off.size].join('|');
 }
 
 function leakRenderResults(s) {
@@ -3362,7 +3422,7 @@ function leakRenderResults(s) {
   // Same for the inputs in the headers — a re-render used to blank the seller
   // being typed into the probe box and reset the method back to POST.
   const keepVals = {};
-  ['leak-str-days', 'leak-str-skip', 'leak-test-sp', 'leak-method'].forEach(id => {
+  ['leak-str-days', 'leak-str-skip', 'leak-method'].forEach(id => {
     const el = document.getElementById(id);
     if (el && el.value !== '' && el.value != null) keepVals[id] = el.value;
   });
@@ -3370,7 +3430,7 @@ function leakRenderResults(s) {
   if (typeof s.grace_days === 'number') leakGraceDays = s.grace_days;
   const L = s.lists || { stream: [], sqp: [] };
   const c = s.counters || {};
-  if (!(L.stream || []).length && !(L.sqp || []).length &&
+  if (!(L.stream || []).length && !(L.sqp || []).length && !(L.sqp_off || []).length &&
       !(L.stream_active || []).length && !s.finished_at) {
     document.getElementById('leak-results').innerHTML = '';
     return;
