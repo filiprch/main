@@ -247,6 +247,17 @@
       align-items: center; gap: .3rem; }
     .leak-scope input { width: 58px; background: #0b0d13; border: 1px solid #252a3a;
       border-radius: 6px; color: #e2e8f0; font-size: .74rem; padding: .25rem .35rem; }
+    .flow-tables { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .5rem; }
+    .flow-table { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer;
+      background: #12141f; border: 1px solid #1e2130; border-radius: 6px;
+      padding: .22rem .5rem; font-size: .72rem; color: #94a3b8; }
+    .flow-table.on { border-color: #3b4fd8; color: #e2e8f0; }
+    .flow-srcs { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .5rem; }
+    .flow-src { display: inline-flex; gap: .3rem; align-items: baseline; font-size: .72rem;
+      background: #12141f; border: 1px solid #1e2130; border-radius: 6px;
+      padding: .15rem .45rem; margin: 0 .25rem .25rem 0; color: #cbd5e1; }
+    .flow-src.hit { border-color: #7f1d1d; color: #fca5a5; }
+    .flow-src.bad { border-color: #92400e; color: #fbbf24; }
     .leak-on { color: #fbbf24; font-weight: 700; }
     .leak-off { color: #4ade80; font-weight: 700; }
     .leak-more { cursor: pointer; color: #60a5fa; border-bottom: 1px dotted #60a5fa55; }
@@ -2705,7 +2716,8 @@ function leakToggle(which) {
 // One click sorts ascending, a second click reverses. Held per list so sorting
 // one table does not disturb another, and so a re-render keeps the order.
 const leakSort = { stream: { k: '', d: 1 }, sqp: { k: '', d: 1 },
-                   sqp_off: { k: '', d: 1 }, stream_active: { k: '', d: 1 } };
+                   sqp_off: { k: '', d: 1 }, stream_active: { k: '', d: 1 },
+                   flow: { k: '', d: 1 } };
 
 function leakSortBy(which, key) {
   const s = leakSort[which];
@@ -3307,6 +3319,210 @@ function leakSqpOffSection(c, s) {
   </div>`;
 }
 
+// ── Overall flow ──────────────────────────────────────────────────────────────
+// Marketing Stream and SQP are two sources among many. This asks the database
+// which tables can hold seller data at all, then counts recent rows in the ones
+// picked, so "data is coming in from somewhere" gets a name.
+let flowTables = [];        // [{table, owner_col, ts_col, est_rows, bytes}]
+let flowPicked = new Set();
+let flowLoaded = false;
+let flowSince = 0;
+
+function leakFlowSection(c, s) {
+  let rows = (s.lists || {}).flow || [];
+  if (leakHideProtected) rows = rows.filter(r => !r.in_grace);
+  rows = leakApplySort('flow', rows, {
+    username: r => r.username || '',
+    seller: r => String(r.sp_id || ''),
+    canceled: r => r.canceled_at || '',
+    rows: r => r.total_rows || 0,
+    sources: r => (r.sources || []).length,
+    last: r => r.last_row || '',
+    sched: r => r.sched_on || 0,
+    apis: r => (r.sp_api_connected ? 2 : 0) + (r.ads_connected ? 1 : 0),
+  });
+  const body = rows.length ? `<div class="sqp-list-wrap"><table class="ms-table">
+    <thead><tr>
+      ${leakTh('flow', 'username', 'Account')}
+      ${leakTh('flow', 'seller', 'Seller ID')}
+      ${leakTh('flow', 'canceled', 'Canceled', 'When the last Stripe subscription was canceled')}
+      ${leakTh('flow', 'rows', 'Rows', 'Rows written for this seller in the window, across every scanned table')}
+      ${leakTh('flow', 'sources', 'Coming from', 'Which tables the rows landed in, largest first')}
+      ${leakTh('flow', 'last', 'Last row')}
+      ${leakTh('flow', 'sched', 'Schedulers', 'Schedulers still enabled, of how many exist')}
+      ${leakTh('flow', 'apis', 'APIs', 'Whether the seller still has SP-API and Advertising credentials stored')}
+      ${leakTh('flow', 'state', '')}
+    </tr></thead><tbody>` + rows.map(r => `<tr>
+      <td class="ms-name"><span class="ms-copy" title="Click to copy the email"
+            onclick="leakCopyText(this,'${esc(r.username || '')}')">${esc(r.username || '—')}</span></td>
+      <td class="mono"><span class="ms-copy" title="${esc(r.seller_name || '')} ${esc(r.region || '')}"
+            onclick="msCopySeller(this,'${esc(r.sp_id)}')">${esc(r.sp_id)}</span></td>
+      <td class="mono">${esc((r.canceled_at || '').slice(0, 10))}
+          <span class="upg-detail">${r.canceled_days ?? '?'}d</span></td>
+      <td class="mono">${(r.total_rows || 0).toLocaleString()}</td>
+      <td>${(r.sources || []).map(x =>
+            `<span class="flow-src" title="last row ${esc(x.last_row || '')}">${esc(x.table)}
+               <span class="upg-detail">${x.n.toLocaleString()}</span></span>`).join('')}</td>
+      <td class="mono">${esc((r.last_row || '').slice(0, 16))}</td>
+      <td class="mono" title="${esc(r.sched_types || 'none enabled')}">
+        <span class="${r.sched_on ? 'leak-on' : 'leak-off'}">${r.sched_on}</span>
+        <span class="upg-detail">/${r.sched_total}</span></td>
+      <td>${r.sp_api_connected ? '<span class="ms-pill act">SP-API</span>'
+                               : '<span class="ms-pill na">no SP-API</span>'}
+          ${r.ads_connected ? '<span class="ms-pill act">Ads</span>' : ''}</td>
+      <td>${r.in_grace ? '<span class="ms-pill pend">PROTECTED</span>' : ''}</td>
+    </tr>`).join('') + `</tbody></table></div>`
+    : `<span class="token-idle">Not scanned yet — pick the tables and press Scan.</span>`;
+
+  return `<div class="leak-sec">
+    <div class="leak-sec-hdr">
+      <span class="leak-sec-title">Overall flow</span>
+      <span class="leak-sec-sub" id="leak-flow-sub">${rows.length} canceled seller(s)
+        still receiving data</span>
+      <span class="leak-scope">last
+        <input type="number" id="leak-flow-days" min="1" max="365" value="7"
+               title="How far back to count rows in each table">d</span>
+      <button class="btn btn-sm btn-ghost" onclick="flowPickAll(true)">All</button>
+      <button class="btn btn-sm btn-ghost" onclick="flowPickAll(false)">None</button>
+      <button class="btn btn-sm btn-ghost" onclick="flowLoadTables(true)"
+        title="Ask the database again which tables can hold seller data">↻ Tables</button>
+      <button class="btn btn-sm btn-primary" id="leak-flow-go" onclick="flowStart()">Scan</button>
+      <button class="btn btn-sm btn-ghost" id="leak-flow-stop" onclick="flowStop()" disabled>Stop</button>
+      <a class="btn btn-sm btn-ghost" href="/api/leak/export.csv?list=flow">⭳ CSV</a>
+    </div>
+    <div class="leak-sec-body">
+      <p class="leak-hint">Every table with an owner column and a timestamp is a place
+        data can land. Pick the ones to count — the estimate next to each is its whole
+        size, so the big ones take minutes.</p>
+      <div id="leak-flow-tables" class="flow-tables"></div>
+      <div id="leak-flow-log" class="ms-log" style="height:110px;margin:.5rem 0"></div>
+      <div id="leak-flow-sources"></div>
+      ${body}
+    </div>
+  </div>`;
+}
+
+function flowSize(t) {
+  const n = t.est_rows || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'bn rows';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'm rows';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k rows';
+  return n + ' rows';
+}
+
+function flowRenderTables() {
+  const box = document.getElementById('leak-flow-tables');
+  if (!box) return;
+  if (!flowTables.length) {
+    box.innerHTML = `<span class="token-idle">No scannable tables found.</span>`;
+    return;
+  }
+  box.innerHTML = flowTables.map(t => `
+    <label class="flow-table${flowPicked.has(t.table) ? ' on' : ''}"
+           title="owner ${esc(t.owner_col)} · time ${esc(t.ts_col)} · ${flowSize(t)}">
+      <input type="checkbox" ${flowPicked.has(t.table) ? 'checked' : ''}
+             onchange="flowPick('${esc(t.table)}',this)">
+      <span class="mono">${esc(t.table)}</span>
+      <span class="upg-detail">${flowSize(t)}</span>
+    </label>`).join('');
+}
+
+function flowPick(table, box) {
+  box.checked ? flowPicked.add(table) : flowPicked.delete(table);
+  flowRenderTables();
+}
+
+function flowPickAll(on) {
+  flowTables.forEach(t => on ? flowPicked.add(t.table) : flowPicked.delete(t.table));
+  flowRenderTables();
+}
+
+async function flowLoadTables(refresh) {
+  try {
+    const d = await (await fetch('/api/leak/flow/tables' + (refresh ? '?refresh=1' : ''))).json();
+    if (!d.ok) { leakUiLog('error', 'Flow tables: ' + d.error); return; }
+    flowTables = d.tables || [];
+    // First load follows what was scanned last time; with no history, take
+    // everything and let the big ones be unticked.
+    if (!flowLoaded) {
+      flowPicked = new Set((d.selected || []).length ? d.selected : flowTables.map(t => t.table));
+      const el = document.getElementById('leak-flow-days');
+      if (el && el.value === '7') el.value = d.days;
+      flowLoaded = true;
+    }
+    flowRenderTables();
+    if (refresh) leakUiLog('ok', `${flowTables.length} scannable table(s) found.`);
+  } catch (e) { leakUiLog('error', 'Flow tables: ' + e.message); }
+}
+
+async function flowStart() {
+  const days = parseInt((document.getElementById('leak-flow-days') || {}).value) || 7;
+  leakUiLog('info', `Scanning ${flowPicked.size} table(s) for data still arriving, last ${days}d…`);
+  flowSince = 0;
+  const log = document.getElementById('leak-flow-log');
+  if (log) log.innerHTML = '';
+  const d = await (await fetch('/api/leak/flow/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tables: [...flowPicked], days }),
+  })).json();
+  if (!d.ok) leakUiLog('error', 'Flow scan: ' + d.error);
+}
+
+async function flowStop() {
+  leakUiLog('warn', 'Flow scan stopped.');
+  await fetch('/api/leak/flow/stop', { method: 'POST' });
+}
+
+function flowRenderSources(sources) {
+  const box = document.getElementById('leak-flow-sources');
+  if (!box) return;
+  if (!sources || !sources.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="flow-srcs">` + sources.map(x => `
+    <span class="flow-src ${x.error ? 'bad' : x.accounts ? 'hit' : ''}"
+          title="${esc(x.error || `${x.owner_col} · ${x.seconds}s`)}">
+      ${esc(x.table)} <span class="upg-detail">${x.error ? 'error'
+        : x.accounts ? `${x.accounts} seller(s) · ${x.rows.toLocaleString()}` : 'clean'}</span>
+    </span>`).join('') + `</div>`;
+}
+
+async function flowPoll() {
+  try {
+    const s = await (await fetch('/api/leak/flow/state?since=' + flowSince)).json();
+    const log = document.getElementById('leak-flow-log');
+    if (log) {
+      for (const e of s.logs) {
+        const div = document.createElement('div');
+        div.className = 'rep-line';
+        div.innerHTML = `<span class="rt">${e.t}</span><span class="rl-${e.level}">${esc(e.msg)}</span>`;
+        log.appendChild(div);
+        flowSince = e.i + 1;
+      }
+      if (s.logs.length) log.scrollTop = log.scrollHeight;
+    }
+    const go = document.getElementById('leak-flow-go');
+    const st = document.getElementById('leak-flow-stop');
+    if (go) go.disabled = s.running;
+    if (st) st.disabled = !s.running;
+    const sub = document.getElementById('leak-flow-sub');
+    const c = s.counters || {};
+    if (sub) {
+      sub.textContent = s.running
+        ? `scanning ${c.scanned}/${c.total} table(s) · ${leakElapsed(s.elapsed)}`
+        : `${(c.accounts || 0).toLocaleString()} canceled seller(s) still receiving data` +
+          (c.rows ? ` · ${c.rows.toLocaleString()} row(s) in ${s.days}d` : '');
+    }
+    flowRenderSources(s.sources);
+    if (!flowLoaded) flowLoadTables(false);
+    else if (document.getElementById('leak-flow-tables') &&
+             !document.getElementById('leak-flow-tables').innerHTML) flowRenderTables();
+    // The finished run lands in the main state, which owns the table.
+    if (!s.running && c.accounts !== undefined &&
+        ((leakLastState.lists || {}).flow || []).length !== c.accounts) {
+      leakPoll();
+    }
+  } catch (_) {}
+}
+
 function leakStreamsSection() {
   let all = (leakLastState.lists || {}).stream_active || [];
   if (leakHideProtected) all = all.filter(r => !r.in_grace);
@@ -3398,7 +3614,7 @@ let leakRenderedSig = '';
 
 function leakSig(s) {
   const c = s.counters || {};
-  return [s.finished_at, s.running, c.stream, c.sqp, c.sqp_off, s.grace_days,
+  return [s.finished_at, s.running, c.stream, c.sqp, c.sqp_off, c.flow, s.grace_days,
           leakSel.stream.size, leakSel.sqp.size, leakHideProtected,
           leakOpen.stream, leakOpen.sqp, leakOpen.sqp_off,
           leakRowOpen.stream.size, leakRowOpen.sqp.size,
@@ -3415,14 +3631,15 @@ function leakRenderResults(s) {
   // carry their contents over — otherwise a re-render blanks them and it looks
   // like the stream check and the archive button did nothing.
   const keep = {};
-  ['leak-str-log', 'leak-str-out', 'leak-action-out'].forEach(id => {
+  ['leak-str-log', 'leak-str-out', 'leak-action-out',
+   'leak-flow-log', 'leak-flow-tables', 'leak-flow-sources'].forEach(id => {
     const el = document.getElementById(id);
     if (el) keep[id] = { html: el.innerHTML, top: el.scrollTop };
   });
   // Same for the inputs in the headers — a re-render used to blank the seller
   // being typed into the probe box and reset the method back to POST.
   const keepVals = {};
-  ['leak-str-days', 'leak-str-skip', 'leak-method'].forEach(id => {
+  ['leak-str-days', 'leak-str-skip', 'leak-method', 'leak-flow-days'].forEach(id => {
     const el = document.getElementById(id);
     if (el && el.value !== '' && el.value != null) keepVals[id] = el.value;
   });
@@ -3431,12 +3648,12 @@ function leakRenderResults(s) {
   const L = s.lists || { stream: [], sqp: [] };
   const c = s.counters || {};
   if (!(L.stream || []).length && !(L.sqp || []).length && !(L.sqp_off || []).length &&
-      !(L.stream_active || []).length && !s.finished_at) {
+      !(L.stream_active || []).length && !(L.flow || []).length && !s.finished_at) {
     document.getElementById('leak-results').innerHTML = '';
     return;
   }
   document.getElementById('leak-results').innerHTML =
-    leakStreamSection(c, s) + leakSqpSection(c, s);
+    leakStreamSection(c, s) + leakSqpSection(c, s) + leakFlowSection(c, s);
   [...document.querySelectorAll('#leak-results .sqp-list-wrap')]
     .forEach((el, i) => { if (scrolls[i] !== undefined) el.scrollTop = scrolls[i]; });
   Object.keys(keep).forEach(id => {
@@ -3529,6 +3746,7 @@ async function leakStop() {
 }
 
 leakLoadSettings();
+setInterval(flowPoll, 2000);
 setInterval(leakStreamsPoll, 2000);
 setInterval(leakPoll, 2000);
 leakPoll();

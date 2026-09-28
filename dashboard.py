@@ -16,6 +16,7 @@ import uuid
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.sql
 import requests as http_requests
 from datetime import date, timedelta
 from flask import Flask, Response, jsonify, render_template, request
@@ -2134,7 +2135,7 @@ _leak_state = {
     "counters": {"customers": 0, "canceled": 0, "live": 0, "mapping_rows": 0,
                  "stream": 0, "sqp": 0, "sqp_off": 0, "no_sub": 0},
     "lists": {"stream": [], "sqp": [], "sqp_off": [], "no_sub": [],
-              "stream_active": []},
+              "stream_active": [], "flow": []},
     "candidates": [],
     "warnings": [],
     # Mapping + Stripe verdicts from the last full run, so one list can be
@@ -2576,7 +2577,7 @@ def _leak_worker() -> None:
         with _leak_lock:
             _leak_state["lists"] = {"stream": stream_hits, "sqp": sqp_hits,
                                     "sqp_off": sqp_off, "no_sub": no_sub,
-                                    "stream_active": []}
+                                    "stream_active": [], "flow": []}
             _leak_state["candidates"] = stream_candidates
             # Kept so a single list can be refreshed later without paying for
             # the Stripe pass and the scan belonging to the other list.
@@ -2653,7 +2654,7 @@ def leak_start():
         # Clear previous results: a run that aborts must not leave last week's
         # lists on screen where they could be read as current.
         _leak_state["lists"] = {"stream": [], "sqp": [], "sqp_off": [],
-                                "no_sub": [], "stream_active": []}
+                                "no_sub": [], "stream_active": [], "flow": []}
         _leak_state["candidates"] = []
         _leak_state["counters"] = {"customers": 0, "canceled": 0, "live": 0,
                                    "mapping_rows": 0, "stream": 0, "sqp": 0,
@@ -3513,6 +3514,10 @@ def leak_export_csv():
         "no_sub": ["user_id", "username", "stripe_customer", "trial_started",
                    "registered", "sp_id", "selling_partner_id", "seller_name",
                    "region", "pricing_plan_id", "plan_name"],
+        "flow": ["username", "sp_id", "selling_partner_id", "seller_name", "region",
+                 "plan_name", "canceled_at", "canceled_days", "total_rows",
+                 "source_names", "last_row", "sched_on", "sched_total",
+                 "sched_types", "sp_api_connected", "ads_connected"],
         "stream_active": ["user_id", "username", "stripe_customer", "canceled_at",
                           "canceled_days", "sp_id", "selling_partner_id",
                           "seller_name", "region", "plan_name", "marketplace_id",
@@ -3533,6 +3538,354 @@ def leak_export_csv():
     stamp = datetime.date.today().isoformat()
     return Response(buf.getvalue(), mimetype="text/csv", headers={
         "Content-Disposition": f'attachment; filename="spb629_{which}_{stamp}.csv"'})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Overall flow
+#
+# Marketing Stream and SQP are two sources; data can arrive from any table a
+# scheduler writes to. Rather than hard-coding a list that would go stale, this
+# asks the database which tables can even belong to a seller — one with an
+# owner column and a timestamp — and then counts recent rows in the ones you
+# pick. Read-only throughout.
+# ══════════════════════════════════════════════════════════════════════════════
+
+LEAK_FLOW_DAYS = int(os.environ.get("LEAK_FLOW_DAYS", "7"))
+FLOW_TIMEOUT_MS = int(os.environ.get("FLOW_TIMEOUT_MS", "600000"))
+
+# How a table names its owner, best first. Each maps to a different identifier,
+# so the join back to an account differs per column — see _flow_owner_index.
+FLOW_OWNER_COLS = ["amazon_selling_partner_id", "seller_id",
+                   "selling_partner_id", "advertiser_id"]
+FLOW_TS_COLS = ["created_at", "updated_at", "inserted_at"]
+# Configuration and identity tables: having a seller column does not make them
+# a data source, and counting them would only add noise.
+FLOW_SKIP_TABLES = {
+    "amazon_selling_partner", "amazon_selling_api_token", "advertising_profile",
+    "scheduler_config", "my_real_profit_user", "stripe_detail",
+}
+
+_FLOW_DISCOVER_QUERY = """
+    select c.table_name, c.column_name
+    from information_schema.columns c
+    join information_schema.tables t
+      on t.table_schema = c.table_schema and t.table_name = c.table_name
+     and t.table_type = 'BASE TABLE'
+    where c.table_schema = 'public'
+      and c.column_name = ANY (%(cols)s)
+    order by 1, 2
+"""
+
+_FLOW_SIZE_QUERY = """
+    select c.relname as table_name, c.reltuples::bigint as est_rows,
+           pg_total_relation_size(c.oid) as bytes
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r'
+"""
+
+_FLOW_SCHED_QUERY = """
+    select amazon_selling_partner_id, type, is_enabled
+    from scheduler_config order by 1, 2
+"""
+
+_FLOW_TOKEN_QUERY = """
+    select distinct amazon_selling_partner_id from amazon_selling_api_token
+"""
+
+_flow_lock = threading.Lock()
+_flow_stop = threading.Event()
+_flow_state = {"running": False, "logs": [], "started_at": 0.0, "finished_at": "",
+               "tables": [], "sources": [], "rows": [], "days": LEAK_FLOW_DAYS,
+               "counters": {"scanned": 0, "total": 0, "accounts": 0, "rows": 0}}
+
+
+def _flow_log(level: str, msg: str) -> None:
+    with _flow_lock:
+        _flow_state["logs"].append({
+            "i": len(_flow_state["logs"]), "level": level, "msg": msg,
+            "t": datetime.datetime.now().strftime("%H:%M:%S")})
+        if len(_flow_state["logs"]) > 800:
+            del _flow_state["logs"][:-800]
+
+
+def _flow_discover() -> list:
+    """Every public table that has both an owner column and a timestamp."""
+    cols = FLOW_OWNER_COLS + FLOW_TS_COLS
+    found, sizes = {}, {}
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET statement_timeout = '60s'")
+            cur.execute(_FLOW_DISCOVER_QUERY, {"cols": cols})
+            for r in cur.fetchall():
+                found.setdefault(r["table_name"], set()).add(r["column_name"])
+            cur.execute(_FLOW_SIZE_QUERY)
+            for r in cur.fetchall():
+                sizes[r["table_name"]] = (int(r["est_rows"] or 0), int(r["bytes"] or 0))
+
+    out = []
+    for table, present in sorted(found.items()):
+        if table in FLOW_SKIP_TABLES:
+            continue
+        owner = next((c for c in FLOW_OWNER_COLS if c in present), None)
+        ts = next((c for c in FLOW_TS_COLS if c in present), None)
+        if not owner or not ts:
+            continue
+        est, size = sizes.get(table, (0, 0))
+        out.append({"table": table, "owner_col": owner, "ts_col": ts,
+                    "est_rows": est, "bytes": size})
+    out.sort(key=lambda r: -r["est_rows"])
+    return out
+
+
+def _flow_owner_index(cache: dict) -> tuple:
+    """Look-ups from each kind of owner id to the canceled account that owns it.
+
+    A table's owner column decides which one applies: amazon_selling_partner_id
+    and seller_id hold our own seller row id, selling_partner_id holds Amazon's
+    string id, and advertiser_id holds an advertising account id.
+    """
+    canceled = cache.get("canceled") or {}
+    by_sp, by_spid, by_token = {}, {}, {}
+    for m in cache.get("mapping") or []:
+        cust = m.get("stripe_customer") or ""
+        if cust not in canceled:
+            continue
+        rec = {"user_id": m.get("user_id"), "username": m.get("username") or "",
+               "stripe_customer": cust, "sp_id": m.get("sp_id"),
+               "selling_partner_id": m.get("selling_partner_id") or "",
+               "seller_name": m.get("seller_name") or "",
+               "region": m.get("region") or "",
+               "plan_name": LEAK_PLAN_NAMES.get(str(m.get("pricing_plan_id") or ""),
+                                                str(m.get("pricing_plan_id") or "")),
+               "canceled_at": canceled[cust],
+               "ads_connected": bool(m.get("merchant_tokens")),
+               "merchant_tokens": m.get("merchant_tokens") or ""}
+        by_sp[str(m.get("sp_id"))] = rec
+        if rec["selling_partner_id"]:
+            by_spid[rec["selling_partner_id"]] = rec
+        for t in rec["merchant_tokens"].split(","):
+            if t:
+                by_token[t] = rec
+    return by_sp, by_spid, by_token
+
+
+def _flow_index_for(owner_col: str, by_sp, by_spid, by_token) -> dict:
+    if owner_col == "selling_partner_id":
+        return by_spid
+    if owner_col == "advertiser_id":
+        return by_token
+    return by_sp
+
+
+def _flow_worker(tables: list, days: int) -> None:
+    """Count recent rows per canceled seller across the chosen tables."""
+    try:
+        with _leak_lock:
+            cache = dict(_leak_state.get("cache") or {})
+        if not cache.get("mapping"):
+            _flow_log("error", "Nothing cached yet — run the full check once first.")
+            return
+        by_sp, by_spid, by_token = _flow_owner_index(cache)
+        _flow_log("info", f"{len(by_sp):,} canceled seller(s) to watch for, "
+                          f"across {len(tables)} table(s), last {days} day(s).")
+
+        hits = {}          # account key -> {"acct": rec, "sources": {table: {...}}}
+        sources = []       # per-table summary
+        sched, tokens = {}, set()
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SET statement_timeout = %s", (FLOW_TIMEOUT_MS,))
+                try:
+                    cur.execute(_FLOW_SCHED_QUERY)
+                    for r in cur.fetchall():
+                        sp = str(r["amazon_selling_partner_id"])
+                        c = sched.setdefault(sp, {"on": 0, "total": 0, "types": []})
+                        c["total"] += 1
+                        if r.get("is_enabled") is True or r.get("is_enabled") == "t":
+                            c["on"] += 1
+                            c["types"].append(str(r.get("type") or ""))
+                    cur.execute(_FLOW_TOKEN_QUERY)
+                    tokens = {str(r["amazon_selling_partner_id"]) for r in cur.fetchall()}
+                except Exception as exc:
+                    conn.rollback()
+                    _flow_log("warn", f"Scheduler/token lookup failed — {str(exc)[:160]}")
+
+                for i, spec in enumerate(tables, 1):
+                    if _flow_stop.is_set():
+                        _flow_log("warn", "Stopped by user.")
+                        break
+                    table, owner, ts = spec["table"], spec["owner_col"], spec["ts_col"]
+                    index = _flow_index_for(owner, by_sp, by_spid, by_token)
+                    started = time.time()
+                    _flow_log("info", f"[{i}/{len(tables)}] {table} — grouping by {owner}…")
+                    query = psycopg2.sql.SQL(
+                        "select {owner} as owner_id, count(*) as n, max({ts}) as last_row "
+                        "from {table} where {ts} >= now() - %(cut)s::interval "
+                        "group by 1"
+                    ).format(owner=psycopg2.sql.Identifier(owner),
+                             ts=psycopg2.sql.Identifier(ts),
+                             table=psycopg2.sql.Identifier(table))
+                    try:
+                        cur.execute(query, {"cut": f"{int(days)} days"})
+                        rows = cur.fetchall()
+                    except Exception as exc:
+                        conn.rollback()
+                        sources.append({"table": table, "owner_col": owner, "ts_col": ts,
+                                        "accounts": 0, "rows": 0, "seconds": round(time.time() - started, 1),
+                                        "error": str(exc)[:200]})
+                        _flow_log("error", f"{table}: {str(exc)[:160]}")
+                        with _flow_lock:
+                            _flow_state["counters"]["scanned"] += 1
+                            _flow_state["sources"] = list(sources)
+                        continue
+
+                    n_acc, n_rows = 0, 0
+                    for r in rows:
+                        rec = index.get(str(r["owner_id"]))
+                        if not rec:
+                            continue      # live account, or an id we cannot resolve
+                        key = str(rec["sp_id"])
+                        hit = hits.setdefault(key, {"acct": rec, "sources": {}})
+                        src = hit["sources"].setdefault(table, {"n": 0, "last_row": ""})
+                        src["n"] += int(r["n"] or 0)
+                        last = str(r["last_row"] or "")
+                        if last > src["last_row"]:
+                            src["last_row"] = last
+                        n_acc += 1
+                        n_rows += int(r["n"] or 0)
+                    sources.append({"table": table, "owner_col": owner, "ts_col": ts,
+                                    "accounts": n_acc, "rows": n_rows,
+                                    "seconds": round(time.time() - started, 1), "error": ""})
+                    _flow_log("ok" if not n_acc else "error",
+                              f"{table}: {n_acc:,} canceled seller(s), {n_rows:,} row(s) "
+                              f"in {round(time.time() - started, 1)}s")
+                    with _flow_lock:
+                        _flow_state["counters"]["scanned"] += 1
+                        _flow_state["sources"] = list(sources)
+
+        grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
+        out = []
+        for key, hit in hits.items():
+            rec, srcs = hit["acct"], hit["sources"]
+            sc = sched.get(key, {"on": 0, "total": 0, "types": []})
+            row = dict(rec)
+            row["key"] = key
+            row["sources"] = [{"table": t, "n": v["n"], "last_row": v["last_row"]}
+                              for t, v in sorted(srcs.items(), key=lambda kv: -kv[1]["n"])]
+            row["source_names"] = ", ".join(s["table"] for s in row["sources"])
+            row["total_rows"] = sum(s["n"] for s in row["sources"])
+            row["last_row"] = max((s["last_row"] for s in row["sources"]), default="")
+            row["sched_on"] = sc["on"]
+            row["sched_total"] = sc["total"]
+            row["sched_types"] = ", ".join(sorted(set(sc["types"])))
+            row["sp_api_connected"] = key in tokens
+            _leak_grace(row, grace_days)
+            out.append(row)
+        out.sort(key=lambda r: -r["total_rows"])
+
+        with _leak_lock:
+            _leak_state["lists"]["flow"] = out
+            _leak_state["counters"]["flow"] = len(out)
+        _leak_save_results()
+        with _flow_lock:
+            _flow_state["rows"] = out
+            _flow_state["days"] = days
+            _flow_state["counters"]["accounts"] = len(out)
+            _flow_state["counters"]["rows"] = sum(r["total_rows"] for r in out)
+        _flow_log("ok" if not out else "error",
+                  "No canceled seller has data arriving from the scanned tables." if not out
+                  else f"{len(out):,} canceled seller(s) still receiving data — "
+                       f"{sum(r['total_rows'] for r in out):,} row(s) in {days} day(s).")
+    except Exception as exc:
+        _flow_log("error", f"Flow scan failed — {str(exc)[:200]}")
+    finally:
+        with _flow_lock:
+            _flow_state["running"] = False
+            _flow_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+@app.route("/api/leak/flow/tables")
+def flow_tables():
+    """The scannable tables. Discovery is cached until asked to refresh."""
+    if request.args.get("refresh") or not _flow_state["tables"]:
+        if not DB_CONFIG["password"]:
+            return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+        try:
+            found = _flow_discover()
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:300]}), 500
+        with _flow_lock:
+            _flow_state["tables"] = found
+        _flow_log("info", f"Found {len(found)} table(s) that can hold seller data.")
+    with _flow_lock:
+        tables = list(_flow_state["tables"])
+    chosen = _leak_setting("flow_tables", "")
+    return jsonify({"ok": True, "tables": tables,
+                    "selected": [t for t in chosen.split(",") if t],
+                    "days": _leak_setting_int("flow_days", LEAK_FLOW_DAYS)})
+
+
+@app.route("/api/leak/flow/start", methods=["POST"])
+def flow_start():
+    payload = request.get_json(silent=True) or {}
+    with _flow_lock:
+        if _flow_state["running"]:
+            return jsonify({"ok": False, "error": "A flow scan is already running."}), 409
+        known = {t["table"]: t for t in _flow_state["tables"]}
+    with _leak_lock:
+        has_cache = bool((_leak_state.get("cache") or {}).get("mapping"))
+    if not has_cache:
+        return jsonify({"ok": False, "error":
+                        "Run the full check once first — this needs its Stripe results."}), 400
+    wanted = [t for t in (payload.get("tables") or []) if t in known]
+    if not wanted:
+        return jsonify({"ok": False, "error": "Pick at least one table to scan."}), 400
+    try:
+        days = max(int(payload.get("days") or LEAK_FLOW_DAYS), 1)
+    except (TypeError, ValueError):
+        days = LEAK_FLOW_DAYS
+    _leak_set_setting("flow_tables", ",".join(wanted))
+    _leak_set_setting("flow_days", days)
+
+    _flow_stop.clear()
+    specs = [known[t] for t in wanted]
+    with _flow_lock:
+        _flow_state["logs"] = []
+        _flow_state["sources"] = []
+        _flow_state["rows"] = []
+        _flow_state["finished_at"] = ""
+        _flow_state["started_at"] = time.time()
+        _flow_state["running"] = True
+        _flow_state["days"] = days
+        _flow_state["counters"] = {"scanned": 0, "total": len(specs),
+                                   "accounts": 0, "rows": 0}
+    threading.Thread(target=_flow_worker, args=(specs, days), daemon=True).start()
+    return jsonify({"ok": True, "count": len(specs)})
+
+
+@app.route("/api/leak/flow/stop", methods=["POST"])
+def flow_stop():
+    _flow_stop.set()
+    _flow_log("warn", "Stop requested…")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leak/flow/state")
+def flow_state():
+    since = request.args.get("since", default=0, type=int)
+    with _flow_lock:
+        running = _flow_state["running"]
+        return jsonify({
+            "running": running,
+            "finished_at": _flow_state["finished_at"],
+            "elapsed": int(time.time() - _flow_state["started_at"])
+                       if running and _flow_state["started_at"] else 0,
+            "logs": [e for e in _flow_state["logs"] if e["i"] >= since],
+            "next": len(_flow_state["logs"]),
+            "counters": _flow_state["counters"],
+            "sources": _flow_state["sources"],
+            "days": _flow_state["days"],
+        })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
