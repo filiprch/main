@@ -29,5 +29,25 @@ if [ ! -f .env ]; then
     echo "!  No .env file found — copy .env.example to .env and fill it in."
 fi
 
+# The database is only reachable through the Cloudflare Access tunnel, which is
+# a foreground process in its own terminal. Say so before the cards start
+# failing with a bare "connection refused".
+DB_HOST="${DB_HOST:-127.0.0.1}"
+DB_PORT="${DB_PORT:-15432}"
+if ! python - "$DB_HOST" "$DB_PORT" <<'EOF' 2>/dev/null
+import socket, sys
+with socket.create_connection((sys.argv[1], int(sys.argv[2])), 3):
+    pass
+EOF
+then
+    echo "!  Nothing is listening on ${DB_HOST}:${DB_PORT} — the database tunnel is down."
+    echo "   Start it in another terminal and leave it running:"
+    echo "     cloudflared access tcp --hostname ${DB_TUNNEL_HOSTNAME:-sql.myrealprofit.io} --url localhost:${DB_PORT}"
+    echo "   (first run opens a browser for Cloudflare Access)"
+fi
+if [ ! -f "${PGPASSFILE:-$HOME/.pgpass}" ] && [ -z "${DB_PASSWORD:-}" ]; then
+    echo "!  No ${PGPASSFILE:-$HOME/.pgpass} and no DB_PASSWORD — the database will refuse the login."
+fi
+
 echo "→ Dashboard on http://127.0.0.1:${PORT:-5000}   (Ctrl+C to stop)"
 exec python dashboard.py

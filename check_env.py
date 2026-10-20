@@ -31,7 +31,7 @@ LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 
 # key -> (which card needs it, is it a secret)
 KEYS = [
-    ("DB_PASSWORD",        "SQP + Marketing Streams", True),
+    ("DB_PASSWORD",        "database (optional — normally ~/.pgpass)", True),
     ("LWA_CLIENT_ID",      "Cancel Stuck Reports (SP-API app)", False),
     ("LWA_CLIENT_SECRET",  "Cancel Stuck Reports (SP-API app)", True),
     ("ADS_CLIENT_ID",      "Marketing Streams (Advertising app)", False),
@@ -171,10 +171,100 @@ def probe(label: str, client_id: str, client_secret: str) -> None:
         print(f"    ? could not reach Amazon: {exc}")
 
 
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", "15432"))
+DB_NAME = os.environ.get("DB_NAME", "main")
+DB_USER = os.environ.get("DB_USER", "ro_filip_seidel")
+DB_TUNNEL_HOSTNAME = os.environ.get("DB_TUNNEL_HOSTNAME", "sql.myrealprofit.io")
+PGPASS_FILE = os.environ.get("PGPASSFILE", os.path.expanduser("~/.pgpass"))
+
+
+def check_db() -> None:
+    """Tunnel up? Password findable? Does the login actually work?"""
+    import socket
+    import stat
+
+    print()
+    print("=" * 72)
+    print(f"2. DATABASE  —  {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
+    print("=" * 72)
+
+    if DB_HOST.lower() == "localhost":
+        print("  !! DB_HOST is 'localhost'. Use 127.0.0.1: the tunnel binds IPv4 only")
+        print("     and localhost may resolve to ::1, which is refused.")
+
+    print("\n  Tunnel")
+    try:
+        with socket.create_connection((DB_HOST, DB_PORT), 3):
+            print(f"    ✓ something is listening on {DB_HOST}:{DB_PORT}")
+    except Exception as exc:
+        print(f"    ✗ nothing is listening on {DB_HOST}:{DB_PORT} — {exc}")
+        print("      Start the tunnel in another terminal and leave it open:")
+        print(f"        cloudflared access tcp --hostname {DB_TUNNEL_HOSTNAME} "
+              f"--url localhost:{DB_PORT}")
+        print("      The first run opens a browser for Cloudflare Access.")
+        return
+
+    print("\n  Password")
+    if os.environ.get("DB_PASSWORD"):
+        print("    - DB_PASSWORD is set in .env; it takes precedence over ~/.pgpass")
+    elif not os.path.exists(PGPASS_FILE):
+        print(f"    ✗ {PGPASS_FILE} does not exist and DB_PASSWORD is not set")
+        return
+    else:
+        mode = stat.S_IMODE(os.stat(PGPASS_FILE).st_mode)
+        print(f"    ✓ {PGPASS_FILE} exists (mode {mode:04o})")
+        if mode & 0o077:
+            print("    !! libpq ignores a .pgpass that is group/world readable.")
+            print(f"       Fix with: chmod 600 {PGPASS_FILE}")
+        # Only the non-secret prefix is inspected; the password field is never
+        # read into memory, let alone printed.
+        want = f"{DB_HOST}:{DB_PORT}:{DB_NAME}:{DB_USER}:"
+        try:
+            with open(PGPASS_FILE, "r", encoding="utf-8", errors="replace") as fh:
+                lines = [l.rstrip("\n") for l in fh if l.strip() and not l.startswith("#")]
+            if any(l.startswith(want) or l.startswith("*:") for l in lines):
+                print(f"    ✓ a line matches {want}<password>")
+            else:
+                print(f"    !! no line starts with {want}")
+                print("       Entries found (password field hidden):")
+                for l in lines:
+                    print("         " + ":".join(l.split(":")[:4]) + ":<hidden>")
+        except Exception as exc:
+            print(f"    ? could not read it: {exc}")
+
+    print("\n  Login")
+    try:
+        import psycopg2
+    except ImportError:
+        print("    ? psycopg2 not installed in this interpreter — run ./start.sh first")
+        return
+    kwargs = {"host": DB_HOST, "port": DB_PORT, "dbname": DB_NAME, "user": DB_USER,
+              "connect_timeout": 10, "application_name": "check-env"}
+    if os.environ.get("DB_PASSWORD"):
+        kwargs["password"] = os.environ["DB_PASSWORD"]
+    try:
+        conn = psycopg2.connect(**kwargs)
+    except Exception as exc:
+        print(f"    ✗ {str(exc).strip()}")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select current_user, current_database(), version()")
+            user, dbname, version = cur.fetchone()
+            print(f"    ✓ connected as {user} to {dbname}")
+            print(f"      {version.split(',')[0]}")
+            cur.execute("select count(*) from pg_stat_activity where usename = current_user")
+            print(f"      {cur.fetchone()[0]} connection(s) open for this role "
+                  "(the limit is about 3)")
+    finally:
+        conn.close()
+
+
 def check_live() -> None:
     print()
     print("=" * 72)
-    print("2. LIVE CREDENTIAL CHECK  —  api.amazon.com")
+    print("3. LIVE CREDENTIAL CHECK  —  api.amazon.com")
     print("=" * 72)
     probe("SP-API app  (LWA_CLIENT_ID / LWA_CLIENT_SECRET) — Cancel Stuck Reports",
           os.environ.get("LWA_CLIENT_ID", ""), os.environ.get("LWA_CLIENT_SECRET", ""))
@@ -190,5 +280,6 @@ def check_live() -> None:
 if __name__ == "__main__":
     ok = check_format()
     if "--no-network" not in sys.argv:
+        check_db()
         check_live()
     print()

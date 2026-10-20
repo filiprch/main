@@ -5,6 +5,7 @@ Run: python dashboard.py
 Then open http://localhost:5000
 """
 
+import contextlib
 import datetime
 import json
 import os
@@ -30,13 +31,41 @@ app = Flask(__name__)
 # single tool's credentials are absent (e.g. run the Reports PUT card without
 # SQP's DB/LWA config, or vice-versa). Each route surfaces its own missing-cred
 # error as JSON instead of crashing the whole app at startup.
+#
+# Production Postgres is CloudNativePG on Hetzner Kubernetes, reached through a
+# Cloudflare Access TCP tunnel that this machine runs:
+#
+#   cloudflared access tcp --hostname sql.myrealprofit.io --url localhost:15432
+#
+# so the dashboard connects to the local end of that tunnel. 127.0.0.1 rather
+# than localhost on purpose: the tunnel binds IPv4 only, and a client that
+# resolves localhost to ::1 fails with a bare "connection refused".
+DB_TUNNEL_HOSTNAME = os.environ.get("DB_TUNNEL_HOSTNAME", "sql.myrealprofit.io")
+DB_TUNNEL_CMD = (f"cloudflared access tcp --hostname {DB_TUNNEL_HOSTNAME} "
+                 f"--url localhost:{os.environ.get('DB_PORT', '15432')}")
+
 DB_CONFIG = {
-    "host": os.environ.get("DB_HOST", "136.112.125.16"),
-    "dbname": os.environ.get("DB_NAME", "postgres"),
-    "user": os.environ.get("DB_USER", "filip_read_only"),
-    "password": os.environ.get("DB_PASSWORD", ""),
+    "host": os.environ.get("DB_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("DB_PORT", "15432")),
+    "dbname": os.environ.get("DB_NAME", "main"),
+    "user": os.environ.get("DB_USER", "ro_filip_seidel"),
     "connect_timeout": 10,
+    # Named so a session left behind is identifiable in pg_stat_activity.
+    "application_name": "mrp-dashboard",
 }
+# The password lives in ~/.pgpass. Only pass one explicitly when the env says
+# so — setting the key at all stops libpq consulting the file.
+if os.environ.get("DB_PASSWORD"):
+    DB_CONFIG["password"] = os.environ["DB_PASSWORD"]
+
+PGPASS_FILE = os.environ.get("PGPASSFILE", os.path.expanduser("~/.pgpass"))
+
+# The role has a CONNECTION LIMIT of about 3. Worker threads must not race each
+# other for it, so connections are handed out through a semaphore and always
+# closed — one slot is left spare for a psql session or a GUI client.
+DB_MAX_CONNECTIONS = int(os.environ.get("DB_MAX_CONNECTIONS", "2"))
+DB_WAIT_SECONDS = int(os.environ.get("DB_WAIT_SECONDS", "120"))
+_db_slots = threading.BoundedSemaphore(DB_MAX_CONNECTIONS)
 
 LWA_CLIENT_ID     = os.environ.get("LWA_CLIENT_ID", "")
 LWA_CLIENT_SECRET = os.environ.get("LWA_CLIENT_SECRET", "")
@@ -101,8 +130,78 @@ _DB_REPORT_IDS = """
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _db_ready():
+    """None when a password can be found, otherwise a message for the UI."""
+    if os.environ.get("DB_PASSWORD"):
+        return None
+    if os.path.exists(PGPASS_FILE):
+        return None
+    return (f"No database password. Expected it in {PGPASS_FILE} (chmod 600), "
+            "or DB_PASSWORD in .env.")
+
+
+def _db_connect_hint(exc: Exception) -> str:
+    """Turn a bare refusal into the reason it is almost always refused.
+
+    Nothing listens on the tunnel port until cloudflared is running, and the
+    error libpq gives for that is indistinguishable from a dead database.
+    """
+    text = str(exc).strip()
+    local = str(DB_CONFIG["host"]) in ("127.0.0.1", "::1", "localhost")
+    refused = any(s in text.lower() for s in
+                  ("refused", "could not connect", "no route", "timeout", "timed out"))
+    if local and refused:
+        return (f"Cannot reach the database at {DB_CONFIG['host']}:{DB_CONFIG['port']} — "
+                f"the Cloudflare Access tunnel does not look like it is running.\n"
+                f"Start it in another terminal and leave it open:\n  {DB_TUNNEL_CMD}\n"
+                f"({text})")
+    if "too many connections" in text.lower():
+        return (f"The database refused another connection for {DB_CONFIG['user']} — "
+                "that role is limited to about 3. Close any psql or GUI client "
+                f"still connected, or wait for a running scan to finish.\n({text})")
+    return text
+
+
 def get_db():
-    return psycopg2.connect(**DB_CONFIG)
+    """A new connection. Prefer db_conn(), which also closes it."""
+    try:
+        return psycopg2.connect(**DB_CONFIG)
+    except psycopg2.OperationalError as exc:
+        # Raised from None: the original carries the same text, and chaining it
+        # buries the hint under a traceback in the card's log.
+        raise psycopg2.OperationalError(_db_connect_hint(exc)) from None
+
+
+@contextlib.contextmanager
+def db_conn():
+    """One connection, counted against the role's limit and always closed.
+
+    Every query this dashboard runs is read-only, so the block ends in a
+    rollback rather than a commit, and the connection is closed instead of
+    being left idle — a scan that holds a slot for minutes after it has
+    finished is what exhausts a limit of three.
+    """
+    if not _db_slots.acquire(timeout=DB_WAIT_SECONDS):
+        raise RuntimeError(
+            f"Timed out waiting for a database connection — all "
+            f"{DB_MAX_CONNECTIONS} are in use. Another scan is probably still "
+            "running; let it finish or press Stop.")
+    conn = None
+    try:
+        conn = get_db()
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                if not conn.closed:
+                    conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _db_slots.release()
 
 
 def lwa_exchange(refresh_token: str) -> dict:
@@ -155,7 +254,7 @@ def step1_sqp_stuck():
     page     = max(1, int(request.args.get("page", 1)))
 
     try:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(_SQP_STUCK_COUNT)
                 total = cur.fetchone()["count"]
@@ -194,7 +293,7 @@ def step2_exchange_token():
         return jsonify({"ok": False, "error": "sp_id required"}), 400
 
     try:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     "SELECT refresh_token FROM amazon_selling_api_token "
@@ -278,7 +377,7 @@ def step3_check_queue():
         # 2. Get DB report IDs for this seller+region
         db_ids = []
         if sp_id:
-            with get_db() as conn:
+            with db_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(_DB_REPORT_IDS, {"sp_id": sp_id, "region_id": region_id})
                     db_ids = [row[0] for row in cur.fetchall()]
@@ -418,15 +517,16 @@ def sqp_detail():
         start_date, bucket = _sqp_detail_params()
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
 
     limit = max(1, min(request.args.get("limit", default=SQP_DETAIL_DISPLAY_LIMIT,
                                         type=int), 5000))
     page = max(1, request.args.get("page", default=1, type=int))
     _, cond = _SQP_BUCKETS[bucket]
     try:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     "SELECT COUNT(*) AS n FROM amazon_report_info ari "
@@ -486,7 +586,7 @@ def sqp_detail_csv():
     writer.writerow(["seller_id", "seller_name", "region_name", "status",
                      "start_date", "amazon_requested_report_id"])
     try:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(_sqp_detail_sql(start_date, bucket))
                 for r in cur.fetchall():
@@ -518,7 +618,7 @@ def sqp_global_status():
     cutoff = last_week_sunday - timedelta(weeks=weeks - 1)
 
     try:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(_SQP_GLOBAL_STATUS_QUERY, {"cutoff": cutoff})
                 rows = cur.fetchall()
@@ -910,7 +1010,7 @@ def _ms_fetch_profiles(seller_ids: list, marketplace_id: str) -> dict:
             continue
     if not ids:
         return {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_MS_TOKENS_QUERY, {"ids": ids, "marketplace_id": marketplace_id})
             rows = cur.fetchall()
@@ -927,7 +1027,7 @@ def _ms_fetch_seller_info(seller_ids: list) -> dict:
             continue
     if not ids:
         return {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_MS_SELLER_INFO_QUERY, {"ids": ids})
             rows = cur.fetchall()
@@ -1116,8 +1216,9 @@ def ms_start():
 
     if not targets:
         return jsonify({"ok": False, "error": "Nothing to process."}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     if not ADS_CLIENT_ID:
         return jsonify({"ok": False, "error": (
             "ADS_CLIENT_ID is not set in .env. The Advertising API uses a different "
@@ -1299,7 +1400,7 @@ def _subs_build_payload(seller_ids: list, lookback_days: int) -> tuple:
     end_interval = today - datetime.timedelta(days=1)
 
     payload, counts = [], {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_SUBS_ORDER_GENERAL_QUERY,
                         {"start_date": start_date, "seller_ids": ids})
@@ -1356,7 +1457,7 @@ def _subs_refresh() -> dict:
             continue
     progress = {}
     if ids:
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(_SUBS_PROGRESS_QUERY, {"ids": ids, "types": SUBS_REPORT_TYPES})
                 for p in cur.fetchall():
@@ -1470,8 +1571,9 @@ def subs_preview():
     lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
     if not seller_ids:
         return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     try:
         payload, counts = _subs_build_payload(seller_ids, lookback)
     except Exception as exc:
@@ -1490,8 +1592,9 @@ def subs_add():
     lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
     if not seller_ids:
         return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     if not REPORTS_PROD_HOST:
         return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
     try:
@@ -1509,8 +1612,9 @@ def subs_add():
 
 @app.route("/api/subs/refresh", methods=["POST"])
 def subs_refresh_route():
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     try:
         _subs_init()
         return jsonify({"ok": True, **_subs_refresh()})
@@ -1735,7 +1839,7 @@ def _upg_fetch_combos(seller_ids: list) -> list:
             continue
     if not ids:
         return []
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_UPG_COMBOS_QUERY, {"ids": ids})
             rows = [dict(r) for r in cur.fetchall()]
@@ -1979,8 +2083,9 @@ def upg_preview():
     seller_ids = _parse_seller_ids(payload_in.get("sellers") or "")
     if not seller_ids:
         return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     try:
         combos = _upg_fetch_combos(seller_ids)
     except Exception as exc:
@@ -2007,8 +2112,9 @@ def upg_start():
     lookback = int(payload_in.get("lookback_days") or SUBS_LOOKBACK_DAYS)
     if not seller_ids:
         return jsonify({"ok": False, "error": "No seller IDs provided."}), 400
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     if not REPORTS_PROD_HOST:
         return jsonify({"ok": False, "error": "PROD_HOST is not set in .env."}), 400
     if do_ms and not ADS_CLIENT_ID:
@@ -2281,7 +2387,7 @@ def _leak_query(cur, sql, label, params=None):
 def _leak_db_side() -> dict:
     """The four DB exports the cross-check needs."""
     out = {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # The two big scans need more than the default timeout; both are
             # bounded on created_at (an unbounded group-by on sp_traffic times out).
@@ -2640,8 +2746,9 @@ def leak_start():
     with _leak_lock:
         if _leak_state["running"]:
             return jsonify({"ok": False, "error": "A run is already in progress."}), 409
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     try:
         _leak_stripe_key()
     except ValueError as exc:
@@ -2692,7 +2799,7 @@ def _leak_refresh_worker(which: str) -> None:
             return
         grace_days = _leak_setting_int("grace_days", LEAK_GRACE_DAYS)
         pairs, _no_sub = _leak_split_mapping(mapping, by_customer, canceled)
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SET statement_timeout = '20min'")
                 if which == "stream":
@@ -2915,7 +3022,7 @@ def _leak_sched_counts(sp_ids: list) -> dict:
             continue
     if not ids:
         return {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(_LEAK_SCHED_COUNT_QUERY, {"ids": ids})
             return {str(r["sp_id"]): int(r["n"]) for r in cur.fetchall()}
@@ -3614,7 +3721,7 @@ def _flow_discover() -> list:
     """Every public table that has both an owner column and a timestamp."""
     cols = FLOW_OWNER_COLS + FLOW_TS_COLS
     found, sizes = {}, {}
-    with get_db() as conn:
+    with db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SET statement_timeout = '60s'")
             cur.execute(_FLOW_DISCOVER_QUERY, {"cols": cols})
@@ -3726,7 +3833,7 @@ def _flow_worker(tables: list, days: int, keep_going: bool = False) -> None:
         hits = {}          # account key -> {"acct": rec, "sources": {table: {...}}}
         sources = []       # per-table summary
         sched, tokens = {}, set()
-        with get_db() as conn:
+        with db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SET statement_timeout = %s", (FLOW_TIMEOUT_MS,))
                 try:
@@ -3881,8 +3988,9 @@ def _flow_worker(tables: list, days: int, keep_going: bool = False) -> None:
 def flow_tables():
     """The scannable tables. Discovery is cached until asked to refresh."""
     if request.args.get("refresh") or not _flow_state["tables"]:
-        if not DB_CONFIG["password"]:
-            return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+        _db_err = _db_ready()
+        if _db_err:
+            return jsonify({"ok": False, "error": _db_err}), 400
         try:
             found = _flow_discover()
         except Exception as exc:
@@ -4201,9 +4309,16 @@ def _dup_all_sql(results: list) -> str:
 
 def _dup_worker() -> None:
     """Run the six checks. Read-only: only the SELECTs ever touch the DB."""
-    conn = None
+    conn, slot = None, False
     try:
         _dup_log("info", f"Checking {len(DUP_STEPS)} tables for duplicates…")
+        # Counted against the role's connection limit like every other scan;
+        # this one holds its connection across all six checks.
+        if not _db_slots.acquire(timeout=DB_WAIT_SECONDS):
+            _dup_log("error", "Timed out waiting for a database connection — "
+                              "another scan is still running.")
+            return
+        slot = True
         conn = get_db()
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = %s", (DUP_TIMEOUT_MS,))
@@ -4259,6 +4374,8 @@ def _dup_worker() -> None:
                 conn.close()
             except Exception:
                 pass
+        if slot:
+            _db_slots.release()
         with _dup_lock:
             _dup_state["running"] = False
             _dup_state["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -4274,8 +4391,9 @@ def dup_start():
     with _dup_lock:
         if _dup_state["running"]:
             return jsonify({"ok": False, "error": "A check is already running."}), 409
-    if not DB_CONFIG["password"]:
-        return jsonify({"ok": False, "error": "DB_PASSWORD is not set in .env."}), 400
+    _db_err = _db_ready()
+    if _db_err:
+        return jsonify({"ok": False, "error": _db_err}), 400
     _dup_stop.clear()
     with _dup_lock:
         _dup_state["logs"] = []
@@ -4486,20 +4604,38 @@ def _dup_start_scheduler() -> None:
     threading.Thread(target=_dup_scheduler_loop, daemon=True).start()
 
 
+def _db_probe() -> str:
+    """Can the tunnel be reached at all? A TCP connect, no login attempted."""
+    import socket
+    try:
+        with socket.create_connection((DB_CONFIG["host"], DB_CONFIG["port"]), 3):
+            return "reachable"
+    except Exception as exc:
+        return f"UNREACHABLE ({exc})"
+
+
 def _config_summary() -> None:
     """Print which card is configured, so missing .env values surface at boot."""
     def state(*names):
         missing = [n for n in names if not os.environ.get(n)]
         return "ok" if not missing else "MISSING " + ", ".join(missing)
 
+    db = "ok" if not _db_ready() else _db_ready()
     print("Config:")
-    print(f"  Cancel Stuck Reports  : {state('DB_PASSWORD', 'LWA_CLIENT_ID', 'LWA_CLIENT_SECRET')}")
-    print(f"  Global SQP Status     : {state('DB_PASSWORD')}")
+    print(f"  Database              : {DB_CONFIG['user']}@{DB_CONFIG['host']}:"
+          f"{DB_CONFIG['port']}/{DB_CONFIG['dbname']}  ({db})")
+    probe = _db_probe()
+    print(f"  Tunnel                : {probe}")
+    if probe != "reachable":
+        print(f"    Start it in another terminal and leave it open:\n      {DB_TUNNEL_CMD}")
+    if str(DB_CONFIG["host"]).lower() == "localhost":
+        print("  ! DB_HOST is 'localhost' — use 127.0.0.1 instead. The tunnel binds "
+              "IPv4 only, and localhost may resolve to ::1 and be refused.")
+    print(f"  Cancel Stuck Reports  : {state('LWA_CLIENT_ID', 'LWA_CLIENT_SECRET')}")
     print(f"  Batch Reports PUT     : {state('PROD_HOST')}"
           f"{'' if os.environ.get('ACCESS_TOKEN') or os.environ.get('API_PASSWORD') else ' + ACCESS_TOKEN or API_PASSWORD'}")
-    print(f"  Marketing Streams     : {state('DB_PASSWORD', 'ADS_CLIENT_ID')}")
-    print(f"  Duplicates            : {state('DB_PASSWORD')}"
-          f"{'' if DUP_FIX_URL else '  (no DUP_FIX_URL — copy-only)'}")
+    print(f"  Marketing Streams     : {state('ADS_CLIENT_ID')}")
+    print(f"  Duplicates            : {'copy-only (no DUP_FIX_URL)' if not DUP_FIX_URL else 'ok'}")
     if LWA_CLIENT_ID and ADS_CLIENT_ID and LWA_CLIENT_ID == ADS_CLIENT_ID:
         print("  ! LWA_CLIENT_ID and ADS_CLIENT_ID are identical — SP-API and the "
               "Advertising API normally use different apps.")
