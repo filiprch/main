@@ -13,7 +13,15 @@ revoke Amazon Selling Partner access, marks the request DONE via API,
 and reacts to the corresponding Slack message with the result.
 
 Required environment variables (copy .env.example → .env and fill in):
-    DATABASE_URL   postgresql://user:password@host:5432/dbname
+    DATABASE_URL   optional — a full connection string overrides the PG* vars
+    PGHOST         default 127.0.0.1   (the Cloudflare Access tunnel)
+    PGPORT         default 15432
+    PGUSER         default ro_filip_seidel
+    PGDATABASE     default main
+                   The password is NOT an env var — libpq reads ~/.pgpass.
+                   The tunnel must be running first:
+                     cloudflared access tcp --hostname sql.myrealprofit.io \
+                       --url localhost:15432
     PROD_HOST      https://your-prod-host.com
     API_USERNAME   filip@myrealprofit.com
     API_PASSWORD   your_password
@@ -24,6 +32,7 @@ Required environment variables (copy .env.example → .env and fill in):
 import os
 import re
 import sys
+from contextlib import closing
 
 import psycopg2
 import requests
@@ -33,7 +42,40 @@ from slack_sdk.errors import SlackApiError
 
 load_dotenv()
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+# Database connection.
+#
+# Production moved off GCP Cloud SQL onto Hetzner Kubernetes (CloudNativePG) and
+# is now reached through a Cloudflare Access TCP tunnel that must already be
+# running on THIS machine:
+#
+#     cloudflared access tcp --hostname sql.myrealprofit.io --url localhost:15432
+#
+# 127.0.0.1 rather than "localhost": the tunnel binds IPv4 only, and a client
+# that resolves localhost to ::1 fails with a misleading "connection refused".
+#
+# No password here or in the environment — libpq reads ~/.pgpass.
+#
+# DATABASE_URL still wins when set, so existing setups and any other host keep
+# working unchanged.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+PGHOST = os.environ.get("PGHOST", "127.0.0.1")
+PGPORT = os.environ.get("PGPORT", "15432")
+PGUSER = os.environ.get("PGUSER", "ro_filip_seidel")
+PGDATABASE = os.environ.get("PGDATABASE", "main")
+
+
+def db_connect():
+    """One connection, closed by the caller.
+
+    The role has a CONNECTION LIMIT of about 3, so this opens exactly one and
+    never pools. Callers must close it — see fetch_request.
+    """
+    if DATABASE_URL:
+        return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(
+        host=PGHOST, port=PGPORT, user=PGUSER, dbname=PGDATABASE
+    )
 PROD_HOST = os.environ["PROD_HOST"].rstrip("/")
 API_USERNAME = os.environ["API_USERNAME"]
 API_PASSWORD = os.environ["API_PASSWORD"]
@@ -64,7 +106,11 @@ _DB_QUERY = """
 # ---------------------------------------------------------------------------
 
 def fetch_request(request_id: int) -> dict | None:
-    with psycopg2.connect(DATABASE_URL) as conn:
+    # closing() as well as the transaction block: `with psycopg2.connect(...)`
+    # commits or rolls back but does NOT close the connection, so processing
+    # several request ids in one run left one connection open per id. Against a
+    # CONNECTION LIMIT of about 3 that exhausts the role on the fourth.
+    with closing(db_connect()) as conn, conn:
         with conn.cursor() as cur:
             cur.execute(_DB_QUERY, (request_id,))
             row = cur.fetchone()
