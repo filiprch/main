@@ -171,19 +171,30 @@ def main() -> int:
 
             # Overall flow discovers its own tables, so it depends on what
             # this role can see in the catalog rather than on a fixed list.
+            # A table only qualifies with BOTH an owner column and a
+            # timestamp — counting either would report far more tables than
+            # the card will actually offer.
+            owner_cols = ["amazon_selling_partner_id", "seller_id",
+                          "selling_partner_id", "advertiser_id"]
+            ts_cols = ["created_at", "updated_at", "inserted_at"]
             print("\n  Overall flow discovery")
             cur.execute("""
-                select count(distinct c.table_name) as n
-                from information_schema.columns c
-                join information_schema.tables t
-                  on t.table_schema = c.table_schema
-                 and t.table_name = c.table_name
-                 and t.table_type = 'BASE TABLE'
-                where c.table_schema = 'public'
-                  and c.column_name = ANY (%(cols)s)
-            """, {"cols": ["amazon_selling_partner_id", "seller_id",
-                           "selling_partner_id", "advertiser_id",
-                           "created_at", "updated_at", "inserted_at"]})
+                select count(*) as n from (
+                    select c.table_name
+                    from information_schema.columns c
+                    join information_schema.tables t
+                      on t.table_schema = c.table_schema
+                     and t.table_name = c.table_name
+                     and t.table_type = 'BASE TABLE'
+                    where c.table_schema = 'public'
+                      and c.column_name = ANY (%(cols)s)
+                    group by c.table_name
+                    having count(*) filter (
+                               where c.column_name = ANY (%(owner)s)) > 0
+                       and count(*) filter (
+                               where c.column_name = ANY (%(ts)s)) > 0
+                ) qualifying
+            """, {"cols": owner_cols + ts_cols, "owner": owner_cols, "ts": ts_cols})
             n = cur.fetchone()["n"]
             if n:
                 print(f"{OK} {n} candidate table(s) visible in the catalog")
