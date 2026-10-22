@@ -23,8 +23,19 @@ Two passes:
 import os
 import sys
 
-import requests
-from dotenv import load_dotenv
+try:
+    import requests
+    from dotenv import load_dotenv
+except ImportError as exc:
+    # Same trap as db_smoke.py: run with the system python and the first
+    # import dies before anything useful is printed.
+    sys.exit(
+        f"\n  {exc.name} is not installed in this interpreter.\n\n"
+        "  The dependencies live in the project's virtual environment:\n"
+        "      ./venv/bin/python check_env.py\n\n"
+        "  or activate it first:\n"
+        "      source venv/bin/activate && python check_env.py\n\n"
+        "  (./start.sh creates the venv if it is not there yet)\n")
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"

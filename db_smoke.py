@@ -16,10 +16,21 @@ costs nothing even on the 480-million-row tables, and it never writes.
 import os
 import sys
 
-import psycopg2
-import psycopg2.extras
-import psycopg2.sql
-from dotenv import load_dotenv
+try:
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.sql
+    from dotenv import load_dotenv
+except ImportError as exc:
+    # The dependencies live in the project's venv, so running this with the
+    # system python fails on the first import with a bare traceback.
+    sys.exit(
+        f"\n  {exc.name} is not installed in this interpreter.\n\n"
+        "  The dependencies live in the project's virtual environment:\n"
+        "      ./venv/bin/python db_smoke.py\n\n"
+        "  or activate it first:\n"
+        "      source venv/bin/activate && python db_smoke.py\n\n"
+        "  (./start.sh creates the venv if it is not there yet)\n")
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
