@@ -141,18 +141,30 @@ def _db_ready():
 
 
 def _db_connect_hint(exc: Exception) -> str:
-    """Turn a bare refusal into the reason it is almost always refused.
+    """Turn a bare connection error into the reason it almost always happens.
 
-    Nothing listens on the tunnel port until cloudflared is running, and the
-    error libpq gives for that is indistinguishable from a dead database.
+    Refused and timed out look alike in libpq's wording but have opposite
+    causes: nothing is listening on the tunnel port, versus something is
+    listening but its upstream is gone. Saying "start the tunnel" for a
+    timeout sends you to look at a process that is already running.
     """
     text = str(exc).strip()
+    low = text.lower()
     local = str(DB_CONFIG["host"]) in ("127.0.0.1", "::1", "localhost")
-    refused = any(s in text.lower() for s in
-                  ("refused", "could not connect", "no route", "timeout", "timed out"))
-    if local and refused:
-        return (f"Cannot reach the database at {DB_CONFIG['host']}:{DB_CONFIG['port']} — "
-                f"the Cloudflare Access tunnel does not look like it is running.\n"
+    where = f"{DB_CONFIG['host']}:{DB_CONFIG['port']}"
+    if local and any(s in low for s in ("timeout", "timed out")):
+        return (f"Timed out reaching the database at {where}. Something is "
+                "listening, so cloudflared is running — but nothing came back, "
+                "which means its tunnel to the database is down.\n"
+                "Check the cloudflared terminal for errors. A stale second "
+                "copy holding the port is the usual cause:\n"
+                "  pgrep -af cloudflared\n"
+                "  pkill -f 'cloudflared access tcp'\n"
+                f"  {DB_TUNNEL_CMD}\n"
+                f"({text})")
+    if local and any(s in low for s in ("refused", "could not connect", "no route")):
+        return (f"Cannot reach the database at {where} — nothing is listening, "
+                "so the Cloudflare Access tunnel is not running.\n"
                 f"Start it in another terminal and leave it open:\n  {DB_TUNNEL_CMD}\n"
                 f"({text})")
     if "too many connections" in text.lower():

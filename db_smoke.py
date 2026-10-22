@@ -90,10 +90,29 @@ def main() -> int:
     try:
         conn = psycopg2.connect(**kwargs)
     except Exception as exc:
-        print(f"\n{BAD} cannot connect: {str(exc).strip()}")
-        print("\n  If this is 'connection refused', the tunnel is not running:")
-        print(f"    cloudflared access tcp --hostname {DB_TUNNEL_HOSTNAME} "
-              f"--url localhost:{DB_PORT}")
+        text = " ".join(str(exc).split())
+        low = text.lower()
+        start = (f"cloudflared access tcp --hostname {DB_TUNNEL_HOSTNAME} "
+                 f"--url localhost:{DB_PORT}")
+        print(f"\n{BAD} cannot connect: {text}")
+        # Refused and timed out point in opposite directions.
+        if "timeout" in low or "timed out" in low:
+            print("\n  Timed out, not refused: something IS listening on "
+                  f"{DB_HOST}:{DB_PORT}, so cloudflared is")
+            print("  running — but its tunnel to the database is down. Check "
+                  "the cloudflared terminal.")
+            print("  A stale second copy holding the port is the usual cause:")
+            print("    pgrep -af cloudflared")
+            print("    pkill -f 'cloudflared access tcp'")
+            print(f"    {start}")
+        elif "refused" in low or "could not connect" in low:
+            print("\n  Refused: nothing is listening, so the tunnel is not running.")
+            print(f"    {start}")
+        elif "password" in low or "authentication" in low:
+            print(f"\n  The tunnel is fine; the login was rejected. Check "
+                  f"~/.pgpass holds a line for")
+            print(f"    {DB_HOST}:{DB_PORT}:{DB_NAME}:{DB_USER}:<password>")
+            print("  and that the file is chmod 600 — libpq ignores it otherwise.")
         return 1
 
     failures = 0
