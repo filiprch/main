@@ -7,8 +7,10 @@
 > and CS-265. What is open is *when Fin should speak* and *how it steps back*.
 > See "Fin in Slack — how it should behave" in `helpdesk-webhooks.md`.
 
-One page saying what works, what is parked and what is left. Detail for every
-line lives in `helpdesk-webhooks.md`; this is the index.
+One page saying what works, what is parked and what is left. The narrative
+overview — what it is, what it runs on, how it was built — is in
+`helpdesk-overview.md`; the full technical reference is in
+`helpdesk-webhooks.md`. This is the index.
 
 ---
 
