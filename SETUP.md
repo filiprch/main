@@ -50,13 +50,30 @@ granted directly.
 
 ## 2. Install
 
-```bash
-sudo apt install python3-venv postgresql-client     # Debian/Ubuntu
+`./install.sh` does this for you on **macOS and Linux**. Read on only if you
+want to know what it does, or if you are on Windows.
+
+**Windows** has no supported path. The tool needs a POSIX shell, `psql`,
+`cloudflared` and `~/.pgpass`. Install WSL and run everything inside Ubuntu:
+
+```powershell
+wsl --install -d Ubuntu      # PowerShell as administrator, then reboot
 ```
 
-cloudflared, via Cloudflare's repo:
+Then open Ubuntu and follow the Linux instructions. The dashboard will be at
+`http://127.0.0.1:5000` in your normal Windows browser.
+
+**macOS** needs [Homebrew](https://brew.sh). `install.sh` then uses it for
+anything missing:
 
 ```bash
+brew install libpq cloudflared && brew link --force libpq
+```
+
+**Debian/Ubuntu**:
+
+```bash
+sudo apt install python3-venv postgresql-client
 sudo mkdir -p --mode=0755 /usr/share/keyrings
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
   | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
@@ -65,13 +82,22 @@ echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudf
 sudo apt-get update && sudo apt-get install cloudflared
 ```
 
-Then the code:
+Then the code. From a zip:
+
+```bash
+unzip operations-hub-*.zip && cd operations-hub-*
+```
+
+or from git:
 
 ```bash
 git clone <repo-url> ~/dashboard
 cd ~/dashboard
 git checkout claude/nifty-noether-mv85cu
 ```
+
+Then run `./install.sh` and answer its questions. Sections 3 to 5 below
+describe what it is doing, in case you need to redo a step by hand.
 
 ## 3. Database password
 
